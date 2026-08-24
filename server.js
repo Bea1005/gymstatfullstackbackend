@@ -62,10 +62,18 @@ const listenWithRetry = (preferredPort) => {
 };
 
 // CORS
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  process.env.FRONTEND_URL || 'https://gymstatwebbased.vercel.app',
+];
+
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'],
+  origin: allowedOrigins,
   credentials: true,
 }));
+app.options('*', cors({ origin: allowedOrigins, credentials: true }));
 
 // Middleware
 app.use(express.json());
