@@ -5,6 +5,86 @@ const User = require('../models/User');
 const fs = require('fs');
 const path = require('path');
 
+const getAcademicYearLabel = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+
+  if (month >= 5) {
+    return `${year}-${String(year + 1).slice(-2)}`;
+  }
+
+  return `${year - 1}-${String(year).slice(-2)}`;
+};
+
+const isReusableRequirement = (record) => {
+  if (!record) return false;
+  return Boolean(record.isReusable || record.requirementStatus === 'reusable' || record.requirementType === 'psa');
+};
+
+exports.buildRequirementLifecycleState = (record = {}, currentAcademicYear = getAcademicYearLabel()) => {
+  if (!record) return 'active';
+
+  if (record.requirementStatus === 'archived' || record.archivedAt) {
+    return 'archived';
+  }
+
+  if (record.requirementStatus === 'reusable' || record.isReusable) {
+    return 'reusable';
+  }
+
+  if (record.requirementStatus === 'expired') {
+    return 'expired';
+  }
+
+  if (record.requirementType === 'psa' && record.importedFromPreviousYear) {
+    return 'reusable';
+  }
+
+  if (record.academicYear && currentAcademicYear && record.academicYear !== currentAcademicYear && record.status === 'approved') {
+    return 'expired';
+  }
+
+  return 'active';
+};
+
+const syncRequirementLifecycleState = async (record, currentAcademicYear) => {
+  if (!record || !record._id) return record;
+
+  const nextLifecycle = exports.buildRequirementLifecycleState(record, currentAcademicYear);
+  const shouldReuse = isReusableRequirement(record) || nextLifecycle === 'reusable';
+
+  const updates = {
+    requirementStatus: nextLifecycle,
+    isReusable: shouldReuse,
+    archivedAt: nextLifecycle === 'archived' ? (record.archivedAt || new Date()) : null,
+    archivedReason: nextLifecycle === 'archived' ? (record.archivedReason || 'Academic year closed and requirement is no longer eligible for reuse.') : '',
+    expiresAt: nextLifecycle === 'expired' ? (record.expiresAt || new Date()) : null
+  };
+
+  if (nextLifecycle === 'reusable' && record.requirementType === 'psa') {
+    updates.previousAcademicYear = record.academicYear || record.previousAcademicYear || '';
+  }
+
+  const savedRecord = await StudentRequirement.findByIdAndUpdate(record._id, { $set: updates }, { new: true }).lean();
+  return savedRecord || record;
+};
+
+const archiveNonReusableRequirements = async (studentId, currentAcademicYear) => {
+  const previousYearRequirements = await StudentRequirement.find({
+    studentId,
+    status: 'approved',
+    requirementType: { $ne: 'psa' },
+    academicYear: { $ne: currentAcademicYear }
+  }).lean();
+
+  for (const record of previousYearRequirements) {
+    const lifecycle = exports.buildRequirementLifecycleState(record, currentAcademicYear);
+    if (lifecycle === 'expired') {
+      await syncRequirementLifecycleState(record, currentAcademicYear);
+    }
+  }
+};
+
 const resolveStudentObjectId = async (req) => {
   if (!req?.user) return null;
 
@@ -46,7 +126,15 @@ exports.uploadRequirement = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
     }
 
+    const currentAcademicYear = getAcademicYearLabel();
     const normalizedFilePath = path.resolve(req.file.path);
+
+    const reusableSubmission = await StudentRequirement.findOne({
+      studentId,
+      requirementType,
+      status: 'approved',
+      requirementStatus: 'reusable'
+    }).sort({ uploadDate: -1 });
 
     const existingRejectedSubmission = await StudentRequirement.findOne({
       studentId,
@@ -54,21 +142,31 @@ exports.uploadRequirement = async (req, res) => {
       status: 'rejected'
     }).sort({ uploadDate: -1 });
 
-    if (existingRejectedSubmission) {
-      const previousFilePath = existingRejectedSubmission.filePath;
-      existingRejectedSubmission.fileName = req.file.originalname;
-      existingRejectedSubmission.fileType = req.file.mimetype;
-      existingRejectedSubmission.fileSize = req.file.size;
-      existingRejectedSubmission.filePath = normalizedFilePath;
-      existingRejectedSubmission.status = 'pending';
-      existingRejectedSubmission.resubmitted = true;
-      existingRejectedSubmission.remarks = '';
-      existingRejectedSubmission.uploadDate = new Date();
-      existingRejectedSubmission.approvalDate = null;
-      existingRejectedSubmission.approvedBy = null;
-      existingRejectedSubmission.reviewedAt = null;
-      existingRejectedSubmission.reviewedBy = null;
-      await existingRejectedSubmission.save();
+    const replacementTarget = reusableSubmission || existingRejectedSubmission;
+
+    if (replacementTarget) {
+      const previousFilePath = replacementTarget.filePath;
+      replacementTarget.fileName = req.file.originalname;
+      replacementTarget.fileType = req.file.mimetype;
+      replacementTarget.fileSize = req.file.size;
+      replacementTarget.filePath = normalizedFilePath;
+      replacementTarget.status = 'pending';
+      replacementTarget.requirementStatus = 'active';
+      replacementTarget.isReusable = false;
+      replacementTarget.importedFromPreviousYear = false;
+      replacementTarget.academicYear = currentAcademicYear;
+      replacementTarget.previousAcademicYear = replacementTarget.previousAcademicYear || replacementTarget.academicYear || '';
+      replacementTarget.resubmitted = true;
+      replacementTarget.remarks = '';
+      replacementTarget.uploadDate = new Date();
+      replacementTarget.approvalDate = null;
+      replacementTarget.approvedBy = null;
+      replacementTarget.reviewedAt = null;
+      replacementTarget.reviewedBy = null;
+      replacementTarget.archivedAt = null;
+      replacementTarget.archivedReason = '';
+      replacementTarget.expiresAt = null;
+      await replacementTarget.save();
 
       if (previousFilePath && previousFilePath !== normalizedFilePath && fs.existsSync(previousFilePath)) {
         fs.unlinkSync(previousFilePath);
@@ -76,8 +174,8 @@ exports.uploadRequirement = async (req, res) => {
 
       return res.status(200).json({
         success: true,
-        message: 'Rejected requirement updated successfully',
-        data: existingRejectedSubmission
+        message: reusableSubmission ? 'Reusable requirement updated successfully' : 'Rejected requirement updated successfully',
+        data: replacementTarget
       });
     }
 
@@ -88,7 +186,9 @@ exports.uploadRequirement = async (req, res) => {
       fileType: req.file.mimetype,
       fileSize: req.file.size,
       filePath: normalizedFilePath,
-      sport: sport || 'General'
+      sport: sport || 'General',
+      academicYear: currentAcademicYear,
+      requirementStatus: 'active'
     });
 
     await requirement.save();
@@ -100,7 +200,7 @@ exports.uploadRequirement = async (req, res) => {
     });
   } catch (error) {
     // Clean up file if error occurs
-    if (req.file) {
+    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
     res.status(500).json({ success: false, message: error.message });
@@ -119,6 +219,9 @@ exports.getStudentRequirements = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
     }
 
+    const currentAcademicYear = getAcademicYearLabel();
+    await archiveNonReusableRequirements(studentId, currentAcademicYear);
+
     let filter = { studentId };
     if (status) filter.status = status;
     if (requirementType) filter.requirementType = requirementType;
@@ -128,18 +231,94 @@ exports.getStudentRequirements = async (req, res) => {
       .populate('approvedBy', 'fullname')
       .populate('reviewedBy', 'fullname');
 
-    // Calculate stats
+    const enrichedRequirements = requirements.map((requirement) => {
+      const lifecycle = exports.buildRequirementLifecycleState(requirement.toObject ? requirement.toObject() : requirement, currentAcademicYear);
+      return {
+        ...requirement.toObject ? requirement.toObject() : requirement,
+        requirementStatus: lifecycle,
+        isReusable: lifecycle === 'reusable' || isReusableRequirement(requirement)
+      };
+    });
+
     const stats = {
-      total: requirements.length,
-      pending: requirements.filter(r => r.status === 'pending').length,
-      approved: requirements.filter(r => r.status === 'approved').length,
-      rejected: requirements.filter(r => r.status === 'rejected').length
+      total: enrichedRequirements.length,
+      pending: enrichedRequirements.filter(r => r.status === 'pending').length,
+      approved: enrichedRequirements.filter(r => r.status === 'approved').length,
+      rejected: enrichedRequirements.filter(r => r.status === 'rejected').length,
+      expired: enrichedRequirements.filter(r => r.requirementStatus === 'expired').length,
+      archived: enrichedRequirements.filter(r => r.requirementStatus === 'archived').length,
+      reusable: enrichedRequirements.filter(r => r.requirementStatus === 'reusable').length
     };
 
     res.status(200).json({
       success: true,
       stats,
-      data: requirements
+      data: enrichedRequirements
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.importPreviousYearRequirements = async (req, res) => {
+  try {
+    const studentId = await resolveStudentObjectId(req);
+    if (!studentId) {
+      return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
+    }
+
+    const { sourceAcademicYear } = req.body || {};
+    const targetAcademicYear = getAcademicYearLabel();
+    const yearToImport = sourceAcademicYear || getAcademicYearLabel(new Date(new Date().getFullYear() - 1, 5, 1));
+
+    const previousYearRequirements = await StudentRequirement.find({
+      studentId,
+      status: 'approved',
+      academicYear: yearToImport
+    }).sort({ uploadDate: -1 });
+
+    const importedRecords = [];
+
+    for (const record of previousYearRequirements) {
+      const alreadyImported = await StudentRequirement.findOne({
+        studentId,
+        requirementType: record.requirementType,
+        academicYear: targetAcademicYear,
+        importedFromPreviousYear: true,
+        sourceRequirementId: record._id
+      });
+
+      if (alreadyImported) continue;
+
+      const reusable = record.requirementType === 'psa' || record.isReusable || record.requirementStatus === 'reusable';
+      const candidate = new StudentRequirement({
+        ...record.toObject(),
+        _id: new mongoose.Types.ObjectId(),
+        status: 'approved',
+        requirementStatus: reusable ? 'reusable' : 'expired',
+        academicYear: targetAcademicYear,
+        previousAcademicYear: record.academicYear || yearToImport,
+        importedFromPreviousYear: true,
+        isReusable: reusable,
+        sourceRequirementId: record._id,
+        reviewedAt: null,
+        reviewedBy: null,
+        approvalDate: new Date(),
+        uploadDate: new Date(),
+        archivedAt: null,
+        archivedReason: '',
+        expiresAt: reusable ? null : new Date(),
+        remarks: ''
+      });
+
+      await candidate.save();
+      importedRecords.push(candidate);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: importedRecords.length > 0 ? 'Previous-year records imported successfully' : 'No eligible records were available to import',
+      data: importedRecords
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -252,10 +431,14 @@ exports.getStudentStats = async (req, res) => {
     }
 
     const requirements = await StudentRequirement.find({ studentId }).lean();
+    const currentAcademicYear = getAcademicYearLabel();
 
     const pendingCount = requirements.filter((item) => item.status === 'pending').length;
     const approvedCount = requirements.filter((item) => item.status === 'approved').length;
     const rejectedCount = requirements.filter((item) => item.status === 'rejected').length;
+    const expiredCount = requirements.filter((item) => exports.buildRequirementLifecycleState(item, currentAcademicYear) === 'expired').length;
+    const archivedCount = requirements.filter((item) => exports.buildRequirementLifecycleState(item, currentAcademicYear) === 'archived').length;
+    const reusableCount = requirements.filter((item) => exports.buildRequirementLifecycleState(item, currentAcademicYear) === 'reusable').length;
 
     res.status(200).json({
       success: true,
@@ -263,6 +446,9 @@ exports.getStudentStats = async (req, res) => {
         pending: pendingCount,
         approved: approvedCount,
         rejected: rejectedCount,
+        expired: expiredCount,
+        archived: archivedCount,
+        reusable: reusableCount,
         total: requirements.length
       }
     });

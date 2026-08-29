@@ -4,6 +4,7 @@ const upload = require('../config/multer');
 const {
   uploadRequirement,
   getStudentRequirements,
+  importPreviousYearRequirements,
   downloadRequirement,
   deleteRequirement,
   getAnnouncements,
@@ -20,6 +21,7 @@ router.use(protect);
 
 // Student-specific routes - all protected
 router.post('/requirements', upload.single('file'), uploadRequirement);
+router.post('/requirements/import-previous-year', importPreviousYearRequirements);
 router.get('/requirements', getStudentRequirements);
 router.get('/requirements/:id/download', downloadRequirement);
 router.delete('/requirements/:id', deleteRequirement);

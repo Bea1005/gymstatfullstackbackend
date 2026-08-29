@@ -32,6 +32,44 @@ const StudentRequirementSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'rejected'],
     default: 'pending'
   },
+  requirementStatus: {
+    type: String,
+    enum: ['active', 'expired', 'archived', 'reusable'],
+    default: 'active'
+  },
+  academicYear: {
+    type: String,
+    default: ''
+  },
+  previousAcademicYear: {
+    type: String,
+    default: ''
+  },
+  importedFromPreviousYear: {
+    type: Boolean,
+    default: false
+  },
+  isReusable: {
+    type: Boolean,
+    default: false
+  },
+  expiresAt: {
+    type: Date,
+    default: null
+  },
+  archivedAt: {
+    type: Date,
+    default: null
+  },
+  archivedReason: {
+    type: String,
+    default: ''
+  },
+  sourceRequirementId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'StudentRequirement',
+    default: null
+  },
   remarks: {
     type: String,
     default: ''
@@ -72,6 +110,7 @@ const StudentRequirementSchema = new mongoose.Schema({
 
 // Index for efficient queries
 StudentRequirementSchema.index({ studentId: 1, status: 1 });
+StudentRequirementSchema.index({ studentId: 1, requirementType: 1, academicYear: 1, requirementStatus: 1 });
 StudentRequirementSchema.index({ uploadDate: -1 });
 StudentRequirementSchema.index({ resubmitted: 1 });
 
