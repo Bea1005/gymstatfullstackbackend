@@ -8,7 +8,7 @@ const SPORTS_EQUIPMENT_OPTIONS = [
   'Water Jug', 'Scoreboard', 'Spalding Ball', 'Volleyball Mikasa', 'Racket'
 ];
 
-const VALID_CONDITIONS = ['Good', 'Fair', 'Poor'];
+const VALID_CONDITIONS = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'];
 const VALID_CATEGORIES = ['Balls', 'Rackets', 'Net', 'General', 'Sports Equipment'];
 const VALID_STATUSES = ['Available', 'Low Stock', 'Out of Stock'];
 
@@ -150,22 +150,6 @@ const createEquipment = async (req, res) => {
       });
     }
 
-    const existingEquipment = await Equipment.findOne({ name: trimmedName });
-
-    if (existingEquipment) {
-      existingEquipment.totalStock = (Number(existingEquipment.totalStock) || 0) + 1;
-      existingEquipment.condition = normalizedCondition;
-      existingEquipment.category = normalizedCategory;
-      existingEquipment.type = normalizedType;
-      await existingEquipment.save();
-
-      return res.status(200).json({
-        success: true,
-        message: `Updated ${trimmedName}: +1 unit added. Total: ${existingEquipment.totalStock}`,
-        data: buildEquipmentPayload(existingEquipment)
-      });
-    }
-
     const existingRefId = await Equipment.findOne({ referenceId: trimmedReferenceId });
     if (existingRefId) {
       return res.status(400).json({
@@ -226,14 +210,6 @@ const updateEquipment = async (req, res) => {
       const trimmedName = normalizeString(name);
       if (!trimmedName) {
         return res.status(400).json({ success: false, message: 'Equipment name is required' });
-      }
-
-      const existingByName = await Equipment.findOne({ name: trimmedName, _id: { $ne: equipment._id } });
-      if (existingByName) {
-        return res.status(409).json({
-          success: false,
-          message: 'An equipment item with this name already exists.'
-        });
       }
 
       equipment.name = trimmedName;

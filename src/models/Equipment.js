@@ -39,7 +39,7 @@ const EquipmentSchema = new mongoose.Schema({
   },
   condition: {
     type: String,
-    enum: ['Good', 'Fair', 'Poor'],
+    enum: ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'],
     default: 'Good'
   },
   status: {

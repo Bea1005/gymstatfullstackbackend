@@ -1,6 +1,8 @@
 const Borrowing = require('../models/Borrowing');
 const Equipment = require('../models/Equipment');
 
+const VALID_CONDITION_VALUES = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'];
+
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 const normalizeTimestampObject = (value) => {
   if (!value || typeof value !== 'object') {
@@ -28,6 +30,69 @@ const normalizeBorrowedBy = (value) => {
     return /^[a-fA-F0-9]{24}$/.test(idValue) ? idValue : null;
   }
   return null;
+};
+
+const syncReferenceConditionsToEquipment = async (borrowing) => {
+  if (!borrowing || !Array.isArray(borrowing.referenceIds) || borrowing.referenceIds.length === 0) {
+    return;
+  }
+
+  const referenceIds = borrowing.referenceIds.filter(Boolean);
+  const referenceConditions = Array.isArray(borrowing.referenceConditions)
+    ? borrowing.referenceConditions.filter((condition) => typeof condition === 'string')
+    : [];
+  const fallbackCondition = VALID_CONDITION_VALUES.includes(borrowing.condition)
+    ? borrowing.condition
+    : null;
+
+  const targetReferenceIds = (() => {
+    if (referenceConditions.length === 1 && referenceIds.length > 1) {
+      return [referenceIds[0]];
+    }
+    return referenceIds;
+  })();
+
+  for (let index = 0; index < targetReferenceIds.length; index += 1) {
+    const referenceId = targetReferenceIds[index];
+    const equipmentItem = await Equipment.findOne({ referenceId });
+    if (!equipmentItem) {
+      throw new Error(`Equipment reference ID not found: ${referenceId}`);
+    }
+
+    let resolvedCondition = VALID_CONDITION_VALUES.includes(fallbackCondition)
+      ? fallbackCondition
+      : 'Good';
+
+    if (referenceConditions.length === targetReferenceIds.length) {
+      const conditionAtIndex = referenceConditions[index];
+      if (VALID_CONDITION_VALUES.includes(conditionAtIndex)) {
+        resolvedCondition = conditionAtIndex;
+      }
+    } else if (referenceConditions.length === 1 && index === 0) {
+      const singleCondition = referenceConditions[0];
+      if (VALID_CONDITION_VALUES.includes(singleCondition)) {
+        resolvedCondition = singleCondition;
+      }
+    } else if (referenceConditions.length > 0) {
+      const conditionAtIndex = referenceConditions[index];
+      if (VALID_CONDITION_VALUES.includes(conditionAtIndex)) {
+        resolvedCondition = conditionAtIndex;
+      }
+    }
+
+    const currentCondition = VALID_CONDITION_VALUES.includes(equipmentItem.condition)
+      ? equipmentItem.condition
+      : 'Good';
+
+    const finalCondition = VALID_CONDITION_VALUES.includes(resolvedCondition)
+      ? resolvedCondition
+      : currentCondition;
+
+    if (equipmentItem.condition !== finalCondition) {
+      equipmentItem.condition = finalCondition;
+      await equipmentItem.save();
+    }
+  }
 };
 
 // @desc    Get all borrowing records
@@ -283,8 +348,16 @@ const updateBorrowingRecord = async (req, res) => {
     }
     
     // Update reference conditions if provided
-    if (updateData.referenceConditions) {
+    if (Array.isArray(updateData.referenceConditions)) {
       updatedFields.referenceConditions = updateData.referenceConditions;
+      const firstCondition = updateData.referenceConditions.find((condition) => VALID_CONDITION_VALUES.includes(condition));
+      if (firstCondition) {
+        updatedFields.condition = firstCondition;
+      }
+    }
+
+    if (updateData.condition && VALID_CONDITION_VALUES.includes(updateData.condition)) {
+      updatedFields.condition = updateData.condition;
     }
     
     const updatedBorrowing = await Borrowing.findByIdAndUpdate(
@@ -295,6 +368,10 @@ const updateBorrowingRecord = async (req, res) => {
     
     if (!updatedBorrowing) {
       return res.status(404).json({ message: 'Borrowing record not found' });
+    }
+
+    if (Array.isArray(updatedBorrowing.referenceIds)) {
+      await syncReferenceConditionsToEquipment(updatedBorrowing);
     }
     
     // Populate user info if available
@@ -366,7 +443,23 @@ const returnBorrowedItem = async (req, res) => {
     borrowing.status = 'Completed';
     borrowing.returnedAt = new Date();
     borrowing.returnedTimestamp = returnedTimestamp;
+
+    if (Array.isArray(borrowing.referenceConditions) && borrowing.referenceConditions.length > 0) {
+      const firstValidCondition = borrowing.referenceConditions.find((condition) => VALID_CONDITION_VALUES.includes(condition));
+      if (firstValidCondition) {
+        borrowing.condition = firstValidCondition;
+      }
+    }
+
+    if (VALID_CONDITION_VALUES.includes(borrowing.condition)) {
+      borrowing.condition = borrowing.condition;
+    }
+
     await borrowing.save();
+
+    if (Array.isArray(borrowing.referenceIds)) {
+      await syncReferenceConditionsToEquipment(borrowing);
+    }
     
     res.status(200).json({
       id: borrowing._id,

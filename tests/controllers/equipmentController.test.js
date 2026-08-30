@@ -170,27 +170,30 @@ describe('Equipment Controller Unit Tests', () => {
       }));
     });
 
-    it('should update existing equipment when it already exists', async () => {
+    it('should create a new equipment record for each unique reference ID even when the name matches', async () => {
       req.body = { name: 'Basketball', referenceId: 'BB-002', condition: 'Good' };
-      const existingEquipment = {
+      const fakeSavedEquipment = {
         _id: '12345',
         name: 'Basketball',
-        referenceId: 'BB-001',
-        totalStock: 10,
-        available: 8,
-        onLoan: 2,
-        save: jest.fn().mockResolvedValue(true)
+        referenceId: 'BB-002',
+        category: 'Sports Equipment',
+        totalStock: 1,
+        available: 1,
+        onLoan: 0,
+        condition: 'Good'
       };
-      
-      Equipment.findOne.mockResolvedValue(existingEquipment);
+
+      Equipment.findOne.mockResolvedValueOnce(null);
+      Equipment.create.mockResolvedValue(fakeSavedEquipment);
 
       await createEquipment(req, res);
 
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(201);
       expect(res._getJSONData().success).toBe(true);
-      expect(res._getJSONData().message).toContain('Updated Basketball');
-      expect(existingEquipment.totalStock).toBe(11);
-      expect(existingEquipment.save).toHaveBeenCalled();
+      expect(Equipment.create).toHaveBeenCalledWith(expect.objectContaining({
+        name: 'Basketball',
+        referenceId: 'BB-002'
+      }));
     });
 
     it('should return 400 if name is missing', async () => {
@@ -213,8 +216,7 @@ describe('Equipment Controller Unit Tests', () => {
 
     it('should return 400 if reference ID already exists', async () => {
       req.body = { name: 'New Racket', referenceId: 'EXISTING-001' };
-      Equipment.findOne.mockResolvedValueOnce(null); // First call for name check
-      Equipment.findOne.mockResolvedValueOnce({ _id: 'existing', referenceId: 'EXISTING-001' }); // Second call for refId check
+      Equipment.findOne.mockResolvedValue({ _id: 'existing', referenceId: 'EXISTING-001' });
 
       await createEquipment(req, res);
 

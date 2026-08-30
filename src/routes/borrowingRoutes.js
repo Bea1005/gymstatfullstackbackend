@@ -62,6 +62,59 @@ const buildBorrowingResponse = (borrowing) => {
     returnedAt
   };
 };
+const syncReferenceConditionsToEquipment = async (borrowing) => {
+  if (!borrowing || !Array.isArray(borrowing.referenceIds) || borrowing.referenceIds.length === 0) {
+    return;
+  }
+
+  const referenceIds = borrowing.referenceIds.filter(Boolean);
+  const referenceConditions = Array.isArray(borrowing.referenceConditions)
+    ? borrowing.referenceConditions.filter((condition) => typeof condition === 'string')
+    : [];
+  const fallbackCondition = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(borrowing.condition)
+    ? borrowing.condition
+    : null;
+
+  const targetReferenceIds = (() => {
+    if (referenceConditions.length === 1 && referenceIds.length > 1) {
+      return [referenceIds[0]];
+    }
+    return referenceIds;
+  })();
+
+  for (let index = 0; index < targetReferenceIds.length; index += 1) {
+    const referenceId = targetReferenceIds[index];
+    const equipmentItem = await Equipment.findOne({ referenceId });
+
+    if (!equipmentItem) {
+      throw new Error(`Equipment reference ID not found: ${referenceId}`);
+    }
+
+    let resolvedCondition = fallbackCondition || 'Good';
+
+    if (referenceConditions.length === targetReferenceIds.length) {
+      const conditionAtIndex = referenceConditions[index];
+      if (['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(conditionAtIndex)) {
+        resolvedCondition = conditionAtIndex;
+      }
+    } else if (referenceConditions.length === 1 && index === 0) {
+      const singleCondition = referenceConditions[0];
+      if (['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(singleCondition)) {
+        resolvedCondition = singleCondition;
+      }
+    } else if (referenceConditions.length > 0) {
+      const conditionAtIndex = referenceConditions[index];
+      if (['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(conditionAtIndex)) {
+        resolvedCondition = conditionAtIndex;
+      }
+    }
+
+    if (equipmentItem.condition !== resolvedCondition) {
+      equipmentItem.condition = resolvedCondition;
+      await equipmentItem.save();
+    }
+  }
+};
 const ensureEquipmentExists = async (equipmentName) => {
   const name = normalizeText(equipmentName);
   if (!name) return null;
@@ -207,6 +260,10 @@ router.put('/admin/borrowing/:id', protect, authorize('admin'), async (req, res)
       return res.status(404).json({ error: 'Borrowing record not found' });
     }
 
+    if (Array.isArray(updatedBorrowing.referenceIds) && updatedBorrowing.referenceIds.length > 0) {
+      await syncReferenceConditionsToEquipment(updatedBorrowing);
+    }
+
     if (updatedBorrowing.borrowedBy) {
       await updatedBorrowing.populate('borrowedBy', 'fullname email');
     }
@@ -231,6 +288,31 @@ router.put('/admin/borrowing/:id/return', protect, authorize('admin'), async (re
       return res.status(400).json({ error: 'Item already returned' });
     }
 
+    const validConditions = ['Good', 'Damaged', 'Lost'];
+    const requestedReferenceIds = Array.isArray(req.body.referenceIds) && req.body.referenceIds.length > 0
+      ? req.body.referenceIds.filter(Boolean)
+      : (Array.isArray(borrowing.referenceIds) ? borrowing.referenceIds.filter(Boolean) : []);
+    const requestedReferenceConditions = Array.isArray(req.body.referenceConditions)
+      ? req.body.referenceConditions
+      : (Array.isArray(borrowing.referenceConditions) ? borrowing.referenceConditions : []);
+    const fallbackCondition = validConditions.includes(req.body.condition)
+      ? req.body.condition
+      : (validConditions.includes(borrowing.condition) ? borrowing.condition : 'Good');
+
+    for (let index = 0; index < requestedReferenceIds.length; index += 1) {
+      const referenceId = requestedReferenceIds[index];
+      const referenceCondition = requestedReferenceConditions[index] || requestedReferenceConditions[0] || fallbackCondition;
+      const normalizedCondition = validConditions.includes(referenceCondition) ? referenceCondition : fallbackCondition;
+      const equipmentItem = await Equipment.findOne({ referenceId });
+
+      if (!equipmentItem) {
+        return res.status(400).json({ error: `Equipment reference ID not found: ${referenceId}` });
+      }
+
+      equipmentItem.condition = normalizedCondition;
+      await equipmentItem.save();
+    }
+
     const quantity = borrowing.quantity || borrowing.qty || 1;
     const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
     if (equipmentItem) {
@@ -242,13 +324,17 @@ router.put('/admin/borrowing/:id/return', protect, authorize('admin'), async (re
     borrowing.status = 'Completed';
     borrowing.returnedAt = returnedAt;
     borrowing.returnedTimestamp = req.body.returnedTimestamp || formatBorrowTimestamp(returnedAt);
+    borrowing.referenceConditions = requestedReferenceConditions.length > 0
+      ? requestedReferenceConditions
+      : borrowing.referenceConditions || [];
+    borrowing.condition = fallbackCondition;
     await borrowing.save();
 
     await borrowing.populate('borrowedBy', 'fullname email');
     res.json(buildBorrowingResponse(borrowing));
   } catch (error) {
     console.error('Return item error:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: error.message || 'Server error' });
   }
 });
 

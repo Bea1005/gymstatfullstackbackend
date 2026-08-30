@@ -2,7 +2,8 @@ const {
   getBorrowingRecords, 
   createBorrowing, 
   returnBorrowedItem, 
-  deleteBorrowingRecord 
+  deleteBorrowingRecord,
+  updateBorrowingRecord 
 } = require('../../src/controllers/borrowingController');
 const Borrowing = require('../../src/models/Borrowing');
 const Equipment = require('../../src/models/Equipment');
@@ -249,6 +250,166 @@ describe('Borrowing Controller Unit Tests', () => {
 
       expect(Equipment.findOne).toHaveBeenCalled();
       expect(fakeEquipment.save).toHaveBeenCalled();
+      expect(res.statusCode).toBe(200);
+    });
+  });
+
+  describe('PUT /admin/borrowing/:id (updateBorrowingRecord)', () => {
+    it('should update matching equipment conditions by reference ID when conditions change', async () => {
+      req.params = { id: 'borrow-123' };
+      req.body = { referenceConditions: ['Damaged', 'Good'] };
+
+      const fakeBorrowing = {
+        _id: 'borrow-123',
+        Name: 'Player One',
+        fullname: 'Player One',
+        equipment: 'Basketball',
+        quantity: 2,
+        qty: 2,
+        referenceIds: ['BB-001', 'BB-002'],
+        referenceConditions: ['Good', 'Good'],
+        contactNo: '',
+        facebookAccount: '',
+        status: 'Out Now',
+        borrowDate: new Date(),
+        borrowTimestamp: { date: '2026-08-30', time: '09:00 AM' }
+      };
+
+      const firstEquipment = {
+        _id: 'eq-1',
+        name: 'Basketball',
+        referenceId: 'BB-001',
+        condition: 'Good',
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      const secondEquipment = {
+        _id: 'eq-2',
+        name: 'Basketball',
+        referenceId: 'BB-002',
+        condition: 'Good',
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Borrowing.findByIdAndUpdate.mockResolvedValue({
+        ...fakeBorrowing,
+        referenceConditions: ['Damaged', 'Good']
+      });
+      Equipment.findOne
+        .mockResolvedValueOnce(firstEquipment)
+        .mockResolvedValueOnce(secondEquipment);
+
+      await updateBorrowingRecord(req, res);
+
+      expect(Equipment.findOne).toHaveBeenNthCalledWith(1, { referenceId: 'BB-001' });
+      expect(Equipment.findOne).toHaveBeenNthCalledWith(2, { referenceId: 'BB-002' });
+      expect(firstEquipment.condition).toBe('Damaged');
+      expect(secondEquipment.condition).toBe('Good');
+      expect(firstEquipment.save).toHaveBeenCalled();
+      expect(secondEquipment.save).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('should update the exact equipment record when only a single returned item condition is present', async () => {
+      req.params = { id: 'borrow-456' };
+      req.body = { status: 'Returned', condition: 'Damaged' };
+
+      const fakeBorrowing = {
+        _id: 'borrow-456',
+        Name: 'Player Two',
+        fullname: 'Player Two',
+        equipment: 'Basketball',
+        quantity: 1,
+        qty: 1,
+        referenceIds: ['BASK-04-001'],
+        referenceConditions: [],
+        condition: 'Good',
+        contactNo: '',
+        facebookAccount: '',
+        status: 'Out Now',
+        borrowDate: new Date(),
+        borrowTimestamp: { date: '2026-08-30', time: '09:00 AM' }
+      };
+
+      const equipmentItem = {
+        _id: 'eq-3',
+        name: 'Basketball',
+        referenceId: 'BASK-04-001',
+        condition: 'Good',
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Borrowing.findByIdAndUpdate.mockResolvedValue({
+        ...fakeBorrowing,
+        status: 'Completed',
+        condition: 'Damaged'
+      });
+      Equipment.findOne.mockResolvedValue(equipmentItem);
+
+      await updateBorrowingRecord(req, res);
+
+      expect(Equipment.findOne).toHaveBeenCalledWith({ referenceId: 'BASK-04-001' });
+      expect(equipmentItem.condition).toBe('Damaged');
+      expect(equipmentItem.save).toHaveBeenCalled();
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('should only update the exact reference ID when a single condition is attached to a multi-item borrowing', async () => {
+      req.params = { id: 'borrow-789' };
+      req.body = { status: 'Returned', condition: 'Damaged' };
+
+      const fakeBorrowing = {
+        _id: 'borrow-789',
+        Name: 'Player Three',
+        fullname: 'Player Three',
+        equipment: 'Basketball',
+        quantity: 2,
+        qty: 2,
+        referenceIds: ['BB-001', 'BB-002'],
+        referenceConditions: ['Damaged'],
+        condition: 'Good',
+        contactNo: '',
+        facebookAccount: '',
+        status: 'Out Now',
+        borrowDate: new Date(),
+        borrowTimestamp: { date: '2026-08-30', time: '09:00 AM' }
+      };
+
+      const stockEquipment = {
+        _id: 'eq-stock',
+        name: 'Basketball',
+        onLoan: 3,
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      const firstEquipment = {
+        _id: 'eq-4',
+        name: 'Basketball',
+        referenceId: 'BB-001',
+        condition: 'Good',
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Borrowing.findByIdAndUpdate.mockResolvedValue({
+        ...fakeBorrowing,
+        status: 'Completed',
+        condition: 'Damaged',
+        referenceConditions: ['Damaged'],
+        referenceIds: ['BB-001', 'BB-002']
+      });
+      Equipment.findOne
+        .mockResolvedValueOnce(stockEquipment)
+        .mockResolvedValueOnce(firstEquipment);
+
+      await updateBorrowingRecord(req, res);
+
+      expect(Equipment.findOne).toHaveBeenNthCalledWith(1, { name: 'Basketball' });
+      expect(Equipment.findOne).toHaveBeenNthCalledWith(2, { referenceId: 'BB-001' });
+      expect(firstEquipment.condition).toBe('Damaged');
+      expect(firstEquipment.save).toHaveBeenCalled();
       expect(res.statusCode).toBe(200);
     });
   });
