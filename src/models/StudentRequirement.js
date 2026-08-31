@@ -8,8 +8,21 @@ const StudentRequirementSchema = new mongoose.Schema({
   },
   requirementType: {
     type: String,
-    enum: ['medical', 'cor', 'psa', 'insurance', 'profile', 'consent', 'other'],
+    enum: ['medical', 'cor', 'psa', 'insurance', 'profile', 'consent', 'other', 'tor'],
     required: true
+  },
+  participationType: {
+    type: String,
+    enum: ['Intrams', 'STRASUC'],
+    default: 'Intrams'
+  },
+  customRequirementId: {
+    type: String,
+    default: ''
+  },
+  customRequirementLabel: {
+    type: String,
+    default: ''
   },
   fileName: {
     type: String,

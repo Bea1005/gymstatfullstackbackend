@@ -19,6 +19,9 @@ describe('Borrowing Controller Unit Tests', () => {
     req = httpMocks.createRequest();
     res = httpMocks.createResponse();
     jest.clearAllMocks();
+    Equipment.find.mockResolvedValue([]);
+    Equipment.findOne.mockReset();
+    Equipment.create.mockReset();
   });
 
   describe('GET /admin/borrowing (getBorrowingRecords)', () => {
@@ -197,6 +200,58 @@ describe('Borrowing Controller Unit Tests', () => {
 
       expect(res.statusCode).toBe(400);
       expect(res._getJSONData().message).toBe('Item already returned');
+    });
+
+    it('should keep the damaged reference ID and create a replacement item when a returned item is damaged', async () => {
+      req.params = { id: 'borrow-damaged' };
+      const fakeBorrowing = {
+        _id: 'borrow-damaged',
+        Name: 'Prof. Juan',
+        equipment: 'Volleyball',
+        quantity: 1,
+        qty: 1,
+        status: 'Out Now',
+        referenceIds: ['VOL-01'],
+        referenceConditions: ['Damaged'],
+        borrowDate: new Date(),
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      const damagedEquipment = {
+        _id: 'equip-vol-01',
+        name: 'Volleyball',
+        referenceId: 'VOL-01',
+        condition: 'Good',
+        onLoan: 1,
+        totalStock: 1,
+        save: jest.fn().mockResolvedValue(true)
+      };
+
+      Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Equipment.findOne
+        .mockResolvedValueOnce(damagedEquipment) // name lookup before return
+        .mockResolvedValueOnce(damagedEquipment) // reference lookup during sync
+        .mockResolvedValueOnce(damagedEquipment) // original equipment lookup for replacement
+        .mockResolvedValueOnce(null); // duplicate replacement check
+      Equipment.create.mockResolvedValue({
+        _id: 'equip-vol-04',
+        name: 'Volleyball',
+        referenceId: 'VOL-04',
+        condition: 'Good',
+        totalStock: 1,
+        onLoan: 0,
+        available: 1
+      });
+
+      await returnBorrowedItem(req, res);
+
+      expect(damagedEquipment.condition).toBe('Damaged');
+      expect(Equipment.create).toHaveBeenCalledWith(expect.objectContaining({
+        name: 'Volleyball',
+        referenceId: expect.stringMatching(/^VOL-/),
+        condition: 'Good'
+      }));
+      expect(res.statusCode).toBe(200);
     });
   });
 

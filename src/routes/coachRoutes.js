@@ -1,7 +1,54 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
+const StudentRequirement = require('../models/StudentRequirement');
 const { protect, authorize } = require('../middleware/auth');
+
+const REQUIRED_REQUIREMENT_TYPES = ['medical', 'cor', 'psa', 'insurance', 'profile', 'consent'];
+
+const getRequirementLabel = (type) => {
+  const labels = {
+    medical: 'Medical Certificate',
+    cor: 'Certificate of Registration',
+    psa: 'PSA',
+    insurance: 'Insurance',
+    profile: 'Student Profile',
+    consent: 'Parent Consent',
+  };
+  return labels[type] || type;
+};
+
+const getStudentRequirementsEligibility = async (studentId) => {
+  const submissions = await StudentRequirement.find({ studentId }).sort({ uploadDate: -1 }).lean();
+  const latestByType = new Map();
+
+  for (const submission of submissions) {
+    const normalizedType = String(submission.requirementType || '').trim().toLowerCase();
+    if (!REQUIRED_REQUIREMENT_TYPES.includes(normalizedType) || latestByType.has(normalizedType)) continue;
+    latestByType.set(normalizedType, submission);
+  }
+
+  const missing = [];
+  const incomplete = [];
+
+  for (const type of REQUIRED_REQUIREMENT_TYPES) {
+    const latest = latestByType.get(type);
+    if (!latest) {
+      missing.push(getRequirementLabel(type));
+      continue;
+    }
+
+    if (String(latest.status || '').toLowerCase() !== 'approved') {
+      incomplete.push(getRequirementLabel(type));
+    }
+  }
+
+  return {
+    eligible: missing.length === 0 && incomplete.length === 0,
+    missing,
+    incomplete,
+  };
+};
 
 // GET coach profile
 router.get('/coach/profile', protect, authorize('coach'), async (req, res) => {
@@ -65,23 +112,31 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
     }
 
     const athletes = await User.find(filter).select('-password').lean();
+    const eligibleAthletes = [];
 
-    return res.json(athletes.map((athlete) => ({
-      _id: athlete._id,
-      id: athlete.id || athlete._id,
-      fullname: athlete.fullname || '',
-      email: athlete.email || '',
-      department: athlete.department || '',
-      yearLevel: athlete.yearLevel || '',
-      dateOfBirth: athlete.dateOfBirth || athlete.dob || '',
-      dob: athlete.dob || athlete.dateOfBirth || '',
-      athleteStatus: athlete.athleteStatus || '',
-      branchCampus: athlete.branchCampus || '',
-      profilePhoto: athlete.profilePhoto || '',
-      sport: athlete.sport || '',
-      createdAt: athlete.createdAt,
-      updatedAt: athlete.updatedAt,
-    })));
+    for (const athlete of athletes) {
+      const eligibility = await getStudentRequirementsEligibility(athlete._id);
+      if (eligibility.eligible) {
+        eligibleAthletes.push({
+          _id: athlete._id,
+          id: athlete.id || athlete._id,
+          fullname: athlete.fullname || '',
+          email: athlete.email || '',
+          department: athlete.department || '',
+          yearLevel: athlete.yearLevel || '',
+          dateOfBirth: athlete.dateOfBirth || athlete.dob || '',
+          dob: athlete.dob || athlete.dateOfBirth || '',
+          athleteStatus: athlete.athleteStatus || '',
+          branchCampus: athlete.branchCampus || '',
+          profilePhoto: athlete.profilePhoto || '',
+          sport: athlete.sport || '',
+          createdAt: athlete.createdAt,
+          updatedAt: athlete.updatedAt,
+        });
+      }
+    }
+
+    return res.json(eligibleAthletes);
   } catch (error) {
     console.error('Coach athletes error:', error);
     return res.status(500).json({ message: 'Server error while fetching coach athletes' });
@@ -98,6 +153,15 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
 
     const student = await User.findOne({ _id: studentId, role: 'student' });
     if (!student) return res.status(404).json({ message: 'Student not found' });
+
+    const eligibility = await getStudentRequirementsEligibility(student._id);
+    if (!eligibility.eligible) {
+      return res.status(400).json({
+        message: 'This student-athlete cannot be added yet because their requirements are not complete.',
+        eligibility,
+      });
+    }
+
     student.sport = sport || req.user?.sport || student.sport || '';
     await student.save();
     return res.status(200).json({ success: true, data: student.toObject() });
@@ -149,7 +213,21 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
 router.get('/coach/student-directory', protect, authorize('coach'), async (req, res) => {
   try {
     const students = await User.find({ role: 'student' }).select('-password').lean();
-    return res.json(students);
+    const eligibleStudents = [];
+
+    for (const student of students) {
+      const eligibility = await getStudentRequirementsEligibility(student._id);
+      if (eligibility.eligible) {
+        eligibleStudents.push({
+          ...student,
+          id: student.id || student._id,
+          studentId: student.id || student.studentId || student._id,
+          username: student.username || '',
+        });
+      }
+    }
+
+    return res.json(eligibleStudents);
   } catch (error) {
     console.error('Coach student directory error:', error);
     return res.status(500).json({ message: 'Server error while fetching students' });

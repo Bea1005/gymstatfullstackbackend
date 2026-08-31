@@ -113,10 +113,12 @@ exports.uploadRequirement = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const { requirementType, sport } = req.body;
+    const { requirementType, sport, participationType, requirementId, customRequirementLabel } = req.body;
+    const normalizedRequirementType = String(requirementType || '').trim().toLowerCase();
+    const normalizedParticipationType = participationType === 'STRASUC' ? 'STRASUC' : 'Intrams';
+    const customRequirementKey = requirementId ? String(requirementId).trim() : '';
 
-    if (!requirementType) {
-      // Delete uploaded file if validation fails
+    if (!normalizedRequirementType) {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({ success: false, message: 'Requirement type is required' });
     }
@@ -129,16 +131,24 @@ exports.uploadRequirement = async (req, res) => {
     const currentAcademicYear = getAcademicYearLabel();
     const normalizedFilePath = path.resolve(req.file.path);
 
-    const reusableSubmission = await StudentRequirement.findOne({
+    const replacementQuery = {
       studentId,
-      requirementType,
+      requirementType: normalizedRequirementType,
+      participationType: normalizedParticipationType,
+    };
+
+    if (normalizedRequirementType === 'other' && customRequirementKey) {
+      replacementQuery.customRequirementId = customRequirementKey;
+    }
+
+    const reusableSubmission = await StudentRequirement.findOne({
+      ...replacementQuery,
       status: 'approved',
       requirementStatus: 'reusable'
     }).sort({ uploadDate: -1 });
 
     const existingRejectedSubmission = await StudentRequirement.findOne({
-      studentId,
-      requirementType,
+      ...replacementQuery,
       status: 'rejected'
     }).sort({ uploadDate: -1 });
 
@@ -166,6 +176,9 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.archivedAt = null;
       replacementTarget.archivedReason = '';
       replacementTarget.expiresAt = null;
+      replacementTarget.participationType = normalizedParticipationType;
+      replacementTarget.customRequirementId = normalizedRequirementType === 'other' ? (customRequirementKey || replacementTarget.customRequirementId || '') : '';
+      replacementTarget.customRequirementLabel = normalizedRequirementType === 'other' ? (customRequirementLabel || replacementTarget.customRequirementLabel || '') : '';
       await replacementTarget.save();
 
       if (previousFilePath && previousFilePath !== normalizedFilePath && fs.existsSync(previousFilePath)) {
@@ -181,7 +194,10 @@ exports.uploadRequirement = async (req, res) => {
 
     const requirement = new StudentRequirement({
       studentId,
-      requirementType,
+      requirementType: normalizedRequirementType,
+      participationType: normalizedParticipationType,
+      customRequirementId: normalizedRequirementType === 'other' ? customRequirementKey : '',
+      customRequirementLabel: normalizedRequirementType === 'other' ? (customRequirementLabel || '') : '',
       fileName: req.file.originalname,
       fileType: req.file.mimetype,
       fileSize: req.file.size,
@@ -199,7 +215,6 @@ exports.uploadRequirement = async (req, res) => {
       data: requirement
     });
   } catch (error) {
-    // Clean up file if error occurs
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
@@ -212,7 +227,7 @@ exports.uploadRequirement = async (req, res) => {
 // @access Private (Student only)
 exports.getStudentRequirements = async (req, res) => {
   try {
-    const { status, requirementType, sort = '-uploadDate' } = req.query;
+    const { status, requirementType, participationType, sort = '-uploadDate' } = req.query;
 
     const studentId = await resolveStudentObjectId(req);
     if (!studentId) {
@@ -225,6 +240,7 @@ exports.getStudentRequirements = async (req, res) => {
     let filter = { studentId };
     if (status) filter.status = status;
     if (requirementType) filter.requirementType = requirementType;
+    if (participationType) filter.participationType = participationType;
 
     const requirements = await StudentRequirement.find(filter)
       .sort(sort)

@@ -3,6 +3,7 @@ const Equipment = require('../models/Equipment');
 
 const VALID_CONDITION_VALUES = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'];
 
+const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 const normalizeTimestampObject = (value) => {
   if (!value || typeof value !== 'object') {
@@ -30,6 +31,90 @@ const normalizeBorrowedBy = (value) => {
     return /^[a-fA-F0-9]{24}$/.test(idValue) ? idValue : null;
   }
   return null;
+};
+
+const generateReplacementReferenceId = async (equipmentName, damagedReferenceId) => {
+  const normalizedName = normalizeText(equipmentName || 'Equipment');
+  const originalReferenceId = normalizeText(damagedReferenceId);
+  const basePrefix = (() => {
+    if (!originalReferenceId) {
+      return `${normalizedName.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '')}-`;
+    }
+
+    const match = originalReferenceId.match(/^(.*?)(\d+)([^0-9]*)$/);
+    if (match) {
+      return match[1];
+    }
+
+    return `${originalReferenceId}-`;
+  })();
+
+  let existingRecords = [];
+  if (Equipment && typeof Equipment.find === 'function') {
+    const records = await Equipment.find({
+      name: normalizedName,
+      referenceId: { $regex: `^${escapeRegExp(basePrefix)}` }
+    });
+    existingRecords = Array.isArray(records) ? records : [];
+  }
+
+  const usedNumbers = new Set();
+  existingRecords.forEach((record) => {
+    const referenceId = normalizeText(record && record.referenceId);
+    const match = referenceId.match(new RegExp(`^${escapeRegExp(basePrefix)}(\\d+)(?:[^0-9]*)$`));
+    if (match) {
+      usedNumbers.add(Number(match[1]));
+    }
+  });
+
+  let nextNumber = 1;
+  while (usedNumbers.has(nextNumber)) {
+    nextNumber += 1;
+  }
+
+  const width = Math.max(
+    2,
+    ...Array.from(usedNumbers, (value) => String(value).length),
+    String(nextNumber).length
+  );
+
+  return `${basePrefix}${String(nextNumber).padStart(width, '0')}`;
+};
+
+const createReplacementForDamagedReference = async (equipmentName, damagedReferenceId) => {
+  const normalizedName = normalizeText(equipmentName);
+  const damagedId = normalizeText(damagedReferenceId);
+
+  if (!damagedId) {
+    return null;
+  }
+
+  const originalEquipment = await Equipment.findOne({ referenceId: damagedId });
+  if (!originalEquipment) {
+    return null;
+  }
+
+  const replacementReferenceId = await generateReplacementReferenceId(
+    originalEquipment.name || normalizedName,
+    damagedId
+  );
+
+  const duplicateReplacement = await Equipment.findOne({ referenceId: replacementReferenceId });
+  if (duplicateReplacement) {
+    return duplicateReplacement;
+  }
+
+  return Equipment.create({
+    name: originalEquipment.name || normalizedName,
+    type: originalEquipment.type || 'Sports Equipment',
+    category: originalEquipment.category || originalEquipment.type || 'Sports Equipment',
+    referenceId: replacementReferenceId,
+    totalStock: 1,
+    onLoan: 0,
+    available: 1,
+    condition: 'Good',
+    status: 'Available'
+  });
 };
 
 const syncReferenceConditionsToEquipment = async (borrowing) => {
@@ -372,6 +457,21 @@ const updateBorrowingRecord = async (req, res) => {
 
     if (Array.isArray(updatedBorrowing.referenceIds)) {
       await syncReferenceConditionsToEquipment(updatedBorrowing);
+
+      const isDamagedReturn = (updateData.status === 'Returned' || updatedBorrowing.status === 'Completed')
+        && Array.isArray(updatedBorrowing.referenceConditions)
+        && updatedBorrowing.referenceConditions.some((condition) => condition === 'Damaged');
+
+      if (isDamagedReturn) {
+        const damagedReferenceIds = updatedBorrowing.referenceIds.filter((referenceId, index) => {
+          const condition = updatedBorrowing.referenceConditions[index] || updatedBorrowing.referenceConditions[0] || updatedBorrowing.condition;
+          return referenceId && condition === 'Damaged';
+        });
+
+        for (const damagedReferenceId of damagedReferenceIds) {
+          await createReplacementForDamagedReference(updatedBorrowing.equipment, damagedReferenceId);
+        }
+      }
     }
     
     // Populate user info if available
@@ -459,6 +559,15 @@ const returnBorrowedItem = async (req, res) => {
 
     if (Array.isArray(borrowing.referenceIds)) {
       await syncReferenceConditionsToEquipment(borrowing);
+
+      const damagedReferenceIds = borrowing.referenceIds.filter((referenceId, index) => {
+        const condition = borrowing.referenceConditions[index] || borrowing.referenceConditions[0] || borrowing.condition;
+        return referenceId && condition === 'Damaged';
+      });
+
+      for (const damagedReferenceId of damagedReferenceIds) {
+        await createReplacementForDamagedReference(borrowing.equipment, damagedReferenceId);
+      }
     }
     
     res.status(200).json({
