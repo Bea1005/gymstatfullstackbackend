@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const { hashPassword } = require('../config/passwords');
 const router = express.Router();
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
@@ -150,7 +150,7 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     }
 
     // Hash password and create user
-    const hashedPassword = await bcrypt.hash(rawPassword, 10);
+    const hashedPassword = await hashPassword(rawPassword);
     const userPayload = {
       fullname,
       username,

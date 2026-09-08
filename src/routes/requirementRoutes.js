@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
 const upload = require('../config/multer');
+const { validateRequestBody } = require('../middleware/requestValidation');
 const {
   createRequirement,
   publishRequirement,
@@ -49,7 +50,7 @@ router.get('/admin/submissions', protect, authorize('admin'), getAllSubmissions)
 router.get('/', protect, authorize('admin'), getAllRequirements);
 
 // Create new requirement (with file upload)
-router.post('/', protect, authorize('admin'), upload.single('file'), createRequirement);
+router.post('/', protect, authorize('admin'), upload.single('file'), validateRequestBody, createRequirement);
 
 // Publish requirement (makes it visible to students)
 router.post('/:id/publish', protect, authorize('admin'), publishRequirement);

@@ -16,8 +16,8 @@ const {
 // ============================================
 router.post('/', createScheduleRequest);
 
-// Debug route (optional - can be removed in production)
-router.get('/debug/test', (req, res) => {
+// Diagnostic route requires authentication.
+router.get('/debug/test', protect, (req, res) => {
   res.json({
     message: 'Schedule requests API is working with MongoDB!',
     publicRoute: 'POST / is public - No token needed!',

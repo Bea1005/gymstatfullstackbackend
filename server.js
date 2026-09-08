@@ -1,18 +1,26 @@
 require('dotenv').config();
+const { installSafeConsole } = require('./src/config/logger');
+installSafeConsole();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const bcrypt = require('bcryptjs');
 const connectDB = require('./src/config/db');
+const { corsOptions } = require('./src/config/cors');
+const { getJWTSecret } = require('./src/config/security');
+const { hashPassword } = require('./src/config/passwords');
+const { apiRateLimiter } = require('./src/config/rateLimit');
 const User = require('./src/models/User');
 const { protect, authorize } = require('./src/middleware/auth');
+const { validateRequestBody } = require('./src/middleware/requestValidation');
+const { auditSecurityEvents } = require('./src/middleware/securityAudit');
 const { forgotPassword } = require('./src/controllers/authControllers');
 
 console.log('🔐 Environment Configuration:');
 console.log(`   PORT: ${process.env.PORT || 4000}`);
 console.log(`   BASE_URI: ${process.env.BASE_URI || '/api/v1'}`);
+getJWTSecret();
 
 const authRoutes = require('./src/routes/authRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
@@ -31,6 +39,11 @@ const app = express();
 const rawBaseUri = process.env.BASE_URI || '/api/v1';
 const BASE_URI = rawBaseUri.replace(/\/+$|^\s+|\s+$/g, '') || '/api/v1';
 const PORT_FILE = path.join(__dirname, '.port');
+const isProduction = process.env.NODE_ENV === 'production';
+
+if (isProduction) {
+  app.set('trust proxy', 1);
+}
 
 const writePortFile = (port) => {
   fs.writeFileSync(PORT_FILE, String(port), 'utf8');
@@ -61,24 +74,45 @@ const listenWithRetry = (preferredPort) => {
   });
 };
 
-// CORS
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:3000',
-  process.env.FRONTEND_URL || 'https://gymstatwebbased.vercel.app',
-];
+if (isProduction) {
+  app.use((req, res, next) => {
+    const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0].trim();
+    const requestIsHttps = forwardedProtocol === 'https' || req.secure;
 
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true,
-}));
-app.options('*', cors({ origin: allowedOrigins, credentials: true }));
+    if (!requestIsHttps) {
+      return res.redirect(308, `https://${req.get('host')}${req.originalUrl}`);
+    }
+
+    res.setHeader(
+      'Strict-Transport-Security',
+      'max-age=31536000; includeSubDomains'
+    );
+    return next();
+  });
+}
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Middleware
 app.use(express.json());
+app.use(auditSecurityEvents);
+app.use(validateRequestBody);
 app.use(cookieParser());
 app.use('/uploads', express.static('uploads'));
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode >= 500) {
+      return originalJson({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+    return originalJson(body);
+  };
+  next();
+});
 
 // ============================================================
 // ⚠️ IMPORTANT: PUBLIC ROUTES - NO AUTHENTICATION REQUIRED
@@ -261,8 +295,7 @@ const handleProfileUpdate = async (req, res) => {
         });
       }
 
-      const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(passwordValue, salt);
+      user.password = await hashPassword(passwordValue);
     }
 
     if (notifications !== undefined) {
@@ -317,17 +350,17 @@ const handleProfileUpdate = async (req, res) => {
   }
 };
 
-app.get('/profile', protect, handleProfileGet);
-app.get(`${BASE_URI}/profile`, protect, handleProfileGet);
-app.put('/profile', protect, upload.single('profilePhoto'), handleProfileUpdate);
-app.put(`${BASE_URI}/profile`, protect, upload.single('profilePhoto'), handleProfileUpdate);
+app.get('/profile', protect, apiRateLimiter, handleProfileGet);
+app.get(`${BASE_URI}/profile`, protect, apiRateLimiter, handleProfileGet);
+app.put('/profile', protect, apiRateLimiter, upload.single('profilePhoto'), validateRequestBody, handleProfileUpdate);
+app.put(`${BASE_URI}/profile`, protect, apiRateLimiter, upload.single('profilePhoto'), validateRequestBody, handleProfileUpdate);
 
 // ============================================================
 // 🔒 STUDENT ROUTES - Handle their own authentication
 // Mount these BEFORE admin routes to prevent global protect
 // ============================================================
-app.use(BASE_URI + '/student', studentRoutes);
-app.use(BASE_URI + '/requirements', requirementRoutes);
+app.use(BASE_URI + '/student', apiRateLimiter, studentRoutes);
+app.use(BASE_URI + '/requirements', apiRateLimiter, requirementRoutes);
 
 // ============================================================
 // 🔒 PROTECTED ROUTES - Authentication REQUIRED
@@ -343,12 +376,12 @@ app.use(BASE_URI + '/requirements', requirementRoutes);
 // Other protected routes
 // Mount screener routes before admin routes so specific screener paths
 // are handled by the screener router (prevents accidental admin-only matches).
-app.use(BASE_URI, protect, screenerRoutes);
-app.use(BASE_URI, protect, adminRoutes);
-app.use(BASE_URI, protect, borrowingRoutes);
-app.use(BASE_URI, protect, equipmentRoutes);
-app.use(BASE_URI, protect, coachRoutes);
-app.use(BASE_URI + '/users', protect, userRoutes);
+app.use(BASE_URI, protect, apiRateLimiter, screenerRoutes);
+app.use(BASE_URI, protect, apiRateLimiter, adminRoutes);
+app.use(BASE_URI, protect, apiRateLimiter, borrowingRoutes);
+app.use(BASE_URI, protect, apiRateLimiter, equipmentRoutes);
+app.use(BASE_URI, protect, apiRateLimiter, coachRoutes);
+app.use(BASE_URI + '/users', protect, apiRateLimiter, userRoutes);
 
 // ============================================================
 // ERROR HANDLERS
@@ -365,6 +398,13 @@ app.use((req, res) => {
 
 // Error handler
 app.use((err, req, res, next) => {
+  if (err.code === 'CORS_NOT_ALLOWED') {
+    return res.status(403).json({
+      success: false,
+      message: 'Origin is not allowed'
+    });
+  }
+
   console.error('Error:', err.message);
   res.status(500).json({ 
     success: false,

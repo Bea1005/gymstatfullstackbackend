@@ -22,7 +22,7 @@ const connectDB = async () => {
 
       if (dnsServers.length > 0) {
         dns.setServers(dnsServers);
-        console.log('🌐 DNS Servers configured:', dnsServers.join(', '));
+        console.log('🌐 Custom DNS servers configured');
       }
     }
 
@@ -33,25 +33,21 @@ const connectDB = async () => {
       maxPoolSize: 10
     });
 
-    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
-    console.log(`✅ Database: ${conn.connection.name}`);
+    console.log('✅ MongoDB connection established');
 
     await User.initializeCollections();
     
     return conn;
     
   } catch (error) {
-    console.error('❌ MongoDB Connection Error:', error.message);
+    console.error('❌ MongoDB connection failed');
     
     if (error.message.includes('ENOTFOUND') || error.message.includes('getaddrinfo')) {
-      console.error('💡 DNS resolution failed. Possible fixes:');
-      console.error('   1. Check your internet connection');
-      console.error('   2. Verify MongoDB Atlas cluster is running');
-      console.error('   3. Try different DNS servers in .env: MONGO_DNS_SERVERS=8.8.8.8,1.1.1.1');
+      console.error('💡 MongoDB DNS resolution failed');
     } else if (error.message.includes('authentication')) {
-      console.error('💡 Authentication failed. Check your MongoDB credentials in .env');
+      console.error('💡 MongoDB authentication failed');
     } else if (error.message.includes('timeout')) {
-      console.error('💡 Connection timeout. Check if MongoDB Atlas IP whitelist includes your IP');
+      console.error('💡 MongoDB connection timed out');
     }
     
     throw error;
@@ -64,7 +60,7 @@ mongoose.connection.on('connected', () => {
 });
 
 mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
+  console.error('❌ Mongoose connection error');
 });
 
 mongoose.connection.on('disconnected', () => {

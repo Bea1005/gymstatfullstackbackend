@@ -1,15 +1,16 @@
-const bcrypt = require('bcryptjs');
 const connectDB = require('./src/config/db');
 const User = require('./src/models/User');
 const jwt = require('jsonwebtoken');
+const { getJWTSecret } = require('./src/config/security');
+const { hashPassword } = require('./src/config/passwords');
 (async () => {
   await connectDB();
   let user = await User.findOne({ id: 'ADMINTEST01' });
   if (!user) {
-    const hashed = await bcrypt.hash('password123', 10);
+    const hashed = await hashPassword('password123');
     user = await User.create({ fullname: 'Admin Test', username: 'admintest', email: 'admintest@example.com', password: hashed, role: 'admin', id: 'ADMINTEST01' });
   }
-  const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET || 'your_secret_key_here', { expiresIn: '7d' });
+  const token = jwt.sign({ id: user._id, role: user.role }, getJWTSecret(), { expiresIn: '7d' });
 
   const createRes = await fetch('http://localhost:4000/api/v1/admin/borrowing', {
     method: 'POST',

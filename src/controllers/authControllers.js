@@ -1,6 +1,7 @@
 const User = require('../models/User');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { getJWTSecret } = require('../config/security');
+const { hashPassword, verifyPassword } = require('../config/passwords');
 
 const detectRoleFromId = (id) => {
   const trimmedId = String(id || '').trim();
@@ -27,8 +28,6 @@ const detectRoleFromId = (id) => {
 const isValidId = (id) => {
   return Boolean(detectRoleFromId(id));
 };
-
-const getJWTSecret = () => process.env.JWT_SECRET || 'your_super_secret_key_change_this_in_production';
 
 const buildUserResponse = (user, roleOverride) => {
   const resolvedRole = String(roleOverride || user?.role || 'student').trim().toLowerCase();
@@ -97,8 +96,7 @@ exports.forgotPassword = async (req, res) => {
       });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
+    const hashedPassword = await hashPassword(newPassword);
 
     user.password = hashedPassword;
     await user.save();
@@ -196,8 +194,7 @@ exports.register = async (req, res) => {
       }
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await hashPassword(password);
 
     const userPayload = {
       fullname,
@@ -245,13 +242,10 @@ exports.register = async (req, res) => {
 // Login Controller - COMPLETE FIXED
 exports.login = async (req, res) => {
   try {
-    console.log('🔐 Login attempt for ID:', req.body.id);
-
     const id = req.body.id?.trim();
     const password = req.body.password;
 
     if (!id || !password) {
-      console.log('❌ Login failed: Missing credentials');
       return res.status(400).json({ 
         success: false,
         message: 'Please provide ID and password' 
@@ -262,7 +256,6 @@ exports.login = async (req, res) => {
     const user = await User.findOne({ id });
 
     if (!user) {
-      console.log(`❌ Login failed: User not found with ID: ${id}`);
       return res.status(401).json({
         success: false,
         message: 'No account found for this ID.'
@@ -270,14 +263,17 @@ exports.login = async (req, res) => {
     }
 
     // Check password
-    const isMatch = await bcrypt.compare(password, user.password);
+    const passwordCheck = await verifyPassword(password, user.password);
 
-    if (!isMatch) {
-      console.log(`❌ Login failed: Incorrect password for ID: ${id}`);
+    if (!passwordCheck.valid) {
       return res.status(401).json({
         success: false,
         message: 'Incorrect password for this account.'
       });
+    }
+
+    if (passwordCheck.needsRehash) {
+      user.password = await hashPassword(password);
     }
 
     const detectedRole = detectRoleFromId(user.id);

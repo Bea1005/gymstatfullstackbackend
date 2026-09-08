@@ -1,8 +1,7 @@
 const connectDB = require('../src/config/db');
 const User = require('../src/models/User');
 const jwt = require('jsonwebtoken');
-
-const getJWTSecret = () => process.env.JWT_SECRET || 'your_super_secret_key_change_this_in_production';
+const { getJWTSecret } = require('../src/config/security');
 
 (async () => {
   try {
