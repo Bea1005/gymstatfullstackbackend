@@ -1,9 +1,32 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const StudentRequirement = require('../models/StudentRequirement');
+
+router.get('/screener/requirements/:id/download', protect, authorize('screener', 'admin'), async (req, res) => {
+  try {
+    const submission = await StudentRequirement.findById(req.params.id).lean();
+
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Requirement not found' });
+    }
+
+    const storedPath = submission.filePath || '';
+    const uploadPath = path.join(__dirname, '../../uploads/requirements', path.basename(storedPath));
+    const filePath = fs.existsSync(storedPath) ? storedPath : uploadPath;
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
+    }
+
+    return res.download(filePath, submission.fileName || path.basename(filePath));
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Unable to download uploaded file' });
+  }
+});
 
 const requirementKeyLabels = {
   medical: 'Medical Certificate',
@@ -151,7 +174,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         label: requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: submission.fileName || 'Uploaded file',
         fileType: submission.fileType || '',
-        fileUrl: submission.filePath ? `/uploads/requirements/${path.basename(submission.filePath)}` : '',
+        fileUrl: submission.filePath ? `/screener/requirements/${submission._id}/download` : '',
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
         hasUpload: true
