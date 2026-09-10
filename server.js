@@ -6,6 +6,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const mongoose = require('mongoose');
 const connectDB = require('./src/config/db');
 const { corsOptions } = require('./src/config/cors');
 const { getJWTSecret } = require('./src/config/security');
@@ -121,7 +122,12 @@ app.use((req, res, next) => {
 
 // 1. Health check - Public
 app.get(`${BASE_URI}/health`, (req, res) => {
-  res.json({ status: 'OK', message: 'Server is running' });
+  const databaseReady = mongoose.connection.readyState === 1;
+  res.status(databaseReady ? 200 : 503).json({
+    status: databaseReady ? 'OK' : 'DEGRADED',
+    database: databaseReady ? 'connected' : 'unavailable',
+    message: databaseReady ? 'Server is running' : 'Database is temporarily unavailable'
+  });
 });
 
 // 2. SCHEDULE REQUESTS - POST is PUBLIC (NO TOKEN NEEDED!)
@@ -405,10 +411,24 @@ app.use((err, req, res, next) => {
     });
   }
 
-  console.error('Error:', err.message);
-  res.status(500).json({ 
+  console.error('Unhandled request error:', err.message);
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      success: false,
+      message: 'The uploaded file is too large. Maximum size is 5 MB.'
+    });
+  }
+
+  if (err.message && /Only PDF, DOC, DOCX, JPG, PNG, and GIF/i.test(err.message)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Unsupported file type. Please upload a PDF, DOC, DOCX, JPG, PNG, or GIF file.'
+    });
+  }
+
+  return res.status(500).json({
     success: false,
-    message: err.message 
+    message: 'Something went wrong while processing the request. Please try again.'
   });
 });
 
