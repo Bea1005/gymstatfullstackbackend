@@ -6,6 +6,22 @@ const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const StudentRequirement = require('../models/StudentRequirement');
 
+const backendRoot = path.resolve(__dirname, '../..');
+const uploadRoot = path.join(backendRoot, 'uploads');
+const resolveStoredFilePath = (storedPath) => {
+  if (!storedPath) return '';
+  const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
+  const candidates = path.isAbsolute(normalizedPath)
+    ? [normalizedPath]
+    : [
+        path.resolve(backendRoot, normalizedPath),
+        path.resolve(backendRoot, '..', normalizedPath),
+        path.resolve(uploadRoot, normalizedPath.replace(/^uploads[\\/]/i, ''))
+      ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+};
+
 router.get('/screener/requirements/:id/download', protect, authorize('screener', 'admin'), async (req, res) => {
   try {
     const submission = await StudentRequirement.findById(req.params.id).lean();
@@ -15,8 +31,7 @@ router.get('/screener/requirements/:id/download', protect, authorize('screener',
     }
 
     const storedPath = submission.filePath || '';
-    const uploadPath = path.join(__dirname, '../../uploads/requirements', path.basename(storedPath));
-    const filePath = fs.existsSync(storedPath) ? storedPath : uploadPath;
+    const filePath = resolveStoredFilePath(storedPath);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
@@ -166,18 +181,20 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
 
       // Add the requirement to the student's requirements
       const studentEntry = studentsById.get(studentId);
+      const storedFilePath = resolveStoredFilePath(submission.filePath);
+      const hasUpload = Boolean(storedFilePath && fs.existsSync(storedFilePath));
       studentEntry.requirements[normalizedKey] = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
         status: normalizeRequirementStatus(submission.status),
         resubmitted: submission.resubmitted || false,
         label: requirementKeyLabels[submission.requirementType] || submission.requirementType,
-        fileName: submission.fileName || 'Uploaded file',
-        fileType: submission.fileType || '',
-        fileUrl: submission.filePath ? `/screener/requirements/${submission._id}/download` : '',
+        fileName: hasUpload ? (submission.fileName || 'Uploaded file') : '',
+        fileType: hasUpload ? (submission.fileType || '') : '',
+        fileUrl: hasUpload ? `/screener/requirements/${submission._id}/download` : '',
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
-        hasUpload: true
+        hasUpload
       };
     }
 

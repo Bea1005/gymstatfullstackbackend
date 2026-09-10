@@ -5,6 +5,22 @@ const User = require('../models/User');
 const fs = require('fs');
 const path = require('path');
 
+const backendRoot = path.resolve(__dirname, '../..');
+const uploadRoot = path.join(backendRoot, 'uploads');
+const resolveStoredFilePath = (storedPath) => {
+  if (!storedPath) return '';
+  const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
+  const candidates = path.isAbsolute(normalizedPath)
+    ? [normalizedPath]
+    : [
+        path.resolve(backendRoot, normalizedPath),
+        path.resolve(backendRoot, '..', normalizedPath),
+        path.resolve(uploadRoot, normalizedPath.replace(/^uploads[\\/]/i, ''))
+      ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+};
+
 const getAcademicYearLabel = (date = new Date()) => {
   const year = date.getFullYear();
   const month = date.getMonth();
@@ -129,7 +145,7 @@ exports.uploadRequirement = async (req, res) => {
     }
 
     const currentAcademicYear = getAcademicYearLabel();
-    const normalizedFilePath = path.resolve(req.file.path);
+    const normalizedFilePath = path.relative(path.resolve(__dirname, '../..'), req.file.path).replace(/\\/g, '/');
 
     const replacementQuery = {
       studentId,
@@ -155,7 +171,7 @@ exports.uploadRequirement = async (req, res) => {
     const replacementTarget = reusableSubmission || existingRejectedSubmission;
 
     if (replacementTarget) {
-      const previousFilePath = replacementTarget.filePath;
+      const previousFilePath = resolveStoredFilePath(replacementTarget.filePath);
       replacementTarget.fileName = req.file.originalname;
       replacementTarget.fileType = req.file.mimetype;
       replacementTarget.fileSize = req.file.size;
@@ -359,9 +375,7 @@ exports.downloadRequirement = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to download this file' });
     }
 
-    const resolvedFilePath = requirement.filePath && path.isAbsolute(requirement.filePath)
-      ? requirement.filePath
-      : path.resolve(requirement.filePath || '');
+    const resolvedFilePath = resolveStoredFilePath(requirement.filePath);
 
     // Check if file exists
     if (!resolvedFilePath || !fs.existsSync(resolvedFilePath)) {
@@ -398,8 +412,9 @@ exports.deleteRequirement = async (req, res) => {
     }
 
     // Delete file from server
-    if (fs.existsSync(requirement.filePath)) {
-      fs.unlinkSync(requirement.filePath);
+    const storedFilePath = resolveStoredFilePath(requirement.filePath);
+    if (fs.existsSync(storedFilePath)) {
+      fs.unlinkSync(storedFilePath);
     }
 
     await StudentRequirement.findByIdAndDelete(req.params.id);
