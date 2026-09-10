@@ -8,9 +8,6 @@ const Announcement = require('../models/Announcement');
 exports.createRequirement = async (req, res) => {
   try {
     console.log('📝 ADMIN: Creating new requirement');
-    console.log('📝 All body keys:', Object.keys(req.body));
-    console.log('📝 All body values:', req.body);
-    console.log('📝 File info:', req.file ? `✅ File: ${req.file.originalname} (${req.file.size} bytes)` : '❌ No file');
     
     // Check if file was uploaded
     if (!req.file) {

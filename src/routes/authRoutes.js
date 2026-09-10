@@ -4,8 +4,8 @@ const { register, login, forgotPassword } = require('../controllers/authControll
 const { loginRateLimiter } = require('../config/rateLimit');
 
 // Dapat ganito:
-router.post('/register', register);
+router.post('/register', loginRateLimiter, register);
 router.post('/login', loginRateLimiter, login);
-router.post('/forgot-password', forgotPassword);
+router.post('/forgot-password', loginRateLimiter, forgotPassword);
 
 module.exports = router;
