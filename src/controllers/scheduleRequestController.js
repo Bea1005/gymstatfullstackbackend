@@ -123,35 +123,40 @@ exports.updateScheduleRequest = async (req, res) => {
       });
     }
     
-    const updateData = { 
-      status, 
-      reviewedAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    // Add reviewer if user is authenticated
-    if (req.user && req.user._id) {
-      updateData.reviewedBy = req.user._id;
-    }
-    
-    // Add rejection reason if rejected
-    if (status === 'rejected' && rejectionReason) {
-      updateData.rejectionReason = rejectionReason;
-    }
-    
-    const updatedRequest = await ScheduleRequest.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-    
-    if (!updatedRequest) {
+    const request = await ScheduleRequest.findById(id);
+    if (!request) {
       console.log(`❌ Schedule request ${id} not found`);
       return res.status(404).json({
         success: false,
         message: 'Schedule request not found'
       });
     }
+
+    if (request.status !== 'pending') {
+      return res.status(409).json({
+        success: false,
+        message: `Schedule request has already been ${request.status}`
+      });
+    }
+
+    if (status === 'approved') {
+      const existingSchedule = await Schedule.findOne({ fromRequest: request._id });
+      if (existingSchedule) {
+        return res.status(200).json({
+          success: true,
+          message: 'Schedule request was already approved',
+          data: { request, schedule: existingSchedule }
+        });
+      }
+    }
+
+    const updateData = {
+      status,
+      reviewedAt: new Date(),
+      updatedAt: new Date()
+    };
+    if (req.user && req.user._id) updateData.reviewedBy = req.user._id;
+    if (status === 'rejected' && rejectionReason) updateData.rejectionReason = rejectionReason;
     
     console.log(`✅ Schedule request ${id} updated to ${status}`);
     
@@ -161,21 +166,24 @@ exports.updateScheduleRequest = async (req, res) => {
         console.log(`📅 Creating schedule from approved request ${id}`);
         
         const newSchedule = new Schedule({
-          event: updatedRequest.eventName,
-          startDate: updatedRequest.startDate,
-          endDate: updatedRequest.endDate,
-          startTime: updatedRequest.startTime,
-          endTime: updatedRequest.endTime,
-          prepDays: updatedRequest.prepDays || 0,
-          organization: updatedRequest.organization || '',
-          purpose: updatedRequest.purpose || '',
-          details: updatedRequest.details || '',
+          event: request.eventName,
+          startDate: request.startDate,
+          endDate: request.endDate,
+          startTime: request.startTime,
+          endTime: request.endTime,
+          prepDays: request.prepDays || 0,
+          organization: request.organization || '',
+          purpose: request.purpose || '',
+          details: request.details || '',
           status: 'active',
-          fromRequest: updatedRequest._id,
+          fromRequest: request._id,
           createdBy: req.user ? req.user._id : null
         });
         
         await newSchedule.save();
+
+        Object.assign(request, updateData);
+        await request.save();
         
         console.log(`✅ Schedule created and saved to MongoDB: ${newSchedule._id}`);
         console.log(`✅ Schedule will be visible in both Admin and Public calendars`);
@@ -184,27 +192,27 @@ exports.updateScheduleRequest = async (req, res) => {
           success: true,
           message: 'Schedule request approved and schedule created successfully',
           data: {
-            request: updatedRequest,
+            request,
             schedule: newSchedule
           }
         });
       } catch (scheduleError) {
         console.error('❌ Error creating schedule from approved request:', scheduleError);
-        // Still return success for the request update, but warn about schedule creation
-        return res.status(200).json({
-          success: true,
-          message: 'Schedule request approved, but schedule creation failed',
-          warning: 'Please create the schedule manually',
-          data: updatedRequest,
+        return res.status(500).json({
+          success: false,
+          message: 'Schedule request could not be approved because calendar creation failed',
           error: scheduleError.message
         });
       }
     }
+
+    Object.assign(request, updateData);
+    await request.save();
     
     res.status(200).json({
       success: true,
       message: `Schedule request ${status} successfully`,
-      data: updatedRequest
+      data: request
     });
   } catch (error) {
     console.error('❌ Error updating schedule request:', error);

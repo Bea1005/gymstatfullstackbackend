@@ -17,8 +17,9 @@ const router = express.Router();
 // Public routes - no authentication required
 router.get('/announcements', getAnnouncements);
 
-// Protected routes - require authentication below this
+// Protected routes - require student authentication below this
 router.use(protect);
+router.use(authorize('student'));
 
 // Student-specific routes - all protected
 router.post('/requirements', upload.single('file'), validateRequestBody, uploadRequirement);

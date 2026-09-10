@@ -160,11 +160,25 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       return res.status(400).json({ error: 'Quantity must match the number of selected reference IDs' });
     }
 
+    if (new Set(selectedReferenceIds).size !== selectedReferenceIds.length) {
+      return res.status(400).json({ error: 'Reference IDs must be unique' });
+    }
+
     const equipmentItem = await ensureEquipmentExists(equipmentName);
     if (!equipmentItem) {
       return res.status(404).json({
         error: 'Equipment not found in inventory. Please register it first.'
       });
+    }
+
+    const referenceItems = await Promise.all(
+      selectedReferenceIds.map((referenceId) => Equipment.findOne({
+        referenceId,
+        name: { $regex: `^${escapeRegExp(equipmentName)}$`, $options: 'i' }
+      }))
+    );
+    if (referenceItems.some((item) => !item)) {
+      return res.status(400).json({ error: 'One or more reference IDs do not belong to the selected equipment' });
     }
 
     const available = Math.max(0, (equipmentItem.available ?? (equipmentItem.totalStock - (equipmentItem.onLoan || 0))));
@@ -176,7 +190,9 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
     await equipmentItem.save();
 
     const borrowDate = new Date();
-    const borrowing = await Borrowing.create({
+    let borrowing;
+    try {
+      borrowing = await Borrowing.create({
       Name: borrowerName,
       fullname: borrowerName,
       contactNo: normalizeText(contactNo),
@@ -195,7 +211,12 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       condition: condition || null,
       borrowDate,
       borrowedBy: normalizeBorrowedBy(req.user?.id || req.user?._id)
-    });
+      });
+    } catch (createError) {
+      equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - selectedQuantity);
+      await equipmentItem.save();
+      throw createError;
+    }
 
     await borrowing.populate('borrowedBy', 'fullname email');
     res.status(201).json(buildBorrowingResponse(borrowing));

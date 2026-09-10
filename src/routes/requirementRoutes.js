@@ -24,6 +24,9 @@ const {
 
 // IMPORTANT: Specific routes MUST come before generic :id routes!
 
+// Get all submissions (Admin view) - MUST come before /:id route
+router.get('/admin/submissions', protect, authorize('admin'), getAllSubmissions);
+
 // Get all published requirements (Student view)
 router.get('/published', protect, authorize('student'), getPublishedRequirements);
 
@@ -42,9 +45,6 @@ router.get('/:id', protect, getRequirementById);
 // ============================================
 // ADMIN ROUTES - Protected (Admin role)
 // ============================================
-
-// Get all submissions (Admin view) - MUST come before /:id route
-router.get('/admin/submissions', protect, authorize('admin'), getAllSubmissions);
 
 // Get all requirements (Admin view - includes drafts)
 router.get('/', protect, authorize('admin'), getAllRequirements);

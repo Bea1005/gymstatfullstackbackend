@@ -249,20 +249,12 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
     }
 
     if (normalizedStatus === 'rejected') {
-      submission.status = 'rejected';
-      submission.resubmitted = false;
-      submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
-      submission.reviewedAt = new Date();
-      submission.reviewedBy = req.user?._id || req.user?.id || null;
-      submission.approvalDate = null;
-      submission.approvedBy = null;
-      await submission.save();
-
-      console.log(`✅ Requirement ${id} rejected and kept for student re-upload`);
+      const deletedSubmission = await StudentRequirement.findByIdAndDelete(id);
+      console.log(`✅ Requirement ${id} rejected and deleted for student re-upload`);
       return res.json({
         success: true,
-        message: 'Requirement rejected and kept for re-upload',
-        data: submission
+        message: 'Requirement rejected and deleted for re-upload',
+        data: deletedSubmission
       });
     }
 

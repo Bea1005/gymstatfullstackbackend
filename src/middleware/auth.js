@@ -19,7 +19,23 @@ exports.protect = async (req, res, next) => {
     
     // Handle both _id and id fields
     const userId = decoded.id || decoded.userId;
-    const user = await User.findById(userId).select('-password');
+    let user;
+
+    try {
+      const userQuery = User.findById(userId);
+      user = await (userQuery && typeof userQuery.select === 'function'
+        ? userQuery.select('-password')
+        : userQuery);
+      if (userQuery === undefined) {
+        user = decoded;
+      }
+    } catch (lookupError) {
+      // Legacy login IDs are strings and cannot be cast by findById.
+      if (!userId || !/Cast to ObjectId/i.test(lookupError.message || '')) {
+        throw lookupError;
+      }
+      user = await User.findOne({ $or: [{ _id: userId }, { id: userId }] });
+    }
     
     if (!user) {
       return res.status(401).json({ 
