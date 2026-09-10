@@ -62,6 +62,8 @@ const scheduleSchema = new mongoose.Schema({
 // Indexes for better query performance
 scheduleSchema.index({ startDate: 1, endDate: 1 });
 scheduleSchema.index({ status: 1 });
+scheduleSchema.index({ status: 1, startDate: 1, startTime: 1 });
+scheduleSchema.index({ fromRequest: 1 }, { unique: true, sparse: true });
 scheduleSchema.index({ event: 'text' });
 
 const Schedule = mongoose.model('Schedule', scheduleSchema);

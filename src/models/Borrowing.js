@@ -99,4 +99,8 @@ const borrowingSchema = new mongoose.Schema({
   timestamps: true
 });
 
+borrowingSchema.index({ status: 1, borrowDate: -1 });
+borrowingSchema.index({ equipment: 1, status: 1 });
+borrowingSchema.index({ borrowedBy: 1, borrowDate: -1 });
+
 module.exports = mongoose.model('Borrowing', borrowingSchema);
