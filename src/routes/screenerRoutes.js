@@ -351,35 +351,23 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
     }
 
     if (normalizedStatus === 'rejected') {
-      const storedFilePath = resolveStoredFilePath(submission.filePath);
-      const deletedSubmission = await RequirementModel.findByIdAndDelete(id);
+      submission.status = 'rejected';
+      submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
+      submission.reviewedAt = new Date();
+      submission.reviewedBy = req.user?._id || req.user?.id || null;
+      submission.resubmitted = false;
+      await submission.save();
 
-      if (!deletedSubmission) {
-        return res.status(404).json({
-          success: false,
-          message: 'Submission not found'
-        });
-      }
-
-      if (storedFilePath) {
-        try {
-          await fs.promises.unlink(storedFilePath);
-        } catch (fileError) {
-          if (fileError.code !== 'ENOENT') {
-            console.error('Requirement file cleanup failed');
-            return res.status(500).json({
-              success: false,
-              message: 'Requirement was deleted, but its file could not be cleaned up'
-            });
-          }
-        }
-      }
-
-      console.log(`✅ Requirement ${id} rejected and deleted for student re-upload`);
+      console.log(`✅ Requirement ${id} rejected and retained for student re-upload`);
       return res.json({
         success: true,
-        message: 'Requirement rejected and deleted for re-upload',
-        data: { id: deletedSubmission._id }
+        message: 'Requirement rejected and retained for re-upload',
+        data: {
+          id: submission._id,
+          status: submission.status,
+          remarks: submission.remarks,
+          reviewedAt: submission.reviewedAt
+        }
       });
     }
 
@@ -387,7 +375,7 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
     submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
 
     if (normalizedStatus === 'approved') {
-      submission.approvedBy = req.user._id || req.user.id;
+      submission.approvedBy = req.user?._id || req.user?.id || null;
       submission.approvalDate = new Date();
     }
 

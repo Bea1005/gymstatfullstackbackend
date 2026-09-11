@@ -29,7 +29,7 @@ describe('Screener routes', () => {
     console.error.mockRestore();
   });
 
-  it('deletes the submission when a screener rejects it', async () => {
+  it('retains the submission and saves the rejection reason', async () => {
     const submission = {
       _id: 'submission-1',
       studentId: 'student-1',
@@ -40,16 +40,17 @@ describe('Screener routes', () => {
     };
 
     StudentRequirement.findById.mockResolvedValue(submission);
-    StudentRequirement.findByIdAndDelete.mockResolvedValue({ _id: 'submission-1' });
 
     const response = await request(app)
       .put('/api/v1/screener/requirements/submission-1/review')
       .send({ status: 'rejected', studentId: 'student-1', feedback: 'Wrong file', remarks: 'Please re-upload' });
 
     expect(response.status).toBe(200);
-    expect(StudentRequirement.findByIdAndDelete).toHaveBeenCalledWith('submission-1');
-    expect(submission.save).not.toHaveBeenCalled();
-    expect(response.body.message).toContain('deleted');
+    expect(StudentRequirement.findByIdAndDelete).not.toHaveBeenCalled();
+    expect(submission.status).toBe('rejected');
+    expect(submission.remarks).toBe('Wrong file — Please re-upload');
+    expect(submission.save).toHaveBeenCalled();
+    expect(response.body.message).toContain('retained');
   });
 
   it('rejects deletion when the requirement belongs to another student', async () => {
