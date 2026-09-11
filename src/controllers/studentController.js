@@ -166,7 +166,10 @@ exports.uploadRequirement = async (req, res) => {
 
     const replacementTarget = await StudentRequirement.findOne({
       ...replacementQuery,
-      requirementStatus: { $nin: ['archived', 'expired'] }
+      $or: [
+        { status: 'rejected' },
+        { status: 'approved', requirementStatus: 'reusable' }
+      ]
     }).sort({ uploadDate: -1 });
 
     if (replacementTarget) {

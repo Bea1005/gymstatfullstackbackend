@@ -32,6 +32,8 @@ describe('Screener routes', () => {
   it('deletes the submission when a screener rejects it', async () => {
     const submission = {
       _id: 'submission-1',
+      studentId: 'student-1',
+      filePath: 'uploads/requirements/rejected.pdf',
       status: 'pending',
       remarks: '',
       save: jest.fn().mockResolvedValue(true)
@@ -42,12 +44,27 @@ describe('Screener routes', () => {
 
     const response = await request(app)
       .put('/api/v1/screener/requirements/submission-1/review')
-      .send({ status: 'rejected', feedback: 'Wrong file', remarks: 'Please re-upload' });
+      .send({ status: 'rejected', studentId: 'student-1', feedback: 'Wrong file', remarks: 'Please re-upload' });
 
     expect(response.status).toBe(200);
     expect(StudentRequirement.findByIdAndDelete).toHaveBeenCalledWith('submission-1');
     expect(submission.save).not.toHaveBeenCalled();
     expect(response.body.message).toContain('deleted');
+  });
+
+  it('rejects deletion when the requirement belongs to another student', async () => {
+    StudentRequirement.findById.mockResolvedValue({
+      _id: 'submission-3',
+      studentId: 'student-1',
+      filePath: 'uploads/requirements/other.pdf'
+    });
+
+    const response = await request(app)
+      .put('/api/v1/screener/requirements/submission-3/review')
+      .send({ status: 'rejected', studentId: 'student-2' });
+
+    expect(response.status).toBe(403);
+    expect(StudentRequirement.findByIdAndDelete).not.toHaveBeenCalled();
   });
 
   it('marks an existing submission as viewed', async () => {

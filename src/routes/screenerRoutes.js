@@ -93,7 +93,9 @@ const normalizeRequirementStatus = (status) => {
 };
 
 const deriveOverallStatus = (requirements) => {
-  const entries = Object.values(requirements || {});
+  const entries = Object.entries(requirements || {})
+    .filter(([key]) => key !== 'documents')
+    .map(([, value]) => value);
   if (entries.length === 0) return 'No Documents Attached';
 
   const hasRejected = entries.some((item) => item && item.status === 'rejected');
@@ -148,18 +150,18 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         department: student.department || 'Not specified',
         sport: student.sport || 'Not specified',
         requirements: {
-          cor: null,
-          med: null,
-          psa: null,
-          insurance: null,
-          profile: null,
-          consent: null
+            cor: null,
+            med: null,
+            psa: null,
+            insurance: null,
+            profile: null,
+            consent: null,
+            documents: []
         }
       });
     });
 
-    // Process only the newest record for each student and requirement type.
-    const seenRequirements = new Set();
+    // Keep every stored record once. The detail page renders one card per record.
     for (const submission of submissions) {
       let student = submission.studentId;
 
@@ -194,12 +196,6 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       let normalizedKey = submission.requirementType;
       if (normalizedKey === 'medical') normalizedKey = 'med';
 
-      const requirementKey = `${studentId}:${normalizedKey}:${submission.customRequirementId || ''}`;
-      if (seenRequirements.has(requirementKey)) {
-        continue;
-      }
-      seenRequirements.add(requirementKey);
-      
       // Create a new student entry if it doesn't exist
       if (!studentsById.has(studentId)) {
         studentsById.set(studentId, {
@@ -213,7 +209,8 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
             psa: null,
             insurance: null,
             profile: null,
-            consent: null
+            consent: null,
+            documents: []
           }
         });
       }
@@ -222,7 +219,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       const studentEntry = studentsById.get(studentId);
       const storedFilePath = resolveStoredFilePath(submission.filePath);
       const hasUpload = Boolean(storedFilePath && fs.existsSync(storedFilePath));
-      studentEntry.requirements[normalizedKey] = {
+      const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
         status: normalizeRequirementStatus(submission.status),
@@ -235,6 +232,16 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         remarks: submission.remarks || '',
         hasUpload
       };
+      if (!hasUpload) {
+        continue;
+      }
+
+      studentEntry.requirements.documents.push(document);
+
+      const currentEntry = studentEntry.requirements[normalizedKey];
+      if (!currentEntry || new Date(document.uploadedAt || 0) > new Date(currentEntry.uploadedAt || 0)) {
+        studentEntry.requirements[normalizedKey] = document;
+      }
     }
 
     // Convert map to array and add overall status
@@ -286,13 +293,20 @@ router.put('/screener/requirements/:id/viewed', protect, authorize('screener', '
 router.put('/screener/requirements/:id/review', protect, authorize('screener', 'admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, feedback = '', remarks = '' } = req.body;
+    const { status, feedback = '', remarks = '', studentId } = req.body;
     const normalizedStatus = String(status || '').toLowerCase();
 
     if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid review status. Must be: approved, rejected, or pending'
+      });
+    }
+
+    if (normalizedStatus === 'rejected' && !studentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Student context is required'
       });
     }
 
@@ -304,13 +318,43 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
       });
     }
 
+    if (studentId && String(submission.studentId) !== String(studentId)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to modify this requirement'
+      });
+    }
+
     if (normalizedStatus === 'rejected') {
+      const storedFilePath = resolveStoredFilePath(submission.filePath);
       const deletedSubmission = await StudentRequirement.findByIdAndDelete(id);
+
+      if (!deletedSubmission) {
+        return res.status(404).json({
+          success: false,
+          message: 'Submission not found'
+        });
+      }
+
+      if (storedFilePath) {
+        try {
+          await fs.promises.unlink(storedFilePath);
+        } catch (fileError) {
+          if (fileError.code !== 'ENOENT') {
+            console.error('Requirement file cleanup failed');
+            return res.status(500).json({
+              success: false,
+              message: 'Requirement was deleted, but its file could not be cleaned up'
+            });
+          }
+        }
+      }
+
       console.log(`✅ Requirement ${id} rejected and deleted for student re-upload`);
       return res.json({
         success: true,
         message: 'Requirement rejected and deleted for re-upload',
-        data: deletedSubmission
+        data: { id: deletedSubmission._id }
       });
     }
 
