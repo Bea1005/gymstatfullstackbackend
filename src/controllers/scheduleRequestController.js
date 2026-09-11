@@ -1,5 +1,6 @@
 const ScheduleRequest = require('../models/ScheduleRequest');
 const Schedule = require('../models/Schedule');
+const mongoose = require('mongoose');
 
 // Create a new schedule request
 exports.createScheduleRequest = async (req, res) => {
@@ -228,7 +229,14 @@ exports.updateScheduleRequest = async (req, res) => {
 exports.deleteScheduleRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const deletedRequest = await ScheduleRequest.findByIdAndDelete(id);
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Schedule request not found'
+      });
+    }
+
+    const deletedRequest = await ScheduleRequest.findOneAndDelete({ _id: id, status: 'approved' });
     
     if (!deletedRequest) {
       return res.status(404).json({
@@ -237,10 +245,15 @@ exports.deleteScheduleRequest = async (req, res) => {
       });
     }
     
+    const deletedSchedule = await Schedule.findOneAndDelete({ fromRequest: deletedRequest._id });
+
     res.status(200).json({
       success: true,
       message: 'Schedule request deleted successfully',
-      data: deletedRequest
+      data: {
+        id: deletedRequest._id,
+        scheduleDeleted: Boolean(deletedSchedule)
+      }
     });
   } catch (error) {
     console.error('Error deleting schedule request:', error);
