@@ -49,4 +49,21 @@ describe('Screener routes', () => {
     expect(submission.save).not.toHaveBeenCalled();
     expect(response.body.message).toContain('deleted');
   });
+
+  it('marks an existing submission as viewed', async () => {
+    const submission = {
+      _id: 'submission-2',
+      resubmitted: true,
+      save: jest.fn().mockResolvedValue(true)
+    };
+
+    StudentRequirement.findById.mockResolvedValue(submission);
+
+    const response = await request(app)
+      .put('/api/v1/screener/requirements/submission-2/viewed');
+
+    expect(response.status).toBe(200);
+    expect(submission.resubmitted).toBe(false);
+    expect(submission.save).toHaveBeenCalled();
+  });
 });
