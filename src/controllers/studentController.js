@@ -147,7 +147,7 @@ exports.uploadRequirement = async (req, res) => {
     const customRequirementKey = requirementId ? String(requirementId).trim() : '';
 
     if (!normalizedRequirementType) {
-      fs.unlinkSync(req.file.path);
+      if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(400).json({ success: false, message: 'Requirement type is required' });
     }
 

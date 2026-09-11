@@ -253,7 +253,9 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: hasUpload ? (submission.fileName || 'Uploaded file') : '',
         fileType: hasUpload ? (submission.fileType || '') : '',
-        fileUrl: hasUpload ? `/screener/requirements/${submission._id}/download?participationType=${submission.participationType}` : '',
+        fileUrl: hasUpload
+          ? `/screener/requirements/${submission._id}/download?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}`
+          : '',
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
         hasUpload,
