@@ -224,7 +224,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         requirementType: submission.requirementType,
         status: normalizeRequirementStatus(submission.status),
         resubmitted: submission.resubmitted || false,
-        label: requirementKeyLabels[submission.requirementType] || submission.requirementType,
+        label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: hasUpload ? (submission.fileName || 'Uploaded file') : '',
         fileType: hasUpload ? (submission.fileType || '') : '',
         fileUrl: hasUpload ? `/screener/requirements/${submission._id}/download` : '',
@@ -232,10 +232,6 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         remarks: submission.remarks || '',
         hasUpload
       };
-      if (!hasUpload) {
-        continue;
-      }
-
       studentEntry.requirements.documents.push(document);
 
       const currentEntry = studentEntry.requirements[normalizedKey];
