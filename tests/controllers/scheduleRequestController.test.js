@@ -13,7 +13,7 @@ describe('Schedule request deletion', () => {
 
   it('deletes only an approved request and its linked schedule', async () => {
     const requestId = '507f1f77bcf86cd799439011';
-    const deletedRequest = { _id: requestId };
+    const deletedRequest = { _id: requestId, status: 'approved' };
     const req = httpMocks.createRequest({ params: { id: requestId } });
     const res = httpMocks.createResponse();
 
@@ -24,7 +24,7 @@ describe('Schedule request deletion', () => {
 
     expect(ScheduleRequest.findOneAndDelete).toHaveBeenCalledWith({
       _id: requestId,
-      status: 'approved'
+      status: { $in: ['approved', 'rejected'] }
     });
     expect(Schedule.findOneAndDelete).toHaveBeenCalledWith({ fromRequest: requestId });
     expect(res.statusCode).toBe(200);
@@ -42,5 +42,19 @@ describe('Schedule request deletion', () => {
 
     expect(Schedule.findOneAndDelete).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(404);
+  });
+
+  it('deletes a rejected request without touching schedules', async () => {
+    const requestId = '507f1f77bcf86cd799439014';
+    const req = httpMocks.createRequest({ params: { id: requestId } });
+    const res = httpMocks.createResponse();
+
+    ScheduleRequest.findOneAndDelete.mockResolvedValue({ _id: requestId, status: 'rejected' });
+
+    await deleteScheduleRequest(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(Schedule.findOneAndDelete).not.toHaveBeenCalled();
+    expect(res._getJSONData()).toMatchObject({ success: true, data: { scheduleDeleted: false } });
   });
 });

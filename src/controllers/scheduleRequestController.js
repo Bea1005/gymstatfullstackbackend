@@ -236,7 +236,10 @@ exports.deleteScheduleRequest = async (req, res) => {
       });
     }
 
-    const deletedRequest = await ScheduleRequest.findOneAndDelete({ _id: id, status: 'approved' });
+    const deletedRequest = await ScheduleRequest.findOneAndDelete({
+      _id: id,
+      status: { $in: ['approved', 'rejected'] }
+    });
     
     if (!deletedRequest) {
       return res.status(404).json({
@@ -245,7 +248,9 @@ exports.deleteScheduleRequest = async (req, res) => {
       });
     }
     
-    const deletedSchedule = await Schedule.findOneAndDelete({ fromRequest: deletedRequest._id });
+    const deletedSchedule = deletedRequest.status === 'approved'
+      ? await Schedule.findOneAndDelete({ fromRequest: deletedRequest._id })
+      : null;
 
     res.status(200).json({
       success: true,
