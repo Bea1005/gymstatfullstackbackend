@@ -100,7 +100,6 @@ app.use(express.json());
 app.use(auditSecurityEvents);
 app.use(validateRequestBody);
 app.use(cookieParser());
-app.use('/uploads', express.static('uploads'));
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = (body) => {

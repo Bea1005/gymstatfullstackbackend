@@ -7,6 +7,7 @@ const path = require('path');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
+const requirementUploadRoot = path.resolve(uploadRoot, 'requirements');
 const resolveStoredFilePath = (storedPath) => {
   if (!storedPath) return '';
   const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
@@ -18,7 +19,13 @@ const resolveStoredFilePath = (storedPath) => {
         path.resolve(uploadRoot, normalizedPath.replace(/^uploads[\\/]/i, ''))
       ];
 
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+  const safeCandidate = candidates.find((candidate) => {
+    const resolvedCandidate = path.resolve(candidate);
+    return resolvedCandidate.startsWith(`${requirementUploadRoot}${path.sep}`)
+      && fs.existsSync(resolvedCandidate);
+  });
+
+  return safeCandidate || '';
 };
 
 const getAcademicYearLabel = (date = new Date()) => {
@@ -157,18 +164,10 @@ exports.uploadRequirement = async (req, res) => {
       replacementQuery.customRequirementId = customRequirementKey;
     }
 
-    const reusableSubmission = await StudentRequirement.findOne({
+    const replacementTarget = await StudentRequirement.findOne({
       ...replacementQuery,
-      status: 'approved',
-      requirementStatus: 'reusable'
+      requirementStatus: { $nin: ['archived', 'expired'] }
     }).sort({ uploadDate: -1 });
-
-    const existingRejectedSubmission = await StudentRequirement.findOne({
-      ...replacementQuery,
-      status: 'rejected'
-    }).sort({ uploadDate: -1 });
-
-    const replacementTarget = reusableSubmission || existingRejectedSubmission;
 
     if (replacementTarget) {
       const previousFilePath = resolveStoredFilePath(replacementTarget.filePath);
@@ -203,7 +202,7 @@ exports.uploadRequirement = async (req, res) => {
 
       return res.status(200).json({
         success: true,
-        message: reusableSubmission ? 'Reusable requirement updated successfully' : 'Rejected requirement updated successfully',
+        message: 'Requirement replaced successfully',
         data: replacementTarget
       });
     }

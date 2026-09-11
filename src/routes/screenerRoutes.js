@@ -8,6 +8,18 @@ const StudentRequirement = require('../models/StudentRequirement');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
+const requirementUploadRoot = path.resolve(uploadRoot, 'requirements');
+const MAX_REQUIREMENT_FILE_SIZE = 5 * 1024 * 1024;
+const allowedRequirementTypes = new Map([
+  ['.pdf', 'application/pdf'],
+  ['.doc', 'application/msword'],
+  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.gif', 'image/gif']
+]);
+
 const resolveStoredFilePath = (storedPath) => {
   if (!storedPath) return '';
   const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
@@ -19,11 +31,21 @@ const resolveStoredFilePath = (storedPath) => {
         path.resolve(uploadRoot, normalizedPath.replace(/^uploads[\\/]/i, ''))
       ];
 
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+  const safeCandidate = candidates.find((candidate) => {
+    const resolvedCandidate = path.resolve(candidate);
+    return resolvedCandidate.startsWith(`${requirementUploadRoot}${path.sep}`)
+      && fs.existsSync(resolvedCandidate);
+  });
+
+  return safeCandidate || '';
 };
 
 router.get('/screener/requirements/:id/download', protect, authorize('screener', 'admin'), async (req, res) => {
   try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'Requirement not found' });
+    }
+
     const submission = await StudentRequirement.findById(req.params.id).lean();
 
     if (!submission) {
@@ -37,7 +59,17 @@ router.get('/screener/requirements/:id/download', protect, authorize('screener',
       return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
     }
 
-    return res.download(filePath, submission.fileName || path.basename(filePath));
+    const extension = path.extname(submission.fileName || filePath).toLowerCase();
+    const expectedMime = allowedRequirementTypes.get(extension);
+    const fileStats = fs.statSync(filePath);
+    if (!expectedMime || submission.fileType !== expectedMime || fileStats.size > MAX_REQUIREMENT_FILE_SIZE) {
+      return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
+    }
+
+    const safeFileName = path.basename(submission.fileName || path.basename(filePath)).replace(/[\r\n"\\/]/g, '_');
+    res.setHeader('Content-Type', expectedMime);
+    res.setHeader('Content-Disposition', `inline; filename="${safeFileName}"`);
+    return res.sendFile(filePath);
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Unable to download uploaded file' });
   }
@@ -99,7 +131,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     // Get all student requirements submissions
     const submissions = await StudentRequirement.find({})
       .populate('studentId', 'fullname department sport id username')
-      .sort({ uploadDate: -1 })
+      .sort({ uploadDate: -1, _id: -1 })
       .lean();
 
     console.log(`📄 Found ${submissions.length} requirement submissions`);
@@ -126,7 +158,8 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       });
     });
 
-    // Process all submissions
+    // Process only the newest record for each student and requirement type.
+    const seenRequirements = new Set();
     for (const submission of submissions) {
       let student = submission.studentId;
 
@@ -160,6 +193,12 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       // Normalize the requirement type
       let normalizedKey = submission.requirementType;
       if (normalizedKey === 'medical') normalizedKey = 'med';
+
+      const requirementKey = `${studentId}:${normalizedKey}:${submission.customRequirementId || ''}`;
+      if (seenRequirements.has(requirementKey)) {
+        continue;
+      }
+      seenRequirements.add(requirementKey);
       
       // Create a new student entry if it doesn't exist
       if (!studentsById.has(studentId)) {
