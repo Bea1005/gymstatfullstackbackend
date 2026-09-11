@@ -1,6 +1,36 @@
 const dns = require('dns');
+const fs = require('fs');
+const path = require('path');
 const mongoose = require('mongoose');
 const User = require('../models/User');
+const { getAllStudentRequirementModels } = require('../models/studentRequirementCollections');
+
+const backfillRequirementFiles = async () => {
+  const backendRoot = path.resolve(__dirname, '../..');
+  const uploadRoot = path.resolve(backendRoot, 'uploads', 'requirements');
+
+  for (const RequirementModel of getAllStudentRequirementModels()) {
+    const records = await RequirementModel.find({
+      filePath: { $nin: ['', null] },
+      $or: [{ fileData: { $exists: false } }, { fileData: null }]
+    }).select('+fileData').lean();
+
+    for (const record of records) {
+      const candidate = path.resolve(backendRoot, String(record.filePath).replace(/[\\/]+/g, path.sep));
+      const relativeToUploadRoot = path.relative(uploadRoot, candidate);
+      const isSafePath = relativeToUploadRoot && !relativeToUploadRoot.startsWith('..') && !path.isAbsolute(relativeToUploadRoot);
+
+      if (!isSafePath || !fs.existsSync(candidate)) continue;
+      const fileData = fs.readFileSync(candidate);
+      if (fileData.length > 5 * 1024 * 1024) continue;
+
+      await RequirementModel.updateOne(
+        { _id: record._id, $or: [{ fileData: { $exists: false } }, { fileData: null }] },
+        { $set: { fileData, storageType: 'mongodb' } }
+      );
+    }
+  }
+};
 
 const connectDB = async () => {
   try {
@@ -43,6 +73,8 @@ const connectDB = async () => {
       await database.collection(legacyName.name).rename('studentrequiremnts-intrams');
       console.log('✅ Legacy studentrequirements collection renamed for Intrams records');
     }
+
+    await backfillRequirementFiles();
 
     await User.initializeCollections();
     

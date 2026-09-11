@@ -1,6 +1,7 @@
 const express = require('express');
 const { protect, authorize } = require('../middleware/auth');
 const upload = require('../config/multer');
+const requirementUpload = upload.requirementUpload;
 const { validateRequestBody } = require('../middleware/requestValidation');
 const {
   uploadRequirement,
@@ -22,7 +23,7 @@ router.use(protect);
 router.use(authorize('student'));
 
 // Student-specific routes - all protected
-router.post('/requirements', upload.single('file'), validateRequestBody, uploadRequirement);
+router.post('/requirements', requirementUpload.single('file'), validateRequestBody, uploadRequirement);
 router.post('/requirements/import-previous-year', importPreviousYearRequirements);
 router.get('/requirements', getStudentRequirements);
 router.get('/requirements/:id/download', downloadRequirement);

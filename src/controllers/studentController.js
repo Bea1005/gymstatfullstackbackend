@@ -157,16 +157,20 @@ exports.uploadRequirement = async (req, res) => {
     }
 
     const currentAcademicYear = getAcademicYearLabel();
-    const normalizedFilePath = path.relative(path.resolve(__dirname, '../..'), req.file.path).replace(/\\/g, '/');
+    const normalizedFilePath = req.file.path
+      ? path.relative(path.resolve(__dirname, '../..'), req.file.path).replace(/\\/g, '/')
+      : '';
 
     const replacementQuery = {
       studentId,
       requirementType: normalizedRequirementType,
     };
 
-    replacementQuery.$or = normalizedParticipationType === 'Intrams'
-      ? [{ participationType: 'Intrams' }, { participationType: { $exists: false } }]
-      : [{ participationType: 'STRASUC' }];
+    replacementQuery.$and = [{
+      $or: normalizedParticipationType === 'Intrams'
+        ? [{ participationType: 'Intrams' }, { participationType: { $exists: false } }]
+        : [{ participationType: 'STRASUC' }]
+    }];
 
     if (normalizedRequirementType === 'other' && customRequirementKey) {
       replacementQuery.customRequirementId = customRequirementKey;
@@ -175,9 +179,14 @@ exports.uploadRequirement = async (req, res) => {
     const RequirementModel = getStudentRequirementModel(normalizedParticipationType);
     const replacementTarget = await RequirementModel.findOne({
       ...replacementQuery,
-      $or: [
-        { status: 'rejected' },
-        { status: 'approved', requirementStatus: 'reusable' }
+      $and: [
+        ...replacementQuery.$and,
+        {
+          $or: [
+            { status: 'rejected' },
+            { status: 'approved', requirementStatus: 'reusable' }
+          ]
+        }
       ]
     }).sort({ uploadDate: -1 });
 
@@ -187,6 +196,8 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.fileType = req.file.mimetype;
       replacementTarget.fileSize = req.file.size;
       replacementTarget.filePath = normalizedFilePath;
+      replacementTarget.fileData = req.file.buffer || null;
+      replacementTarget.storageType = req.file.buffer ? 'mongodb' : 'filesystem';
       replacementTarget.status = 'pending';
       replacementTarget.requirementStatus = 'active';
       replacementTarget.isReusable = false;
@@ -208,7 +219,7 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.customRequirementLabel = normalizedRequirementType === 'other' ? (customRequirementLabel || replacementTarget.customRequirementLabel || '') : '';
       await replacementTarget.save();
 
-      if (previousFilePath && previousFilePath !== normalizedFilePath && fs.existsSync(previousFilePath)) {
+      if (previousFilePath && normalizedFilePath && previousFilePath !== normalizedFilePath && fs.existsSync(previousFilePath)) {
         fs.unlinkSync(previousFilePath);
       }
 
@@ -229,6 +240,8 @@ exports.uploadRequirement = async (req, res) => {
       fileType: req.file.mimetype,
       fileSize: req.file.size,
       filePath: normalizedFilePath,
+      fileData: req.file.buffer || null,
+      storageType: req.file.buffer ? 'mongodb' : 'filesystem',
       sport: sport || 'General',
       academicYear: currentAcademicYear,
       requirementStatus: 'active'
@@ -383,7 +396,7 @@ exports.importPreviousYearRequirements = async (req, res) => {
 exports.downloadRequirement = async (req, res) => {
   try {
     const RequirementModel = getStudentRequirementModel(req.query.participationType);
-    const requirement = await RequirementModel.findById(req.params.id);
+    const requirement = await RequirementModel.findById(req.params.id).select('+fileData');
 
     if (!requirement) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
@@ -394,6 +407,12 @@ exports.downloadRequirement = async (req, res) => {
     // Check authorization: student can download own, admin can download any
     if (req.user.role !== 'admin' && requirement.studentId.toString() !== studentId?.toString()) {
       return res.status(403).json({ success: false, message: 'Not authorized to download this file' });
+    }
+
+    if (requirement.fileData?.length) {
+      res.setHeader('Content-Type', requirement.fileType);
+      res.setHeader('Content-Disposition', `inline; filename="${path.basename(requirement.fileName || 'requirement')}"`);
+      return res.send(requirement.fileData);
     }
 
     const resolvedFilePath = resolveStoredFilePath(requirement.filePath);

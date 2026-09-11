@@ -51,10 +51,23 @@ router.get('/screener/requirements/:id/download', protect, authorize('screener',
     }
 
     const RequirementModel = getStudentRequirementModel(req.query.participationType);
-    const submission = await RequirementModel.findById(req.params.id).lean();
+    const submission = await RequirementModel.findById(req.params.id).select('+fileData').lean();
 
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
+    }
+
+    if (submission.fileData?.length) {
+      const extension = path.extname(submission.fileName || '').toLowerCase();
+      const expectedMime = allowedRequirementTypes.get(extension);
+      if (!expectedMime || submission.fileType !== expectedMime || submission.fileData.length > MAX_REQUIREMENT_FILE_SIZE) {
+        return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
+      }
+
+      const safeFileName = path.basename(submission.fileName || 'requirement').replace(/[\r\n"\\/]/g, '_');
+      res.setHeader('Content-Type', expectedMime);
+      res.setHeader('Content-Disposition', `inline; filename="${safeFileName}"`);
+      return res.send(submission.fileData);
     }
 
     const storedPath = submission.filePath || '';
@@ -144,6 +157,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       ? { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] }
       : { participationType: 'STRASUC' };
     const submissions = await RequirementModel.find(participationFilter)
+      .select('+fileData')
       .populate('studentId', 'fullname department sport id username')
       .sort({ uploadDate: -1, _id: -1 })
       .lean();
@@ -230,7 +244,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       // Add the requirement to the student's requirements
       const studentEntry = studentsById.get(studentId);
       const storedFilePath = resolveStoredFilePath(submission.filePath);
-      const hasUpload = Boolean(storedFilePath && fs.existsSync(storedFilePath));
+      const hasUpload = Boolean(submission.fileData?.length || (storedFilePath && fs.existsSync(storedFilePath)));
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,

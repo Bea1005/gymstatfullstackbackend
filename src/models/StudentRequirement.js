@@ -38,7 +38,17 @@ const StudentRequirementSchema = new mongoose.Schema({
   },
   filePath: {
     type: String,
-    required: true
+    default: ''
+  },
+  fileData: {
+    type: Buffer,
+    select: false,
+    default: null
+  },
+  storageType: {
+    type: String,
+    enum: ['mongodb', 'filesystem'],
+    default: 'mongodb'
   },
   status: {
     type: String,

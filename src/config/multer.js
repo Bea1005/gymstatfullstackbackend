@@ -55,4 +55,13 @@ const upload = multer({
   }
 });
 
+const requirementUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  }
+});
+
 module.exports = upload;
+module.exports.requirementUpload = requirementUpload;
