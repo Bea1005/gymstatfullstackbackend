@@ -4,7 +4,11 @@ const fs = require('fs');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
-const StudentRequirement = require('../models/StudentRequirement');
+const {
+  getStudentRequirementModel,
+  getAllStudentRequirementModels,
+  normalizeParticipationType
+} = require('../models/studentRequirementCollections');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
@@ -46,7 +50,8 @@ router.get('/screener/requirements/:id/download', protect, authorize('screener',
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
 
-    const submission = await StudentRequirement.findById(req.params.id).lean();
+    const RequirementModel = getStudentRequirementModel(req.query.participationType);
+    const submission = await RequirementModel.findById(req.params.id).lean();
 
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
@@ -123,7 +128,10 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
   
   try {
     // Get all students
-    const studentsFromDb = await User.find({ role: 'student' })
+    const participationType = normalizeParticipationType(req.query.participationType);
+    const studentsFromDb = participationType === 'STRASUC'
+      ? []
+      : await User.find({ role: 'student' })
       .select('-password')
       .sort({ createdAt: -1 })
       .lean();
@@ -131,7 +139,11 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     console.log(`👥 Found ${studentsFromDb.length} students in database`);
 
     // Get all student requirements submissions
-    const submissions = await StudentRequirement.find({})
+    const RequirementModel = getStudentRequirementModel(participationType);
+    const participationFilter = participationType === 'Intrams'
+      ? { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] }
+      : { participationType: 'STRASUC' };
+    const submissions = await RequirementModel.find(participationFilter)
       .populate('studentId', 'fullname department sport id username')
       .sort({ uploadDate: -1, _id: -1 })
       .lean();
@@ -227,10 +239,11 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: hasUpload ? (submission.fileName || 'Uploaded file') : '',
         fileType: hasUpload ? (submission.fileType || '') : '',
-        fileUrl: hasUpload ? `/screener/requirements/${submission._id}/download` : '',
+        fileUrl: hasUpload ? `/screener/requirements/${submission._id}/download?participationType=${submission.participationType}` : '',
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
-        hasUpload
+        hasUpload,
+        participationType: submission.participationType || 'Intrams'
       };
       studentEntry.requirements.documents.push(document);
 
@@ -268,7 +281,8 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
 router.put('/screener/requirements/:id/viewed', protect, authorize('screener', 'admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const submission = await StudentRequirement.findById(id);
+    const RequirementModel = getStudentRequirementModel(req.body?.participationType);
+    const submission = await RequirementModel.findById(id);
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Submission not found' });
     }
@@ -289,7 +303,7 @@ router.put('/screener/requirements/:id/viewed', protect, authorize('screener', '
 router.put('/screener/requirements/:id/review', protect, authorize('screener', 'admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, feedback = '', remarks = '', studentId } = req.body;
+    const { status, feedback = '', remarks = '', studentId, participationType } = req.body;
     const normalizedStatus = String(status || '').toLowerCase();
 
     if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
@@ -306,7 +320,8 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
       });
     }
 
-    const submission = await StudentRequirement.findById(id);
+    const RequirementModel = getStudentRequirementModel(participationType);
+    const submission = await RequirementModel.findById(id);
     if (!submission) {
       return res.status(404).json({
         success: false,
@@ -323,7 +338,7 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
 
     if (normalizedStatus === 'rejected') {
       const storedFilePath = resolveStoredFilePath(submission.filePath);
-      const deletedSubmission = await StudentRequirement.findByIdAndDelete(id);
+      const deletedSubmission = await RequirementModel.findByIdAndDelete(id);
 
       if (!deletedSubmission) {
         return res.status(404).json({

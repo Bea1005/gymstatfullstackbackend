@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
-const StudentRequirement = require('../models/StudentRequirement');
+const {
+  getStudentRequirementModel,
+  getAllStudentRequirementModels,
+  normalizeParticipationType
+} = require('../models/studentRequirementCollections');
 const Announcement = require('../models/Announcement');
 const User = require('../models/User');
 const fs = require('fs');
@@ -88,17 +92,18 @@ const syncRequirementLifecycleState = async (record, currentAcademicYear) => {
     updates.previousAcademicYear = record.academicYear || record.previousAcademicYear || '';
   }
 
-  const savedRecord = await StudentRequirement.findByIdAndUpdate(record._id, { $set: updates }, { new: true }).lean();
+  const RequirementModel = getStudentRequirementModel(record.participationType);
+  const savedRecord = await RequirementModel.findByIdAndUpdate(record._id, { $set: updates }, { new: true }).lean();
   return savedRecord || record;
 };
 
 const archiveNonReusableRequirements = async (studentId, currentAcademicYear) => {
-  const previousYearRequirements = await StudentRequirement.find({
+  const previousYearRequirements = (await Promise.all(getAllStudentRequirementModels().map((RequirementModel) => RequirementModel.find({
     studentId,
     status: 'approved',
     requirementType: { $ne: 'psa' },
     academicYear: { $ne: currentAcademicYear }
-  }).lean();
+  }).lean()))).flat();
 
   for (const record of previousYearRequirements) {
     const lifecycle = exports.buildRequirementLifecycleState(record, currentAcademicYear);
@@ -138,7 +143,7 @@ exports.uploadRequirement = async (req, res) => {
 
     const { requirementType, sport, participationType, requirementId, customRequirementLabel } = req.body;
     const normalizedRequirementType = String(requirementType || '').trim().toLowerCase();
-    const normalizedParticipationType = participationType === 'STRASUC' ? 'STRASUC' : 'Intrams';
+    const normalizedParticipationType = normalizeParticipationType(participationType);
     const customRequirementKey = requirementId ? String(requirementId).trim() : '';
 
     if (!normalizedRequirementType) {
@@ -157,14 +162,18 @@ exports.uploadRequirement = async (req, res) => {
     const replacementQuery = {
       studentId,
       requirementType: normalizedRequirementType,
-      participationType: normalizedParticipationType,
     };
+
+    replacementQuery.$or = normalizedParticipationType === 'Intrams'
+      ? [{ participationType: 'Intrams' }, { participationType: { $exists: false } }]
+      : [{ participationType: 'STRASUC' }];
 
     if (normalizedRequirementType === 'other' && customRequirementKey) {
       replacementQuery.customRequirementId = customRequirementKey;
     }
 
-    const replacementTarget = await StudentRequirement.findOne({
+    const RequirementModel = getStudentRequirementModel(normalizedParticipationType);
+    const replacementTarget = await RequirementModel.findOne({
       ...replacementQuery,
       $or: [
         { status: 'rejected' },
@@ -210,7 +219,7 @@ exports.uploadRequirement = async (req, res) => {
       });
     }
 
-    const requirement = new StudentRequirement({
+    const requirement = new RequirementModel({
       studentId,
       requirementType: normalizedRequirementType,
       participationType: normalizedParticipationType,
@@ -258,12 +267,20 @@ exports.getStudentRequirements = async (req, res) => {
     let filter = { studentId };
     if (status) filter.status = status;
     if (requirementType) filter.requirementType = requirementType;
-    if (participationType) filter.participationType = participationType;
+    if (participationType) {
+      filter.$or = normalizeParticipationType(participationType) === 'Intrams'
+        ? [{ participationType: 'Intrams' }, { participationType: { $exists: false } }]
+        : [{ participationType: 'STRASUC' }];
+    }
 
-    const requirements = await StudentRequirement.find(filter)
+    const requirementModels = participationType
+      ? [getStudentRequirementModel(participationType)]
+      : getAllStudentRequirementModels();
+    const requirements = (await Promise.all(requirementModels.map((RequirementModel) => RequirementModel.find(filter)
       .sort(sort)
       .populate('approvedBy', 'fullname')
-      .populate('reviewedBy', 'fullname');
+      .populate('reviewedBy', 'fullname')))).flat()
+      .sort((first, second) => new Date(second.uploadDate) - new Date(first.uploadDate));
 
     const enrichedRequirements = requirements.map((requirement) => {
       const lifecycle = exports.buildRequirementLifecycleState(requirement.toObject ? requirement.toObject() : requirement, currentAcademicYear);
@@ -301,11 +318,12 @@ exports.importPreviousYearRequirements = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
     }
 
-    const { sourceAcademicYear } = req.body || {};
+    const { sourceAcademicYear, participationType = 'Intrams' } = req.body || {};
+    const RequirementModel = getStudentRequirementModel(participationType);
     const targetAcademicYear = getAcademicYearLabel();
     const yearToImport = sourceAcademicYear || getAcademicYearLabel(new Date(new Date().getFullYear() - 1, 5, 1));
 
-    const previousYearRequirements = await StudentRequirement.find({
+    const previousYearRequirements = await RequirementModel.find({
       studentId,
       status: 'approved',
       academicYear: yearToImport
@@ -314,7 +332,7 @@ exports.importPreviousYearRequirements = async (req, res) => {
     const importedRecords = [];
 
     for (const record of previousYearRequirements) {
-      const alreadyImported = await StudentRequirement.findOne({
+      const alreadyImported = await RequirementModel.findOne({
         studentId,
         requirementType: record.requirementType,
         academicYear: targetAcademicYear,
@@ -325,7 +343,7 @@ exports.importPreviousYearRequirements = async (req, res) => {
       if (alreadyImported) continue;
 
       const reusable = record.requirementType === 'psa' || record.isReusable || record.requirementStatus === 'reusable';
-      const candidate = new StudentRequirement({
+      const candidate = new RequirementModel({
         ...record.toObject(),
         _id: new mongoose.Types.ObjectId(),
         status: 'approved',
@@ -364,7 +382,8 @@ exports.importPreviousYearRequirements = async (req, res) => {
 // @access Private (Student or Admin)
 exports.downloadRequirement = async (req, res) => {
   try {
-    const requirement = await StudentRequirement.findById(req.params.id);
+    const RequirementModel = getStudentRequirementModel(req.query.participationType);
+    const requirement = await RequirementModel.findById(req.params.id);
 
     if (!requirement) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
@@ -395,7 +414,8 @@ exports.downloadRequirement = async (req, res) => {
 // @access Private (Student only)
 exports.deleteRequirement = async (req, res) => {
   try {
-    const requirement = await StudentRequirement.findById(req.params.id);
+    const RequirementModel = getStudentRequirementModel(req.query.participationType);
+    const requirement = await RequirementModel.findById(req.params.id);
 
     if (!requirement) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
@@ -419,7 +439,7 @@ exports.deleteRequirement = async (req, res) => {
       fs.unlinkSync(storedFilePath);
     }
 
-    await StudentRequirement.findByIdAndDelete(req.params.id);
+    await RequirementModel.findByIdAndDelete(req.params.id);
 
     res.status(200).json({ success: true, message: 'Requirement deleted successfully' });
   } catch (error) {
@@ -463,7 +483,9 @@ exports.getStudentStats = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
     }
 
-    const requirements = await StudentRequirement.find({ studentId }).lean();
+    const requirements = (await Promise.all(getAllStudentRequirementModels().map((RequirementModel) => (
+      RequirementModel.find({ studentId }).lean()
+    )))).flat();
     const currentAcademicYear = getAcademicYearLabel();
 
     const pendingCount = requirements.filter((item) => item.status === 'pending').length;

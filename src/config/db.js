@@ -35,6 +35,15 @@ const connectDB = async () => {
 
     console.log('✅ MongoDB connection established');
 
+    const database = mongoose.connection.db;
+    const collections = await database.listCollections({}, { nameOnly: true }).toArray();
+    const legacyName = collections.find((item) => item.name === 'studentrequirements');
+    const intramsName = collections.find((item) => item.name === 'studentrequiremnts-intrams');
+    if (legacyName && !intramsName) {
+      await database.collection(legacyName.name).rename('studentrequiremnts-intrams');
+      console.log('✅ Legacy studentrequirements collection renamed for Intrams records');
+    }
+
     await User.initializeCollections();
     
     return conn;

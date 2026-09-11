@@ -118,7 +118,8 @@ const StudentRequirementSchema = new mongoose.Schema({
     default: false
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  collection: 'studentrequiremnts-intrams'
 });
 
 // Index for efficient queries
@@ -127,4 +128,5 @@ StudentRequirementSchema.index({ studentId: 1, requirementType: 1, academicYear:
 StudentRequirementSchema.index({ uploadDate: -1 });
 StudentRequirementSchema.index({ resubmitted: 1 });
 
-module.exports = mongoose.model('StudentRequirement', StudentRequirementSchema);
+module.exports = mongoose.models.StudentRequirement
+  || mongoose.model('StudentRequirement', StudentRequirementSchema);
