@@ -21,7 +21,8 @@ const allowedRequirementTypes = new Map([
   ['.jpg', 'image/jpeg'],
   ['.jpeg', 'image/jpeg'],
   ['.png', 'image/png'],
-  ['.gif', 'image/gif']
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp']
 ]);
 
 const resolveStoredFilePath = (storedPath) => {

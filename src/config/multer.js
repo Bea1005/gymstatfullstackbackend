@@ -33,16 +33,17 @@ const fileFilter = (req, file, cb) => {
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'image/jpeg',
     'image/png',
-    'image/gif'
+    'image/gif',
+    'image/webp'
   ];
 
-  const allowedExtensions = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif'];
+  const allowedExtensions = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.webp'];
   const ext = path.extname(file.originalname).toLowerCase();
 
   if (allowedMimes.includes(file.mimetype) && allowedExtensions.includes(ext)) {
     cb(null, true);
   } else {
-    cb(new Error('Only PDF, DOC, DOCX, JPG, PNG, and GIF files are allowed'), false);
+    cb(new Error('Only PDF, DOC, DOCX, JPG, PNG, GIF, and WebP files are allowed'), false);
   }
 };
 
