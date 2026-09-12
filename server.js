@@ -13,6 +13,8 @@ const { getJWTSecret } = require('./src/config/security');
 const { hashPassword } = require('./src/config/passwords');
 const { apiRateLimiter } = require('./src/config/rateLimit');
 const User = require('./src/models/User');
+const StudentProfile = require('./src/models/StudentProfile');
+const { deleteProfilePhoto, uploadProfilePhoto, streamProfilePhoto } = require('./src/config/profilePhotoStorage');
 const { protect, authorize } = require('./src/middleware/auth');
 const { validateRequestBody } = require('./src/middleware/requestValidation');
 const { auditSecurityEvents } = require('./src/middleware/securityAudit');
@@ -35,6 +37,14 @@ const scheduleRequestsRouter = require('./src/routes/scheduleRequests');
 const scheduleRoutes = require('./src/routes/schedules');
 const requirementRoutes = require('./src/routes/requirementRoutes');
 const upload = require('./src/config/multer');
+const profilePhotoUpload = require('multer')({
+  storage: require('multer').memoryStorage(),
+  fileFilter: (req, file, callback) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    callback(null, allowedTypes.includes(file.mimetype));
+  },
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 const app = express();
 const rawBaseUri = process.env.BASE_URI || '/api/v1';
@@ -154,6 +164,11 @@ const handleProfileGet = async (req, res) => {
     }
 
     const userObj = user.toObject();
+    if (User.normalizeRole(user.role) === 'student') {
+      const studentProfile = await StudentProfile.findOne({ studentId: user._id }).select('filename mimeType updatedAt').lean();
+      userObj.profilePhoto = studentProfile ? `/profile/photo` : '';
+      userObj.profilePhotoUpdatedAt = studentProfile?.updatedAt || null;
+    }
     if (userObj.notifications === undefined) {
       userObj.notifications = true;
     }
@@ -183,8 +198,7 @@ const handleProfileUpdate = async (req, res) => {
       });
     }
 
-    if (req.file && !['image/jpeg', 'image/png', 'image/gif'].includes(req.file.mimetype)) {
-      fs.unlink(req.file.path, () => {});
+    if (req.file && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(req.file.mimetype)) {
       return res.status(400).json({
         success: false,
         message: 'Profile photo must be a JPG, PNG, or GIF image.'
@@ -280,8 +294,16 @@ const handleProfileUpdate = async (req, res) => {
       }
     }
 
+    let uploadedFileId = null;
+    let previousProfile = null;
     if (req.file && User.normalizeRole(user.role) === 'student') {
-      user.profilePhoto = `/uploads/requirements/${req.file.filename}`;
+      previousProfile = await StudentProfile.findOne({ studentId: user._id });
+      uploadedFileId = await uploadProfilePhoto({
+        buffer: req.file.buffer,
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        studentId: user._id,
+      });
     }
 
     if (newPassword !== undefined) {
@@ -309,6 +331,28 @@ const handleProfileUpdate = async (req, res) => {
 
     await user.save();
 
+    if (uploadedFileId) {
+      try {
+        await StudentProfile.findOneAndUpdate(
+          { studentId: user._id },
+          {
+            studentId: user._id,
+            imageFileId: uploadedFileId,
+            filename: req.file.originalname,
+            mimeType: req.file.mimetype,
+            storageReference: `gridfs://${uploadedFileId.toString()}`,
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        );
+        if (previousProfile?.imageFileId && String(previousProfile.imageFileId) !== String(uploadedFileId)) {
+          await deleteProfilePhoto(previousProfile.imageFileId);
+        }
+      } catch (photoError) {
+        await deleteProfilePhoto(uploadedFileId).catch(() => {});
+        throw photoError;
+      }
+    }
+
     const savedUser = await User.findById(user._id).select('-password');
     if (!savedUser) {
       return res.status(500).json({
@@ -328,6 +372,11 @@ const handleProfileUpdate = async (req, res) => {
     }
 
     const userObj = savedUser.toObject();
+    if (User.normalizeRole(savedUser.role) === 'student') {
+      const studentProfile = await StudentProfile.findOne({ studentId: savedUser._id }).select('updatedAt').lean();
+      userObj.profilePhoto = studentProfile ? `/profile/photo` : '';
+      userObj.profilePhotoUpdatedAt = studentProfile?.updatedAt || null;
+    }
     if (userObj.notifications === undefined) {
       userObj.notifications = true;
     }
@@ -357,8 +406,24 @@ const handleProfileUpdate = async (req, res) => {
 
 app.get('/profile', protect, apiRateLimiter, handleProfileGet);
 app.get(`${BASE_URI}/profile`, protect, apiRateLimiter, handleProfileGet);
-app.put('/profile', protect, apiRateLimiter, upload.single('profilePhoto'), validateRequestBody, handleProfileUpdate);
-app.put(`${BASE_URI}/profile`, protect, apiRateLimiter, upload.single('profilePhoto'), validateRequestBody, handleProfileUpdate);
+app.put('/profile', protect, apiRateLimiter, profilePhotoUpload.single('profilePhoto'), validateRequestBody, handleProfileUpdate);
+app.put(`${BASE_URI}/profile`, protect, apiRateLimiter, profilePhotoUpload.single('profilePhoto'), validateRequestBody, handleProfileUpdate);
+
+const sendStudentProfilePhoto = async (req, res, studentId) => {
+  const profile = await StudentProfile.findOne({ studentId }).lean();
+  if (!profile?.imageFileId) return res.status(404).json({ message: 'Profile photo not found' });
+  res.setHeader('Content-Type', profile.mimeType);
+  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    await streamProfilePhoto(profile.imageFileId, res);
+  } catch (error) {
+    if (!res.headersSent) return res.status(404).json({ message: 'Profile photo not found' });
+  }
+};
+
+app.get('/profile/photo', protect, apiRateLimiter, (req, res) => sendStudentProfilePhoto(req, res, req.user?._id));
+app.get(`${BASE_URI}/profile/photo`, protect, apiRateLimiter, (req, res) => sendStudentProfilePhoto(req, res, req.user?._id));
 
 // ============================================================
 // 🔒 STUDENT ROUTES - Handle their own authentication
