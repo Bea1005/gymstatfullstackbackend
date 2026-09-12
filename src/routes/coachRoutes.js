@@ -1,8 +1,27 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 const User = require('../models/User');
 const StudentRequirement = require('../models/StudentRequirement');
 const { protect, authorize } = require('../middleware/auth');
+
+const backendRoot = path.resolve(__dirname, '../..');
+const profileUploadRoot = path.resolve(backendRoot, 'uploads', 'requirements');
+const profileMimeTypes = new Map([
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp']
+]);
+
+const resolveProfilePhotoPath = (storedPath) => {
+  if (!storedPath) return '';
+  const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
+  const candidate = path.resolve(backendRoot, normalizedPath.replace(/^[/\\]+/, ''));
+  return candidate.startsWith(`${profileUploadRoot}${path.sep}`) && fs.existsSync(candidate) ? candidate : '';
+};
 
 const REQUIRED_REQUIREMENT_TYPES = ['medical', 'cor', 'psa', 'insurance', 'profile', 'consent'];
 
@@ -49,6 +68,26 @@ const getStudentRequirementsEligibility = async (studentId) => {
     incomplete,
   };
 };
+
+router.get('/coach/students/:studentId/profile-photo', protect, authorize('coach'), async (req, res) => {
+  try {
+    const student = await User.findOne({ _id: req.params.studentId, role: 'student' }).select('profilePhoto').lean();
+    if (!student?.profilePhoto) return res.status(404).json({ message: 'Profile photo not found' });
+
+    const filePath = resolveProfilePhotoPath(student.profilePhoto);
+    if (!filePath) return res.status(404).json({ message: 'Profile photo not found' });
+
+    const contentType = profileMimeTypes.get(path.extname(filePath).toLowerCase());
+    if (!contentType) return res.status(404).json({ message: 'Unsupported profile photo' });
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'inline');
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error('Coach student profile photo error:', error);
+    return res.status(500).json({ message: 'Unable to load student profile photo' });
+  }
+});
 
 // GET coach profile
 router.get('/coach/profile', protect, authorize('coach'), async (req, res) => {
@@ -129,6 +168,7 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
           athleteStatus: athlete.athleteStatus || '',
           branchCampus: athlete.branchCampus || '',
           profilePhoto: athlete.profilePhoto || '',
+          profilePhotoUrl: athlete.profilePhoto ? `/coach/students/${athlete._id}/profile-photo` : '',
           sport: athlete.sport || '',
           createdAt: athlete.createdAt,
           updatedAt: athlete.updatedAt,
@@ -223,6 +263,7 @@ router.get('/coach/student-directory', protect, authorize('coach'), async (req, 
           id: student.id || student._id,
           studentId: student.id || student.studentId || student._id,
           username: student.username || '',
+          profilePhotoUrl: student.profilePhoto ? `/coach/students/${student._id}/profile-photo` : '',
         });
       }
     }
