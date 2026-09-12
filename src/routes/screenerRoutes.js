@@ -25,6 +25,15 @@ const allowedRequirementTypes = new Map([
   ['.webp', 'image/webp']
 ]);
 
+const toFileBuffer = (value) => {
+  if (!value) return null;
+  if (Buffer.isBuffer(value)) return value;
+  if (Buffer.isBuffer(value.buffer)) return value.buffer;
+  if (value.buffer) return Buffer.from(value.buffer);
+  if (value.type === 'Buffer' && Array.isArray(value.data)) return Buffer.from(value.data);
+  return null;
+};
+
 const resolveStoredFilePath = (storedPath) => {
   if (!storedPath) return '';
   const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
@@ -58,17 +67,20 @@ const serveScreenerRequirementFile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
 
-    if (submission.fileData?.length) {
+    const fileBuffer = toFileBuffer(submission.fileData);
+    if (fileBuffer?.length) {
       const extension = path.extname(submission.fileName || '').toLowerCase();
       const expectedMime = allowedRequirementTypes.get(extension);
-      if (!expectedMime || submission.fileType !== expectedMime || submission.fileData.length > MAX_REQUIREMENT_FILE_SIZE) {
+      const storedMime = String(submission.fileType || '').toLowerCase();
+      if (!expectedMime || (storedMime && storedMime !== expectedMime) || fileBuffer.length > MAX_REQUIREMENT_FILE_SIZE) {
         return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
       }
 
       const safeFileName = path.basename(submission.fileName || 'requirement').replace(/[\r\n"\\/]/g, '_');
       res.setHeader('Content-Type', expectedMime);
       res.setHeader('Content-Disposition', `inline; filename="${safeFileName}"`);
-      return res.send(submission.fileData);
+      res.setHeader('Content-Type', storedMime || expectedMime);
+      return res.send(fileBuffer);
     }
 
     const storedPath = submission.filePath || '';
@@ -248,7 +260,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       // Add the requirement to the student's requirements
       const studentEntry = studentsById.get(studentId);
       const storedFilePath = resolveStoredFilePath(submission.filePath);
-      const hasUpload = Boolean(submission.fileData?.length || (storedFilePath && fs.existsSync(storedFilePath)));
+      const hasUpload = Boolean(toFileBuffer(submission.fileData)?.length || (storedFilePath && fs.existsSync(storedFilePath)));
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
