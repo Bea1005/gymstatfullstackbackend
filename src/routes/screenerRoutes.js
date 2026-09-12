@@ -45,7 +45,7 @@ const resolveStoredFilePath = (storedPath) => {
   return safeCandidate || '';
 };
 
-router.get('/screener/requirements/:id/download', protect, authorize('screener', 'admin'), async (req, res) => {
+const serveScreenerRequirementFile = async (req, res) => {
   try {
     if (!/^[a-f\d]{24}$/i.test(req.params.id)) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
@@ -92,7 +92,10 @@ router.get('/screener/requirements/:id/download', protect, authorize('screener',
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Unable to download uploaded file' });
   }
-});
+};
+
+router.get('/screener/requirements/:id/download', protect, authorize('screener', 'admin'), serveScreenerRequirementFile);
+router.get('/screener/requirements/:id/preview', protect, authorize('screener', 'admin'), serveScreenerRequirementFile);
 
 const requirementKeyLabels = {
   medical: 'Medical Certificate',
@@ -254,7 +257,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: submission.fileName || 'Uploaded file',
         fileType: submission.fileType || '',
-        fileUrl: `/screener/requirements/${submission._id}/download?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}`,
+        fileUrl: `/screener/requirements/${submission._id}/preview?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}`,
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
         hasUpload,
