@@ -7,10 +7,10 @@ const getBucket = () => new mongoose.mongo.GridFSBucket(mongoose.connection.db, 
   bucketName: GRIDFS_BUCKET_NAME,
 });
 
-const uploadProfilePhoto = ({ buffer, filename, contentType, studentId }) => new Promise((resolve, reject) => {
+const uploadProfilePhoto = ({ buffer, filename, contentType, studentId, purpose = 'student-profile-photo' }) => new Promise((resolve, reject) => {
   const uploadStream = getBucket().openUploadStream(filename, {
     contentType,
-    metadata: { studentId: String(studentId), purpose: 'student-profile-photo' },
+    metadata: { studentId: String(studentId), purpose },
   });
 
   uploadStream.once('error', reject);

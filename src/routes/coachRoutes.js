@@ -1,10 +1,173 @@
 const express = require('express');
+const crypto = require('crypto');
+const multer = require('multer');
 const router = express.Router();
 const User = require('../models/User');
 const StudentProfile = require('../models/StudentProfile');
+const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
+const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
 const StudentRequirement = require('../models/StudentRequirement');
 const { protect, authorize } = require('../middleware/auth');
+
+const facultyPhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.mimetype)),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+const getFacultyResponse = (member) => ({
+  id: member.facultyId,
+  facultyId: member.facultyId,
+  role: member.role,
+  fullname: member.name,
+  name: member.name,
+  age: member.age,
+  phone: member.contactNumber,
+  contactNumber: member.contactNumber,
+  email: member.email,
+  profilePhotoUrl: member.imageFileId ? `/coach/faculty-members/${member.facultyId}/profile-photo` : '',
+  createdAt: member.createdAt,
+  updatedAt: member.updatedAt,
+});
+
+const findFacultyMember = (coachId, facultyId) => StrasucFacultyMember.findOne({ coachId, facultyId });
+
+router.get('/coach/faculty-members', protect, authorize('coach'), async (req, res) => {
+  try {
+    let members = await StrasucFacultyMember.find({ coachId: req.user._id }).sort({ createdAt: 1 });
+    if (members.length === 0) {
+      const coach = await User.findById(req.user._id).select('staffMembers').lean();
+      const legacyMembers = Array.isArray(coach?.staffMembers)
+        ? coach.staffMembers.filter((member) => member?.fullname || member?.phone || member?.email)
+        : [];
+      if (legacyMembers.length > 0) {
+        await StrasucFacultyMember.insertMany(legacyMembers.map((member) => ({
+          facultyId: crypto.randomUUID(),
+          coachId: req.user._id,
+          role: member.role || 'OTHER FACULTY',
+          name: member.fullname || 'Faculty Member',
+          age: member.age || '',
+          contactNumber: member.phone || '',
+          email: member.email || '',
+        })));
+        members = await StrasucFacultyMember.find({ coachId: req.user._id }).sort({ createdAt: 1 });
+      }
+    }
+    return res.json(members.map(getFacultyResponse));
+  } catch (error) {
+    console.error('Faculty members fetch error:', error);
+    return res.status(500).json({ message: 'Server error while fetching faculty members' });
+  }
+});
+
+router.post('/coach/faculty-members', protect, authorize('coach'), facultyPhotoUpload.single('profilePhoto'), async (req, res) => {
+  let newFileId = null;
+  try {
+    const { facultyId = crypto.randomUUID(), role, name, fullname, age, contactNumber, phone, email } = req.body;
+    const facultyName = String(name || fullname || '').trim();
+    if (!facultyName) return res.status(400).json({ message: 'Faculty member name is required' });
+    if (await StrasucFacultyMember.exists({ facultyId })) return res.status(409).json({ message: 'Faculty member already exists' });
+
+    if (req.file) {
+      newFileId = await uploadProfilePhoto({
+        buffer: req.file.buffer,
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        studentId: req.user._id,
+        purpose: 'strasuc-faculty-member-photo',
+      });
+    }
+
+    const member = await StrasucFacultyMember.create({
+      facultyId,
+      coachId: req.user._id,
+      role: role || 'OTHER FACULTY',
+      name: facultyName,
+      age: age || '',
+      contactNumber: contactNumber || phone || '',
+      email: email || '',
+      imageFileId: newFileId,
+      imageFilename: req.file?.originalname || '',
+      imageMimeType: req.file?.mimetype || '',
+      storageReference: newFileId ? `gridfs://${newFileId.toString()}` : '',
+    });
+    return res.status(201).json(getFacultyResponse(member));
+  } catch (error) {
+    if (newFileId) await deleteProfilePhoto(newFileId).catch(() => {});
+    console.error('Faculty member create error:', error);
+    return res.status(500).json({ message: 'Server error while creating faculty member' });
+  }
+});
+
+router.put('/coach/faculty-members/:facultyId', protect, authorize('coach'), facultyPhotoUpload.single('profilePhoto'), async (req, res) => {
+  let newFileId = null;
+  try {
+    const member = await findFacultyMember(req.user._id, req.params.facultyId);
+    if (!member) return res.status(404).json({ message: 'Faculty member not found' });
+    const oldFileId = member.imageFileId;
+    if (req.file) {
+      newFileId = await uploadProfilePhoto({
+        buffer: req.file.buffer,
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        studentId: req.user._id,
+        purpose: 'strasuc-faculty-member-photo',
+      });
+    }
+
+    const { role, name, fullname, age, contactNumber, phone, email } = req.body;
+    if (role !== undefined) member.role = role;
+    if (name !== undefined || fullname !== undefined) member.name = String(name || fullname).trim();
+    if (age !== undefined) member.age = age;
+    if (contactNumber !== undefined || phone !== undefined) member.contactNumber = contactNumber || phone;
+    if (email !== undefined) member.email = email;
+    if (newFileId) {
+      member.imageFileId = newFileId;
+      member.imageFilename = req.file.originalname;
+      member.imageMimeType = req.file.mimetype;
+      member.storageReference = `gridfs://${newFileId.toString()}`;
+    }
+    await member.save();
+    if (newFileId && oldFileId) {
+      await deleteProfilePhoto(oldFileId).catch((cleanupError) => {
+        console.error('Unable to delete replaced faculty photo:', cleanupError);
+      });
+    }
+    return res.json(getFacultyResponse(member));
+  } catch (error) {
+    if (newFileId) await deleteProfilePhoto(newFileId).catch(() => {});
+    console.error('Faculty member update error:', error);
+    return res.status(500).json({ message: 'Server error while updating faculty member' });
+  }
+});
+
+router.get('/coach/faculty-members/:facultyId/profile-photo', protect, authorize('coach'), async (req, res) => {
+  try {
+    const member = await findFacultyMember(req.user._id, req.params.facultyId);
+    if (!member?.imageFileId) return res.status(404).json({ message: 'Faculty profile photo not found' });
+    res.setHeader('Content-Type', member.imageMimeType);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Cache-Control', 'no-store');
+    await streamProfilePhoto(member.imageFileId, res);
+  } catch (error) {
+    console.error('Faculty profile photo error:', error);
+    if (!res.headersSent) return res.status(404).json({ message: 'Faculty profile photo not found' });
+  }
+});
+
+router.delete('/coach/faculty-members/:facultyId', protect, authorize('coach'), async (req, res) => {
+  try {
+    const member = await findFacultyMember(req.user._id, req.params.facultyId);
+    if (!member) return res.status(404).json({ message: 'Faculty member not found' });
+    await member.deleteOne();
+    if (member.imageFileId) await deleteProfilePhoto(member.imageFileId);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Faculty member delete error:', error);
+    return res.status(500).json({ message: 'Server error while deleting faculty member' });
+  }
+});
 
 const REQUIRED_REQUIREMENT_TYPES = ['medical', 'cor', 'psa', 'insurance', 'profile', 'consent'];
 
@@ -71,7 +234,7 @@ router.get('/coach/students/:studentId/profile-photo', protect, authorize('coach
 // GET coach profile
 router.get('/coach/profile', protect, authorize('coach'), async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const user = await User.findById(req.user._id || req.user.id).select('-password');
 
     if (!user) {
       return res.status(404).json({ message: 'Coach not found' });
@@ -96,7 +259,7 @@ router.put('/coach/profile', protect, authorize('coach'), async (req, res) => {
   try {
     const { sportParticipation, coachPosition, staffMembers } = req.body;
 
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user._id || req.user.id);
     if (!user) {
       return res.status(404).json({ message: 'Coach not found' });
     }
