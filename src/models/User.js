@@ -9,11 +9,6 @@ const baseUserSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  username: {
-    type: String,
-    required: true,
-    unique: true
-  },
   email: {
     type: String,
     required: false,
@@ -131,7 +126,6 @@ const baseUserSchema = new mongoose.Schema({
   timestamps: true
 });
 
-baseUserSchema.index({ username: 1 }, { unique: true });
 baseUserSchema.index({ id: 1 }, { unique: true });
 baseUserSchema.index({ email: 1 }, { sparse: true });
 
@@ -187,8 +181,7 @@ const buildRoleDocument = (user) => {
 
   const normalizedRole = normalizeRole(source.role);
   const roleDocPayload = {
-    fullname: source.fullname || source.username || '',
-    username: source.username || source.id || '',
+    fullname: source.fullname || '',
     email: source.email || '',
     contactNumber: source.contactNumber || '',
     profilePhoto: source.profilePhoto || '',
@@ -277,6 +270,15 @@ const syncAllRoleDocuments = async () => {
 };
 
 const initializeRoleCollections = async () => {
+  try {
+    const indexes = await User.collection.indexes();
+    const usernameIndex = indexes.find((index) => index.key?.username === 1);
+    if (usernameIndex) await User.collection.dropIndex(usernameIndex.name);
+  } catch (error) {
+    if (error.code !== 27 && error.codeName !== 'IndexNotFound') {
+      console.warn('Unable to remove the legacy username index:', error.message);
+    }
+  }
   await Promise.all(Object.values(roleModelMap).map((model) => model.syncIndexes()));
   await syncAllRoleDocuments();
 };

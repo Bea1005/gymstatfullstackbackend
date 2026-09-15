@@ -4,7 +4,7 @@ const MAX_STRING_LENGTH = 5000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/;
 const KNOWN_FIELDS = new Set([
-  'fullname', 'username', 'email', 'password', 'newPassword', 'department', 'yearLevel', 'sport', 'id', 'role',
+  'fullname', 'email', 'password', 'newPassword', 'department', 'yearLevel', 'sport', 'id', 'role',
   'event', 'eventName', 'requesterName', 'requesterEmail', 'requesterPhone', 'organization', 'purpose', 'details',
   'startDate', 'startTime', 'endDate', 'endTime', 'prepDays', 'status', 'rejectionReason', 'fromRequest',
   'Name', 'contactNo', 'facebookAccount', 'equipment', 'quantity', 'qty', 'referenceIds', 'referenceConditions',

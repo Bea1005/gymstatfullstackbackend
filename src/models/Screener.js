@@ -11,10 +11,6 @@ const ScreenerSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  username: {
-    type: String,
-    required: true
-  },
   email: {
     type: String,
     default: ''

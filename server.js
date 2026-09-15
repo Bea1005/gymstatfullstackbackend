@@ -188,7 +188,7 @@ const handleProfileGet = async (req, res) => {
 
 const handleProfileUpdate = async (req, res) => {
   try {
-    const { username, email, fullname, contactNumber, dateOfBirth, dob, department, yearLevel, sport, branchCampus, graduationYear, athleteStatus, newPassword, notifications } = req.body;
+    const { email, fullname, contactNumber, dateOfBirth, dob, department, yearLevel, sport, branchCampus, graduationYear, athleteStatus, newPassword, notifications } = req.body;
     const user = await User.findById(req.user?._id);
 
     if (!user) {
@@ -237,31 +237,6 @@ const handleProfileUpdate = async (req, res) => {
     }
 
     if (User.normalizeRole(user.role) === 'student') {
-      if (username !== undefined) {
-        const usernameValue = String(username || '').trim();
-        if (!usernameValue) {
-          return res.status(400).json({ success: false, message: 'Username is required.' });
-        }
-
-        if (!/^[A-Za-z0-9._-]{3,30}$/.test(usernameValue)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Username must be 3-30 characters and contain only letters, numbers, periods, underscores, or hyphens.'
-          });
-        }
-
-        const existingUsernameUser = await User.findOne({
-          username: usernameValue,
-          _id: { $ne: user._id }
-        });
-
-        if (existingUsernameUser) {
-          return res.status(400).json({ success: false, message: 'Username already exists.' });
-        }
-
-        user.username = usernameValue;
-      }
-
       const textFields = {
         fullname,
         contactNumber,

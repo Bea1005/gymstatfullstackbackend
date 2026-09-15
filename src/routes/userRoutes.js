@@ -37,8 +37,7 @@ const mapUserToResponse = (user) => {
     return {
       _id: userObject._id?.toString(),
       id: userObject.id || userObject._id?.toString(),
-      fullname: userObject.fullname || userObject.username || '',
-      username: userObject.username || '',
+      fullname: userObject.fullname || '',
       email: userObject.email || '',
       role: userObject.role || 'admin'
     };
@@ -48,9 +47,8 @@ const mapUserToResponse = (user) => {
     ...rest,
     id: userObject.id || userObject._id?.toString(),
     _id: userObject._id?.toString(),
-    name: userObject.fullname || userObject.username || '',
-    fullname: userObject.fullname || userObject.username || '',
-    username: userObject.username || '',
+    name: userObject.fullname || '',
+    fullname: userObject.fullname || '',
     email: userObject.email || '',
     status: getUserActivityStatus(userObject),
     role: userObject.role || 'student'
@@ -96,7 +94,6 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
   try {
     const rawId = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
     const rawFullname = typeof req.body?.fullname === 'string' ? req.body.fullname.trim() : '';
-    const rawUsername = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
     const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
     const rawPassword = typeof req.body?.password === 'string' ? req.body.password : '';
     const rawDepartment = typeof req.body?.department === 'string' ? req.body.department.trim() : '';
@@ -126,13 +123,10 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     }
 
     const fullname = rawFullname || rawId;
-    const username = rawUsername || rawId;
-
     // Check for existing user - check all unique fields
     const existingUser = await User.findOne({
       $or: [
         { id: rawId },
-        { username: username },
         { email: rawEmail }
       ]
     });
@@ -140,7 +134,6 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     if (existingUser) {
       let fieldName = '';
       if (existingUser.id === rawId) fieldName = 'ID';
-      else if (existingUser.username === username) fieldName = 'Username';
       else if (existingUser.email === rawEmail) fieldName = 'Email';
       
       return res.status(409).json({
@@ -153,7 +146,6 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     const hashedPassword = await hashPassword(rawPassword);
     const userPayload = {
       fullname,
-      username,
       email: rawEmail,
       password: hashedPassword,
       role: requestedRole,
@@ -298,7 +290,7 @@ router.delete('/bulk-delete', protect, authorize('admin'), async (req, res) => {
 router.put('/:id', protect, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, fullname, email, role, department, sport } = req.body;
+    const { fullname, email, role, department, sport } = req.body;
 
     const user = await findUserByIdentifier(id);
 
@@ -309,19 +301,17 @@ router.put('/:id', protect, authorize('admin'), async (req, res) => {
       });
     }
 
-    // Check for duplicate username/email
-    if (username || email) {
+    // Check for duplicate email
+    if (email) {
       const duplicateQuery = [];
-      if (username) duplicateQuery.push({ username, _id: { $ne: user._id } });
       if (email) duplicateQuery.push({ email, _id: { $ne: user._id } });
       
       if (duplicateQuery.length > 0) {
         const existing = await User.findOne({ $or: duplicateQuery });
         if (existing) {
-          const fieldName = existing.username === username ? 'Username' : 'Email';
           return res.status(409).json({
             success: false,
-            message: `${fieldName} already exists. Please use a different ${fieldName.toLowerCase()}.`
+            message: 'Email already exists. Please use a different email.'
           });
         }
       }
@@ -330,7 +320,6 @@ router.put('/:id', protect, authorize('admin'), async (req, res) => {
     const isAdminUser = String(user.role || '').trim().toLowerCase() === 'admin';
 
     // Update fields
-    if (username) user.username = username;
     if (fullname) user.fullname = fullname;
     if (email !== undefined) user.email = email;
     if (role) user.role = normalizeRole(role);

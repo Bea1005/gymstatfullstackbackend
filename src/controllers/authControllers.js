@@ -36,7 +36,6 @@ const buildUserResponse = (user, roleOverride) => {
     return {
       _id: user._id,
       fullname: user.fullname,
-      username: user.username,
       email: user.email || '',
       notifications: user.notifications !== undefined ? user.notifications : true,
       role: resolvedRole,
@@ -47,7 +46,6 @@ const buildUserResponse = (user, roleOverride) => {
   return {
     _id: user._id,
     fullname: user.fullname,
-    username: user.username,
     email: user.email || '',
     notifications: user.notifications !== undefined ? user.notifications : true,
     role: resolvedRole,
@@ -119,13 +117,13 @@ exports.register = async (req, res) => {
   try {
     console.log('📝 Registration attempt:', { ...req.body, password: '***' });
     
-    const { fullname, username, email, password, department, yearLevel, sport, id } = req.body;
+    const { fullname, email, password, department, yearLevel, sport, id } = req.body;
 
-    if (!fullname || !username || !password || !id) {
+    if (!fullname || !password || !id) {
       console.log('❌ Registration failed: Missing required fields');
       return res.status(400).json({ 
         success: false,
-        message: 'Please provide all required fields: fullname, username, password, and ID' 
+        message: 'Please provide all required fields: fullname, password, and ID' 
       });
     }
 
@@ -157,16 +155,9 @@ exports.register = async (req, res) => {
       });
     }
 
-    let existingUser;
-    if (email) {
-      existingUser = await User.findOne({ 
-        $or: [{ email }, { username }, { id: trimmedId }] 
-      });
-    } else {
-      existingUser = await User.findOne({ 
-        $or: [{ username }, { id: trimmedId }] 
-      });
-    }
+    const duplicateQuery = [{ id: trimmedId }];
+    if (email) duplicateQuery.push({ email });
+    const existingUser = await User.findOne({ $or: duplicateQuery });
 
     if (existingUser) {
       if (email && existingUser.email === email) {
@@ -174,14 +165,6 @@ exports.register = async (req, res) => {
         return res.status(400).json({ 
           success: false,
           message: 'Email already registered' 
-        });
-      }
-
-      if (existingUser.username === username) {
-        console.log('❌ Registration failed: Username already taken');
-        return res.status(400).json({ 
-          success: false,
-          message: 'Username already taken' 
         });
       }
 
@@ -198,7 +181,6 @@ exports.register = async (req, res) => {
 
     const userPayload = {
       fullname,
-      username,
       email: email || '',
       password: hashedPassword,
       role: detectedRole,
@@ -304,7 +286,6 @@ exports.login = async (req, res) => {
         userId: user._id,
         role: userRole,
         email: user.email || '',
-        username: user.username
       },
       getJWTSecret(),
       { expiresIn: '7d' }
