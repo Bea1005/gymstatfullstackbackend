@@ -28,6 +28,8 @@ const getUserActivityStatus = (userObject) => {
   return Date.now() - lastActiveDate.getTime() <= activeWindowMs ? 'Active' : 'Inactive';
 };
 
+const getAccountStatus = (userObject) => userObject?.accountStatus === 'archived' ? 'archived' : 'active';
+
 const mapUserToResponse = (user) => {
   const userObject = user.toObject ? user.toObject() : user;
   const { password, __v, ...rest } = userObject;
@@ -39,6 +41,7 @@ const mapUserToResponse = (user) => {
       id: userObject.id || userObject._id?.toString(),
       fullname: userObject.fullname || '',
       email: userObject.email || '',
+      accountStatus: getAccountStatus(userObject),
       role: userObject.role || 'admin'
     };
   }
@@ -50,6 +53,7 @@ const mapUserToResponse = (user) => {
     name: userObject.fullname || '',
     fullname: userObject.fullname || '',
     email: userObject.email || '',
+    accountStatus: getAccountStatus(userObject),
     status: getUserActivityStatus(userObject),
     role: userObject.role || 'student'
   };
@@ -151,6 +155,7 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       role: requestedRole,
       id: rawId,
       status: 'Inactive',
+      accountStatus: 'active',
       lastActiveAt: null
     };
 
@@ -190,7 +195,8 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
 // @access  Private/Admin
 router.get('/students', protect, authorize('admin'), async (req, res) => {
   try {
-    const users = await User.find({ role: 'student' })
+    const accountStatus = req.query.accountStatus === 'archived' ? 'archived' : 'active';
+    const users = await User.find({ role: 'student', accountStatus })
       .select('-password -__v')
       .sort({ createdAt: -1 });
     res.json(users.map(mapUserToResponse));
@@ -222,7 +228,8 @@ router.post('/students', protect, authorize('admin'), async (req, res) => {
 // @access  Private/Admin
 router.get('/screeners', protect, authorize('admin'), async (req, res) => {
   try {
-    const users = await User.find({ role: 'screener' })
+    const accountStatus = req.query.accountStatus === 'archived' ? 'archived' : 'active';
+    const users = await User.find({ role: 'screener', accountStatus })
       .select('-password -__v')
       .sort({ createdAt: -1 });
     res.json(users.map(mapUserToResponse));
@@ -249,10 +256,10 @@ router.post('/screeners', protect, authorize('admin'), async (req, res) => {
   }, res);
 });
 
-// @desc    Delete many users by ID
-// @route   DELETE /api/v1/users/bulk-delete
+// @desc    Archive many users by ID
+// @route   PATCH /api/v1/users/archive
 // @access  Private/Admin
-router.delete('/bulk-delete', protect, authorize('admin'), async (req, res) => {
+router.patch('/archive', protect, authorize('admin'), async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
 
@@ -263,17 +270,14 @@ router.delete('/bulk-delete', protect, authorize('admin'), async (req, res) => {
       });
     }
 
-    const deleteQuery = {
-      id: { $in: ids }
-    };
-
-    console.log('Bulk deleting users with IDs:', ids);
-    const result = await User.deleteMany(deleteQuery);
-    console.log('Bulk delete result - deleted count:', result.deletedCount);
+    const result = await User.updateMany(
+      { id: { $in: ids }, role: { $in: ['student', 'screener'] }, accountStatus: { $ne: 'archived' } },
+      { $set: { accountStatus: 'archived' } }
+    );
     res.json({ 
       success: true, 
-      deletedCount: result.deletedCount,
-      message: `Successfully deleted ${result.deletedCount} user(s)`
+      archivedCount: result.modifiedCount,
+      message: `Successfully archived ${result.modifiedCount} user(s)`
     });
   } catch (error) {
     console.error('Bulk delete error:', error);
@@ -351,13 +355,13 @@ router.put('/:id', protect, authorize('admin'), async (req, res) => {
   }
 });
 
-// @desc    Delete user by ID
-// @route   DELETE /api/v1/users/:id
+// @desc    Archive or restore a student/screener account
+// @route   PATCH /api/v1/users/:id/archive|restore
 // @access  Private/Admin
-router.delete('/:id', protect, authorize('admin'), async (req, res) => {
+router.patch('/:id/:action(archive|restore)', protect, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('📦 Delete request - ID:', id);
+    const accountStatus = req.params.action === 'restore' ? 'active' : 'archived';
     
     const user = await findUserByIdentifier(id);
 
@@ -369,13 +373,17 @@ router.delete('/:id', protect, authorize('admin'), async (req, res) => {
       });
     }
 
-    console.log('✅ Found user:', user._id, '- Role:', user.role);
-    const deleteResult = await User.deleteOne({ _id: user._id });
-    console.log('✅ Delete result:', deleteResult);
+    if (!['student', 'screener'].includes(String(user.role || '').toLowerCase())) {
+      return res.status(400).json({ success: false, message: 'Only student and screener accounts can be archived or restored.' });
+    }
+
+    user.accountStatus = accountStatus;
+    await user.save();
     
     res.json({ 
       success: true, 
-      message: 'User deleted successfully' 
+      accountStatus,
+      message: accountStatus === 'archived' ? 'User account archived successfully.' : 'User account restored successfully.'
     });
   } catch (error) {
     console.error('❌ Delete user error:', error);
@@ -418,7 +426,8 @@ router.get('/', protect, authorize('admin'), async (req, res) => {
   try {
     console.log('✅ GET /users - User role:', req.user?.role);
     const roleFilter = getRequestedRole(req);
-    const filter = roleFilter ? { role: roleFilter } : {};
+    const accountStatus = req.query.accountStatus === 'archived' ? 'archived' : 'active';
+    const filter = roleFilter ? { role: roleFilter, accountStatus } : { accountStatus };
     const users = await User.find(filter)
       .select('-password -__v')
       .sort({ createdAt: -1 });

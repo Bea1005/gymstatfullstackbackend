@@ -86,6 +86,11 @@ const baseUserSchema = new mongoose.Schema({
     enum: ['Active', 'Inactive'],
     default: 'Inactive'
   },
+  accountStatus: {
+    type: String,
+    enum: ['active', 'archived'],
+    default: 'active'
+  },
   adminLevel: {
     type: String,
     default: ''
@@ -270,6 +275,10 @@ const syncAllRoleDocuments = async () => {
 };
 
 const initializeRoleCollections = async () => {
+  await User.updateMany(
+    { accountStatus: { $exists: false } },
+    { $set: { accountStatus: 'active' } }
+  );
   try {
     const indexes = await User.collection.indexes();
     const usernameIndex = indexes.find((index) => index.key?.username === 1);

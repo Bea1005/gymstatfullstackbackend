@@ -44,6 +44,13 @@ exports.protect = async (req, res, next) => {
       });
     }
 
+    if (user.accountStatus === 'archived') {
+      return res.status(403).json({
+        success: false,
+        message: 'This account has been archived.'
+      });
+    }
+
     user.lastActiveAt = new Date();
     user.status = 'Active';
     if (typeof user.save === 'function') {

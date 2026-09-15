@@ -244,6 +244,13 @@ exports.login = async (req, res) => {
       });
     }
 
+    if (user.accountStatus === 'archived') {
+      return res.status(403).json({
+        success: false,
+        message: 'This account has been archived.'
+      });
+    }
+
     // Check password
     const passwordCheck = await verifyPassword(password, user.password);
 
