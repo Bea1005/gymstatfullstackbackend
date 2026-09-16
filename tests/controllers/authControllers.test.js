@@ -2,11 +2,14 @@ const httpMocks = require('node-mocks-http');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../../src/models/User');
-const { register, login, forgotPassword } = require('../../src/controllers/authControllers');
+const { register, login, requestPasswordReset, resetPassword } = require('../../src/controllers/authControllers');
 
 jest.mock('../../src/models/User');
 jest.mock('bcryptjs');
 jest.mock('jsonwebtoken');
+jest.mock('../../src/config/email', () => ({
+  sendPasswordResetOtp: jest.fn().mockResolvedValue(true)
+}));
 
 describe('Auth Controllers', () => {
   beforeEach(() => {
@@ -195,32 +198,52 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().user.role).toBe('coach');
   });
 
-  it('resets a password when the ID and email belong to the same account', async () => {
+  it('creates a reset challenge without exposing whether an email exists', async () => {
     const req = httpMocks.createRequest({
       body: {
-        id: 'Coach1234',
         email: 'coach@example.com',
-        newPassword: 'NewPassword1!'
       }
     });
     const res = httpMocks.createResponse();
 
     const user = {
       _id: 'user123',
-      id: 'Coach1234',
       email: 'coach@example.com',
-      password: 'old-hash',
+      passwordResetLastSentAt: null,
       save: jest.fn().mockResolvedValue(true)
     };
 
-    User.findOne.mockResolvedValue(user);
-    bcrypt.hash.mockResolvedValue('new-hash');
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
 
-    await forgotPassword(req, res);
+    await requestPasswordReset(req, res);
 
     expect(user.save).toHaveBeenCalled();
-    expect(user.password).toBe('new-hash');
-    expect(res.statusCode).toBe(200);
+    expect(user.passwordResetOtpHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(res.statusCode).toBe(202);
     expect(res._getJSONData().success).toBe(true);
+    expect(res._getJSONData().message).toContain('If an account is associated');
+  });
+
+  it('requires a verified reset challenge before changing a password', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        email: 'coach@example.com',
+        newPassword: 'NewPassword1!'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue({
+        email: 'coach@example.com',
+        passwordResetVerifiedAt: null,
+        save: jest.fn()
+      })
+    });
+
+    await resetPassword(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().success).toBe(false);
   });
 });

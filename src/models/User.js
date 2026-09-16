@@ -126,6 +126,31 @@ const baseUserSchema = new mongoose.Schema({
   athleteStatus: {
     type: String,
     default: ''
+  },
+  passwordResetOtpHash: {
+    type: String,
+    default: null,
+    select: false
+  },
+  passwordResetOtpExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  passwordResetOtpAttempts: {
+    type: Number,
+    default: 0,
+    select: false
+  },
+  passwordResetLastSentAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  passwordResetVerifiedAt: {
+    type: Date,
+    default: null,
+    select: false
   }
 }, {
   timestamps: true

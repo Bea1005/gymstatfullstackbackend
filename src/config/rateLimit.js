@@ -37,5 +37,9 @@ const limiterOptions = (windowMs, limit) => ({
 
 const loginRateLimiter = rateLimit(limiterOptions(loginWindowMs, loginMax));
 const apiRateLimiter = rateLimit(limiterOptions(apiWindowMs, apiMax));
+const passwordResetRateLimiter = rateLimit(limiterOptions(
+  parsePositiveInteger(process.env.PASSWORD_RESET_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+  parsePositiveInteger(process.env.PASSWORD_RESET_RATE_LIMIT_MAX, 5)
+));
 
-module.exports = { apiRateLimiter, loginRateLimiter };
+module.exports = { apiRateLimiter, loginRateLimiter, passwordResetRateLimiter };

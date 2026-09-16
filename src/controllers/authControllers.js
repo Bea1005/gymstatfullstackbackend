@@ -1,7 +1,36 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { getJWTSecret } = require('../config/security');
 const { hashPassword, verifyPassword } = require('../config/passwords');
+const { sendPasswordResetOtp } = require('../config/email');
+
+const RESET_OTP_TTL_MS = 10 * 60 * 1000;
+const RESET_OTP_COOLDOWN_MS = 60 * 1000;
+const RESET_OTP_MAX_ATTEMPTS = 5;
+const RESET_VERIFICATION_TTL_MS = 10 * 60 * 1000;
+const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_PATTERN = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>_\-]).{8,}$/;
+
+const hashResetValue = (value) => crypto
+  .createHmac('sha256', getJWTSecret())
+  .update(String(value))
+  .digest('hex');
+
+const resetValueMatches = (value, expectedHash) => {
+  const actual = Buffer.from(hashResetValue(value), 'hex');
+  const expected = Buffer.from(String(expectedHash || ''), 'hex');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+};
+
+const clearPasswordResetState = (user) => {
+  user.passwordResetOtpHash = null;
+  user.passwordResetOtpExpiresAt = null;
+  user.passwordResetOtpAttempts = 0;
+  user.passwordResetLastSentAt = null;
+  user.passwordResetVerifiedAt = null;
+};
 
 const detectRoleFromId = (id) => {
   const trimmedId = String(id || '').trim();
@@ -58,57 +87,115 @@ const buildUserResponse = (user, roleOverride) => {
   };
 };
 
-exports.forgotPassword = async (req, res) => {
+exports.requestPasswordReset = async (req, res) => {
   try {
-    const trimmedId = String(req.body?.id || '').trim();
     const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
-    const newPassword = req.body?.newPassword;
-
-    if (!trimmedId || !normalizedEmail || !newPassword) {
+    if (!EMAIL_PATTERN.test(normalizedEmail)) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide your ID, registered email, and a new password.'
+        message: 'Please provide a valid email address.'
       });
     }
 
-    if (String(newPassword).length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'New password must be at least 6 characters long.'
-      });
+    const user = await User.findOne({ email: normalizedEmail }).select('+passwordResetLastSentAt');
+    if (!user) return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
+
+    const now = Date.now();
+    if (user.passwordResetLastSentAt && now - user.passwordResetLastSentAt.getTime() < RESET_OTP_COOLDOWN_MS) {
+      return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
     }
 
-    const user = await User.findOne({ id: trimmedId });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'No account found for that ID.'
-      });
-    }
-
-    if (String(user.email || '').trim().toLowerCase() !== normalizedEmail) {
-      return res.status(404).json({
-        success: false,
-        message: 'The provided ID and email do not match an existing account.'
-      });
-    }
-
-    const hashedPassword = await hashPassword(newPassword);
-
-    user.password = hashedPassword;
+    const otp = String(crypto.randomInt(100000, 1000000));
+    user.passwordResetOtpHash = hashResetValue(otp);
+    user.passwordResetOtpExpiresAt = new Date(now + RESET_OTP_TTL_MS);
+    user.passwordResetOtpAttempts = 0;
+    user.passwordResetLastSentAt = new Date(now);
+    user.passwordResetVerifiedAt = null;
     await user.save();
 
-    return res.json({
-      success: true,
-      message: 'Password reset successful. You can now log in with your new password.'
-    });
+    try {
+      await sendPasswordResetOtp(normalizedEmail, otp, RESET_OTP_TTL_MS / 60000);
+    } catch (error) {
+      clearPasswordResetState(user);
+      await user.save();
+      console.error('Password reset email delivery failed:', error.message);
+      return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
+    }
+
+    return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
   } catch (error) {
-    console.error('❌ Forgot password error:', error);
+    console.error('Password reset request failed:', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Server error while resetting password. Please try again.'
+      message: 'Unable to process the password reset request. Please try again later.'
     });
+  }
+};
+
+exports.verifyPasswordResetOtp = async (req, res) => {
+  try {
+    const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    const otp = String(req.body?.otp || '').trim();
+    if (!EMAIL_PATTERN.test(normalizedEmail) || !/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail })
+      .select('+passwordResetOtpHash +passwordResetOtpExpiresAt +passwordResetOtpAttempts');
+    const now = Date.now();
+    if (!user || !user.passwordResetOtpHash || !user.passwordResetOtpExpiresAt || user.passwordResetOtpExpiresAt.getTime() <= now) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    if (user.passwordResetOtpAttempts >= RESET_OTP_MAX_ATTEMPTS) {
+      clearPasswordResetState(user);
+      await user.save();
+      return res.status(429).json({ success: false, message: 'Too many verification attempts. Please request a new code.' });
+    }
+
+    user.passwordResetOtpAttempts += 1;
+    if (!resetValueMatches(otp, user.passwordResetOtpHash)) {
+      await user.save();
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    user.passwordResetOtpHash = null;
+    user.passwordResetOtpExpiresAt = null;
+    user.passwordResetOtpAttempts = 0;
+    user.passwordResetVerifiedAt = new Date(now);
+    await user.save();
+    return res.json({ success: true, message: 'Verification successful.' });
+  } catch (error) {
+    console.error('Password reset verification failed:', error.message);
+    return res.status(500).json({ success: false, message: 'Unable to verify the code. Please try again later.' });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    const newPassword = String(req.body?.newPassword || '');
+    if (!EMAIL_PATTERN.test(normalizedEmail) || !PASSWORD_PATTERN.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.'
+      });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail })
+      .select('+passwordResetVerifiedAt');
+    const verifiedAt = user?.passwordResetVerifiedAt?.getTime() || 0;
+    if (!user || Date.now() - verifiedAt > RESET_VERIFICATION_TTL_MS) {
+      return res.status(400).json({ success: false, message: 'Your verification has expired. Please request a new code.' });
+    }
+
+    user.password = await hashPassword(newPassword);
+    clearPasswordResetState(user);
+    await user.save();
+    return res.json({ success: true, message: 'Password reset successfully.' });
+  } catch (error) {
+    console.error('Password reset failed:', error.message);
+    return res.status(500).json({ success: false, message: 'Unable to reset your password. Please try again later.' });
   }
 };
 
