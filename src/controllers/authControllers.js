@@ -12,6 +12,7 @@ const RESET_VERIFICATION_TTL_MS = 10 * 60 * 1000;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_PATTERN = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>_\-]).{8,}$/;
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const hashResetValue = (value) => crypto
   .createHmac('sha256', getJWTSecret())
@@ -97,7 +98,9 @@ exports.requestPasswordReset = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email: normalizedEmail }).select('+passwordResetLastSentAt');
+    const user = await User.findOne({
+      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' }
+    }).select('+passwordResetLastSentAt');
     if (!user) return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
 
     const now = Date.now();
@@ -119,7 +122,10 @@ exports.requestPasswordReset = async (req, res) => {
       clearPasswordResetState(user);
       await user.save();
       console.error('Password reset email delivery failed:', error.message);
-      return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
+      return res.status(503).json({
+        success: false,
+        message: 'The verification email could not be sent. Please try again later.'
+      });
     }
 
     return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
@@ -140,7 +146,9 @@ exports.verifyPasswordResetOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
     }
 
-    const user = await User.findOne({ email: normalizedEmail })
+    const user = await User.findOne({
+      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' }
+    })
       .select('+passwordResetOtpHash +passwordResetOtpExpiresAt +passwordResetOtpAttempts');
     const now = Date.now();
     if (!user || !user.passwordResetOtpHash || !user.passwordResetOtpExpiresAt || user.passwordResetOtpExpiresAt.getTime() <= now) {
@@ -182,7 +190,9 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email: normalizedEmail })
+    const user = await User.findOne({
+      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' }
+    })
       .select('+passwordResetVerifiedAt');
     const verifiedAt = user?.passwordResetVerifiedAt?.getTime() || 0;
     if (!user || Date.now() - verifiedAt > RESET_VERIFICATION_TTL_MS) {

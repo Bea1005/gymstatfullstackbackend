@@ -1,20 +1,33 @@
 const nodemailer = require('nodemailer');
 
-const requiredEmailSettings = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM'];
+const getSetting = (...names) => names.map((name) => process.env[name]).find(Boolean);
 
 const getEmailTransport = () => {
-  const missing = requiredEmailSettings.filter((key) => !process.env[key]);
+  const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
+  const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
+  const password = getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD');
+  const port = Number(getSetting('SMTP_PORT', 'EMAIL_PORT', 'MAIL_PORT') || 587);
+  const secureSetting = getSetting('SMTP_SECURE', 'EMAIL_SECURE', 'MAIL_SECURE');
+  const from = getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || user;
+  const missing = [
+    ['SMTP_HOST', host],
+    ['SMTP_USER', user],
+    ['SMTP_PASSWORD', password]
+  ].filter(([, value]) => !value).map(([key]) => key);
+
   if (missing.length) {
-    throw new Error('Email service is not configured');
+    throw new Error(`Email service is not configured: missing ${missing.join(', ')}`);
   }
 
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+    host,
+    port,
+    secure: secureSetting === undefined
+      ? port === 465
+      : String(secureSetting).toLowerCase() === 'true',
     auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD
+      user,
+      pass: password
     }
   });
 };
@@ -23,7 +36,7 @@ const sendPasswordResetOtp = async (email, otp, expiresInMinutes) => {
   const transporter = getEmailTransport();
 
   await transporter.sendMail({
-    from: process.env.SMTP_FROM,
+    from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
     to: email,
     subject: 'GYMSTAT password reset verification code',
     text: [
