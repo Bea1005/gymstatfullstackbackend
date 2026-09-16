@@ -114,7 +114,8 @@ app.use(cookieParser());
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = (body) => {
-    if (res.statusCode >= 500) {
+    const isPasswordResetRoute = req.path.startsWith('/forgot-password/');
+    if (res.statusCode >= 500 && !isPasswordResetRoute) {
       return originalJson({
         success: false,
         message: 'Internal server error'
