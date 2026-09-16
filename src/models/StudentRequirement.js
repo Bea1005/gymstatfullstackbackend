@@ -118,6 +118,10 @@ const StudentRequirementSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  notificationReadAt: {
+    type: Date,
+    default: null
+  },
   reviewedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

@@ -6,6 +6,7 @@ const { validateRequestBody } = require('../middleware/requestValidation');
 const {
   uploadRequirement,
   getStudentRequirements,
+  markRequirementNotificationRead,
   importPreviousYearRequirements,
   downloadRequirement,
   deleteRequirement,
@@ -26,6 +27,7 @@ router.use(authorize('student'));
 router.post('/requirements', requirementUpload.single('file'), validateRequestBody, uploadRequirement);
 router.post('/requirements/import-previous-year', importPreviousYearRequirements);
 router.get('/requirements', getStudentRequirements);
+router.put('/requirements/:id/notifications/read', markRequirementNotificationRead);
 router.get('/requirements/:id/download', downloadRequirement);
 router.delete('/requirements/:id', deleteRequirement);
 router.get('/stats', getStudentStats);

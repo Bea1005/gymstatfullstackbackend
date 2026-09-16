@@ -324,6 +324,33 @@ exports.getStudentRequirements = async (req, res) => {
   }
 };
 
+// @desc Mark a reviewed student requirement notification as read
+// @route PUT /api/student/requirements/:id/notifications/read
+// @access Private (Student only)
+exports.markRequirementNotificationRead = async (req, res) => {
+  try {
+    const studentId = await resolveStudentObjectId(req);
+    if (!studentId) {
+      return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
+    }
+
+    const RequirementModel = getStudentRequirementModel(req.body?.participationType);
+    const requirement = await RequirementModel.findOneAndUpdate(
+      { _id: req.params.id, studentId, status: { $in: ['approved', 'rejected'] } },
+      { notificationReadAt: new Date() },
+      { new: true }
+    ).select('_id notificationReadAt');
+
+    if (!requirement) {
+      return res.status(404).json({ success: false, message: 'Reviewed requirement not found' });
+    }
+
+    res.json({ success: true, data: requirement });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.importPreviousYearRequirements = async (req, res) => {
   try {
     const studentId = await resolveStudentObjectId(req);

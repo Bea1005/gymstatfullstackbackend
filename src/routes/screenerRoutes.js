@@ -370,6 +370,7 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
       submission.status = 'rejected';
       submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
       submission.reviewedAt = new Date();
+      submission.notificationReadAt = null;
       submission.reviewedBy = req.user?._id || req.user?.id || null;
       submission.resubmitted = false;
       await submission.save();
@@ -389,6 +390,7 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
 
     submission.status = normalizedStatus;
     submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
+    submission.notificationReadAt = normalizedStatus === 'approved' ? null : submission.notificationReadAt;
 
     if (normalizedStatus === 'approved') {
       submission.approvedBy = req.user?._id || req.user?.id || null;
