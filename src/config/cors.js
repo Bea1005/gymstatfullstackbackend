@@ -4,7 +4,10 @@ const parseList = (value) => String(value || '')
   .filter(Boolean);
 
 const isProduction = process.env.NODE_ENV === 'production';
-const allowedOrigins = parseList(process.env.CORS_ALLOWED_ORIGINS);
+const allowedOrigins = [
+  ...parseList(process.env.CORS_ALLOWED_ORIGINS),
+  ...parseList(process.env.FRONTEND_URL)
+];
 const trustedOrigins = isProduction
   ? allowedOrigins.filter((origin) => origin.startsWith('https://'))
   : allowedOrigins;
