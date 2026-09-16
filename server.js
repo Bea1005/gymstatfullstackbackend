@@ -18,7 +18,6 @@ const { deleteProfilePhoto, uploadProfilePhoto, streamProfilePhoto } = require('
 const { protect, authorize } = require('./src/middleware/auth');
 const { validateRequestBody } = require('./src/middleware/requestValidation');
 const { auditSecurityEvents } = require('./src/middleware/securityAudit');
-const { forgotPassword } = require('./src/controllers/authControllers');
 
 console.log('🔐 Environment Configuration:');
 console.log(`   PORT: ${process.env.PORT || 4000}`);
@@ -146,9 +145,7 @@ app.use(`${BASE_URI}/schedule-requests`, scheduleRequestsRouter);
 // 3. SCHEDULES - GET is PUBLIC (NO TOKEN NEEDED!)
 app.use(`${BASE_URI}/schedules`, scheduleRoutes);
 
-// 4. AUTH - Login, Register, and Forgot Password are PUBLIC
-app.post('/forgot-password', forgotPassword);
-app.post(`${BASE_URI}/forgot-password`, forgotPassword);
+// 4. AUTH - Login, Register, and Password Reset are PUBLIC
 app.use(`${BASE_URI}`, authRoutes);
 
 // PROFILE - current user routes
