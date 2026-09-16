@@ -1,6 +1,9 @@
 const nodemailer = require('nodemailer');
 
-const getSetting = (...names) => names.map((name) => process.env[name]).find(Boolean);
+const getSetting = (...names) => names
+  .map((name) => process.env[name])
+  .find((value) => value !== undefined && value !== null && String(value).trim() !== '')
+  ?.trim();
 const getEmailPassword = () => String(getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD') || '').replace(/\s+/g, '');
 
 const getEmailConfigurationStatus = () => {
