@@ -1,11 +1,12 @@
 const nodemailer = require('nodemailer');
 
 const getSetting = (...names) => names.map((name) => process.env[name]).find(Boolean);
+const getEmailPassword = () => String(getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD') || '').replace(/\s+/g, '');
 
 const getEmailConfigurationStatus = () => {
   const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
   const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
-  const password = getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD');
+  const password = getEmailPassword();
   return {
     configured: Boolean(host && user && password),
     hostConfigured: Boolean(host),
@@ -17,7 +18,7 @@ const getEmailConfigurationStatus = () => {
 const getEmailTransport = () => {
   const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
   const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
-  const password = getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD');
+  const password = getEmailPassword();
   const port = Number(getSetting('SMTP_PORT', 'EMAIL_PORT', 'MAIL_PORT') || 587);
   const secureSetting = getSetting('SMTP_SECURE', 'EMAIL_SECURE', 'MAIL_SECURE');
   const from = getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || user;
