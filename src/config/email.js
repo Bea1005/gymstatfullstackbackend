@@ -37,6 +37,9 @@ const getEmailTransport = () => {
     secure: secureSetting === undefined
       ? port === 465
       : String(secureSetting).toLowerCase() === 'true',
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     auth: {
       user,
       pass: password
