@@ -11,6 +11,7 @@ const connectDB = require('./src/config/db');
 const { corsOptions } = require('./src/config/cors');
 const { getJWTSecret } = require('./src/config/security');
 const { hashPassword } = require('./src/config/passwords');
+const { getEmailConfigurationStatus } = require('./src/config/email');
 const { apiRateLimiter } = require('./src/config/rateLimit');
 const User = require('./src/models/User');
 const StudentProfile = require('./src/models/StudentProfile');
@@ -22,6 +23,7 @@ const { auditSecurityEvents } = require('./src/middleware/securityAudit');
 console.log('🔐 Environment Configuration:');
 console.log(`   PORT: ${process.env.PORT || 4000}`);
 console.log(`   BASE_URI: ${process.env.BASE_URI || '/api/v1'}`);
+console.log(`   Password reset email service configured: ${getEmailConfigurationStatus().configured ? 'yes' : 'no'}`);
 getJWTSecret();
 
 const authRoutes = require('./src/routes/authRoutes');

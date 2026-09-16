@@ -2,6 +2,18 @@ const nodemailer = require('nodemailer');
 
 const getSetting = (...names) => names.map((name) => process.env[name]).find(Boolean);
 
+const getEmailConfigurationStatus = () => {
+  const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
+  const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
+  const password = getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD');
+  return {
+    configured: Boolean(host && user && password),
+    hostConfigured: Boolean(host),
+    userConfigured: Boolean(user),
+    passwordConfigured: Boolean(password)
+  };
+};
+
 const getEmailTransport = () => {
   const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
   const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
@@ -59,4 +71,4 @@ const sendPasswordResetOtp = async (email, otp, expiresInMinutes) => {
   });
 };
 
-module.exports = { sendPasswordResetOtp };
+module.exports = { getEmailConfigurationStatus, sendPasswordResetOtp };
