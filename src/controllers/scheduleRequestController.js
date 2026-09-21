@@ -82,6 +82,12 @@ exports.createScheduleRequest = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error creating schedule request:', error);
+    if (error?.code === 10334 || /BSONObj size|document is larger than the maximum allowed size/i.test(error?.message || '')) {
+      return res.status(413).json({
+        success: false,
+        message: 'The request letter is too large to store. Please use a file no larger than 10 MB.'
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to submit schedule request',

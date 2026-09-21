@@ -107,7 +107,7 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '16mb' }));
 app.use(auditSecurityEvents);
 app.use(validateRequestBody);
 app.use(cookieParser());
@@ -454,7 +454,14 @@ app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({
       success: false,
-      message: 'The uploaded file is too large. Maximum size is 5 MB.'
+      message: 'The uploaded file is too large. Maximum size is 10 MB.'
+    });
+  }
+
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({
+      success: false,
+      message: 'The request payload is too large. Please attach a file no larger than 10 MB.'
     });
   }
 

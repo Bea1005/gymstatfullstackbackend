@@ -1,6 +1,7 @@
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_BODY_KEYS = 60;
 const MAX_STRING_LENGTH = 5000;
+const MAX_FILE_DATA_LENGTH = 14 * 1024 * 1024;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/;
 const KNOWN_FIELDS = new Set([
@@ -33,7 +34,7 @@ const invalid = (message) => {
   return error;
 };
 
-const normalizeKeyValue = (key, value, depth = 0) => {
+const normalizeKeyValue = (key, value, depth = 0, parentKey = '') => {
   if (depth > 4) {
     throw invalid('Request body is too deeply nested.');
   }
@@ -43,7 +44,10 @@ const normalizeKeyValue = (key, value, depth = 0) => {
   }
 
   if (typeof value === 'string') {
-    if (value.length > MAX_STRING_LENGTH) {
+    const maxLength = key === 'data' && parentKey === 'file'
+      ? MAX_FILE_DATA_LENGTH
+      : MAX_STRING_LENGTH;
+    if (value.length > maxLength) {
       throw invalid('Request field is too long.');
     }
 
@@ -81,7 +85,7 @@ const normalizeKeyValue = (key, value, depth = 0) => {
     if (value.length > 100) {
       throw invalid('Request contains too many items.');
     }
-    return value.map((item) => normalizeKeyValue(key, item, depth + 1));
+    return value.map((item) => normalizeKeyValue(key, item, depth + 1, parentKey));
   }
 
   if (value && typeof value === 'object') {
@@ -96,7 +100,7 @@ const normalizeKeyValue = (key, value, depth = 0) => {
 
       return [
       childKey,
-      normalizeKeyValue(childKey, value[childKey], depth + 1)
+      normalizeKeyValue(childKey, value[childKey], depth + 1, key)
       ];
     }));
   }
