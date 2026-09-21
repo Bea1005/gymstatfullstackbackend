@@ -2,6 +2,35 @@ const ScheduleRequest = require('../models/ScheduleRequest');
 const Schedule = require('../models/Schedule');
 const mongoose = require('mongoose');
 
+const toMinutes = (time) => {
+  const [clock, meridian] = String(time || '').trim().split(/\s+/);
+  const [hours, minutes] = String(clock || '').split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return NaN;
+  let normalizedHours = hours % 12;
+  if (String(meridian).toUpperCase() === 'PM') normalizedHours += 12;
+  return normalizedHours * 60 + minutes;
+};
+
+const schedulesOverlap = (candidate, existing) => {
+  const candidateStartDate = new Date(`${candidate.startDate}T00:00:00`);
+  const candidateEndDate = new Date(`${candidate.endDate}T00:00:00`);
+  const existingStartDate = new Date(`${existing.startDate}T00:00:00`);
+  const existingEndDate = new Date(`${existing.endDate}T00:00:00`);
+  const prepDays = Number(existing.prepDays || 0) || 0;
+  const prepStartDate = new Date(existingStartDate);
+  prepStartDate.setDate(prepStartDate.getDate() - prepDays);
+
+  if (candidateEndDate < prepStartDate || candidateStartDate > existingEndDate) return false;
+
+  const candidateStart = candidateStartDate.getTime() + toMinutes(candidate.startTime) * 60000;
+  const candidateEnd = candidateEndDate.getTime() + toMinutes(candidate.endTime) * 60000;
+  const existingStart = existingStartDate.getTime() + toMinutes(existing.startTime) * 60000;
+  const existingEnd = existingEndDate.getTime() + toMinutes(existing.endTime) * 60000;
+
+  if (![candidateStart, candidateEnd, existingStart, existingEnd].every(Number.isFinite)) return false;
+  return candidateStart < existingEnd && candidateEnd > existingStart;
+};
+
 // Create a new schedule request
 exports.createScheduleRequest = async (req, res) => {
   try {
@@ -24,6 +53,19 @@ exports.createScheduleRequest = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: `Missing required fields: ${missingFields.join(', ')}`
+      });
+    }
+
+    const activeSchedules = await Schedule.find({
+      status: 'active',
+      startDate: { $lte: req.body.endDate },
+      endDate: { $gte: req.body.startDate },
+    }).lean();
+
+    if (activeSchedules.some((schedule) => schedulesOverlap(req.body, schedule))) {
+      return res.status(409).json({
+        success: false,
+        message: 'The requested time range overlaps an existing confirmed schedule.'
       });
     }
     
