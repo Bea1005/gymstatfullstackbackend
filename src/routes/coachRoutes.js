@@ -7,7 +7,6 @@ const StudentProfile = require('../models/StudentProfile');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
-const StudentRequirement = require('../models/StudentRequirement');
 const { protect, authorize } = require('../middleware/auth');
 
 const facultyPhotoUpload = multer({
@@ -169,52 +168,6 @@ router.delete('/coach/faculty-members/:facultyId', protect, authorize('coach'), 
   }
 });
 
-const REQUIRED_REQUIREMENT_TYPES = ['medical', 'cor', 'psa', 'insurance', 'profile', 'consent'];
-
-const getRequirementLabel = (type) => {
-  const labels = {
-    medical: 'Medical Certificate',
-    cor: 'Certificate of Registration',
-    psa: 'PSA',
-    insurance: 'Insurance',
-    profile: 'Student Profile',
-    consent: 'Parent Consent',
-  };
-  return labels[type] || type;
-};
-
-const getStudentRequirementsEligibility = async (studentId) => {
-  const submissions = await StudentRequirement.find({ studentId }).sort({ uploadDate: -1 }).lean();
-  const latestByType = new Map();
-
-  for (const submission of submissions) {
-    const normalizedType = String(submission.requirementType || '').trim().toLowerCase();
-    if (!REQUIRED_REQUIREMENT_TYPES.includes(normalizedType) || latestByType.has(normalizedType)) continue;
-    latestByType.set(normalizedType, submission);
-  }
-
-  const missing = [];
-  const incomplete = [];
-
-  for (const type of REQUIRED_REQUIREMENT_TYPES) {
-    const latest = latestByType.get(type);
-    if (!latest) {
-      missing.push(getRequirementLabel(type));
-      continue;
-    }
-
-    if (String(latest.status || '').toLowerCase() !== 'approved') {
-      incomplete.push(getRequirementLabel(type));
-    }
-  }
-
-  return {
-    eligible: missing.length === 0 && incomplete.length === 0,
-    missing,
-    incomplete,
-  };
-};
-
 router.get('/coach/students/:studentId/profile-photo', protect, authorize('coach'), async (req, res) => {
   try {
     const student = await User.findOne({ _id: req.params.studentId, role: 'student' }).select('_id').lean();
@@ -293,9 +246,18 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
     }
 
     const athletes = await User.find(filter).select('-password').lean();
-    return res.json(athletes.map((athlete) => ({
+    const studentIds = athletes.map((athlete) => athlete._id);
+    const profiles = studentIds.length > 0
+      ? await StudentProfile.find({ studentId: { $in: studentIds } }).select('studentId imageFileId').lean()
+      : [];
+    const profilesByStudentId = new Map(profiles.map((profile) => [String(profile.studentId), profile]));
+
+    return res.json(athletes.map((athlete) => {
+      const studentProfile = profilesByStudentId.get(String(athlete._id));
+      return ({
       _id: athlete._id,
       id: athlete.id || String(athlete._id),
+      studentId: String(athlete._id),
       fullname: athlete.fullname || '',
       email: athlete.email || '',
       department: athlete.department || '',
@@ -305,11 +267,12 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
       athleteStatus: athlete.athleteStatus || '',
       branchCampus: athlete.branchCampus || '',
       profilePhoto: '',
-      profilePhotoUrl: `/coach/students/${athlete._id}/profile-photo`,
+      profilePhotoUrl: studentProfile?.imageFileId ? `/coach/students/${athlete._id}/profile-photo` : '',
       sport: athlete.sport || '',
       createdAt: athlete.createdAt,
       updatedAt: athlete.updatedAt,
-    })));
+      });
+    }));
   } catch (error) {
     console.error('Coach athletes error:', error);
     return res.status(500).json({ message: 'Server error while fetching coach athletes' });
@@ -381,24 +344,38 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     const selectedSport = String(req.query.sport || '').trim();
     if (!query) return res.json([]);
 
-    const f = { role: 'student', accountStatus: { $ne: 'archived' } };
+    const baseFilter = { role: 'student', accountStatus: { $ne: 'archived' } };
     if (selectedSport) {
-      f.$or = [
-        { sport: { $regex: selectedSport, $options: 'i' } },
-        { assignedSports: { $regex: selectedSport, $options: 'i' } },
-        { 'sportParticipation.sport': { $regex: selectedSport, $options: 'i' } },
+      const sportMatcher = { $regex: selectedSport.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      baseFilter.$or = [
+        { sport: sportMatcher },
+        { assignedSports: sportMatcher },
+        { 'sportParticipation.sport': sportMatcher },
       ];
     }
 
-    const students = await User.find(f)
-      .select('_id id fullname department yearLevel sport branchCampus dateOfBirth dob athleteStatus')
+    const students = await User.find(baseFilter)
+      .select('_id id fullname department yearLevel sport branchCampus dateOfBirth dob athleteStatus assignedSports sportParticipation')
       .lean();
 
     const needle = query.toLowerCase();
     const matched = students.filter((student) => {
       const studentId = String(student.id || student._id || '').toLowerCase();
-      const studentName = String(student.fullname || '').toLowerCase();
-      return studentId.includes(needle) || studentName.includes(needle);
+      const fullName = String(student.fullname || '').toLowerCase();
+      const normalizedName = fullName.replace(/\s+/g, ' ').trim();
+      const nameParts = normalizedName.split(/\s+/).filter(Boolean);
+      const sportList = [
+        student.sport,
+        ...(Array.isArray(student.assignedSports) ? student.assignedSports : []),
+        ...(Array.isArray(student.sportParticipation) ? student.sportParticipation.map((entry) => entry?.sport || entry?.name || '').filter(Boolean) : []),
+      ].map((value) => String(value).toLowerCase());
+
+      const matchesId = studentId.includes(needle);
+      const matchesName = normalizedName.includes(needle) || nameParts.some((part) => part.includes(needle));
+      const matchesAnyNameToken = nameParts.some((part) => part.startsWith(needle) || part.endsWith(needle) || part.includes(needle));
+      const matchesSport = selectedSport ? sportList.some((sport) => sport.includes(selectedSport.toLowerCase())) : true;
+
+      return matchesSport && (matchesId || matchesName || matchesAnyNameToken);
     });
 
     return res.json(matched.slice(0, 30).map((student) => ({
