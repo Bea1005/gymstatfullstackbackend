@@ -375,6 +375,46 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
 });
 
 // Get existing students that can be added to the coach's sport.
+router.get('/coach/student-search', protect, authorize('coach'), async (req, res) => {
+  try {
+    const query = String(req.query.q || ').trim();
+    const selectedSport = String(req.query.sport || ').trim();
+    if (!query) return res.json([]);
+    const f = { role: 'student', accountStatus: { $ne: 'archived' } };
+    if (selectedSport) {
+      f.$or = [
+        { sport: { $regex: selectedSport, $options: 'i' } },
+        { assignedSports: { $regex: selectedSport, $options: 'i' } },
+        { 'sportParticipation.sport': { $regex: selectedSport, $options: 'i' } },
+      ];
+    }
+    const students = await User.find(f)
+      .select('_id id fullname department yearLevel sport branchCampus dateOfBirth dob athleteStatus')
+      .lean();
+    const needle = query.toLowerCase();
+    const matched = students.filter((s) => {
+      const sid = String(s.id || s._id || ').toLowerCase();
+      const name = String(s.fullname || ').toLowerCase();
+      return sid.includes(needle) || name.includes(needle);
+    });
+    return res.json(matched.slice(0, 30).map((s) => ({
+      _id: s._id,
+      id: s.id || String(s._id),
+      fullname: s.fullname || ',
+      department: s.department || ',
+      yearLevel: s.yearLevel || ',
+      sport: s.sport || ',
+      branchCampus: s.branchCampus || ',
+      dateOfBirth: s.dateOfBirth || s.dob || ',
+      athleteStatus: s.athleteStatus || ',
+      profilePhotoUrl: '/coach/students/' + s._id + '/profile-photo',
+    })));
+  } catch (err) {
+    console.error('Coach student search error:', err);
+    return res.status(500).json({ message: 'Server error while searching students' });
+  }
+});
+
 router.get('/coach/student-directory', protect, authorize('coach'), async (req, res) => {
   try {
     const selectedSport = String(req.query.sport || '').trim();
