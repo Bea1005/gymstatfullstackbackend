@@ -377,9 +377,10 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
 // Get existing students that can be added to the coach's sport.
 router.get('/coach/student-search', protect, authorize('coach'), async (req, res) => {
   try {
-    const query = String(req.query.q || ').trim();
-    const selectedSport = String(req.query.sport || ').trim();
+    const query = String(req.query.q || '').trim();
+    const selectedSport = String(req.query.sport || '').trim();
     if (!query) return res.json([]);
+
     const f = { role: 'student', accountStatus: { $ne: 'archived' } };
     if (selectedSport) {
       f.$or = [
@@ -388,26 +389,29 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
         { 'sportParticipation.sport': { $regex: selectedSport, $options: 'i' } },
       ];
     }
+
     const students = await User.find(f)
       .select('_id id fullname department yearLevel sport branchCampus dateOfBirth dob athleteStatus')
       .lean();
+
     const needle = query.toLowerCase();
-    const matched = students.filter((s) => {
-      const sid = String(s.id || s._id || ').toLowerCase();
-      const name = String(s.fullname || ').toLowerCase();
-      return sid.includes(needle) || name.includes(needle);
+    const matched = students.filter((student) => {
+      const studentId = String(student.id || student._id || '').toLowerCase();
+      const studentName = String(student.fullname || '').toLowerCase();
+      return studentId.includes(needle) || studentName.includes(needle);
     });
-    return res.json(matched.slice(0, 30).map((s) => ({
-      _id: s._id,
-      id: s.id || String(s._id),
-      fullname: s.fullname || ',
-      department: s.department || ',
-      yearLevel: s.yearLevel || ',
-      sport: s.sport || ',
-      branchCampus: s.branchCampus || ',
-      dateOfBirth: s.dateOfBirth || s.dob || ',
-      athleteStatus: s.athleteStatus || ',
-      profilePhotoUrl: '/coach/students/' + s._id + '/profile-photo',
+
+    return res.json(matched.slice(0, 30).map((student) => ({
+      _id: student._id,
+      id: student.id || String(student._id),
+      fullname: student.fullname || '',
+      department: student.department || '',
+      yearLevel: student.yearLevel || '',
+      sport: student.sport || '',
+      branchCampus: student.branchCampus || '',
+      dateOfBirth: student.dateOfBirth || student.dob || '',
+      athleteStatus: student.athleteStatus || '',
+      profilePhotoUrl: `/coach/students/${student._id}/profile-photo`,
     })));
   } catch (err) {
     console.error('Coach student search error:', err);
