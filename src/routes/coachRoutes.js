@@ -293,32 +293,23 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
     }
 
     const athletes = await User.find(filter).select('-password').lean();
-    const eligibleAthletes = [];
-
-    for (const athlete of athletes) {
-      const eligibility = await getStudentRequirementsEligibility(athlete._id);
-      if (eligibility.eligible) {
-        eligibleAthletes.push({
-          _id: athlete._id,
-          id: athlete.id || athlete._id,
-          fullname: athlete.fullname || '',
-          email: athlete.email || '',
-          department: athlete.department || '',
-          yearLevel: athlete.yearLevel || '',
-          dateOfBirth: athlete.dateOfBirth || athlete.dob || '',
-          dob: athlete.dob || athlete.dateOfBirth || '',
-          athleteStatus: athlete.athleteStatus || '',
-          branchCampus: athlete.branchCampus || '',
-          profilePhoto: '',
-          profilePhotoUrl: `/coach/students/${athlete._id}/profile-photo`,
-          sport: athlete.sport || '',
-          createdAt: athlete.createdAt,
-          updatedAt: athlete.updatedAt,
-        });
-      }
-    }
-
-    return res.json(eligibleAthletes);
+    return res.json(athletes.map((athlete) => ({
+      _id: athlete._id,
+      id: athlete.id || String(athlete._id),
+      fullname: athlete.fullname || '',
+      email: athlete.email || '',
+      department: athlete.department || '',
+      yearLevel: athlete.yearLevel || '',
+      dateOfBirth: athlete.dateOfBirth || athlete.dob || '',
+      dob: athlete.dob || athlete.dateOfBirth || '',
+      athleteStatus: athlete.athleteStatus || '',
+      branchCampus: athlete.branchCampus || '',
+      profilePhoto: '',
+      profilePhotoUrl: `/coach/students/${athlete._id}/profile-photo`,
+      sport: athlete.sport || '',
+      createdAt: athlete.createdAt,
+      updatedAt: athlete.updatedAt,
+    })));
   } catch (error) {
     console.error('Coach athletes error:', error);
     return res.status(500).json({ message: 'Server error while fetching coach athletes' });
@@ -335,14 +326,6 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
 
     const student = await User.findOne({ _id: studentId, role: 'student' });
     if (!student) return res.status(404).json({ message: 'Student not found' });
-
-    const eligibility = await getStudentRequirementsEligibility(student._id);
-    if (!eligibility.eligible) {
-      return res.status(400).json({
-        message: 'This student-athlete cannot be added yet because their requirements are not complete.',
-        eligibility,
-      });
-    }
 
     student.sport = sport || req.user?.sport || student.sport || '';
     await student.save();
@@ -394,23 +377,24 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
 // Get existing students that can be added to the coach's sport.
 router.get('/coach/student-directory', protect, authorize('coach'), async (req, res) => {
   try {
-    const students = await User.find({ role: 'student' }).select('-password').lean();
-    const eligibleStudents = [];
-
-    for (const student of students) {
-      const eligibility = await getStudentRequirementsEligibility(student._id);
-      if (eligibility.eligible) {
-        eligibleStudents.push({
-          ...student,
-          id: student.id || student._id,
-          studentId: student.id || student.studentId || student._id,
-          username: student.username || '',
-          profilePhotoUrl: `/coach/students/${student._id}/profile-photo`,
-        });
-      }
+    const selectedSport = String(req.query.sport || '').trim();
+    const studentFilter = { role: 'student' };
+    if (selectedSport) {
+      studentFilter.$or = [
+        { sport: selectedSport },
+        { assignedSports: selectedSport },
+        { 'sportParticipation.sport': selectedSport },
+      ];
     }
 
-    return res.json(eligibleStudents);
+    const students = await User.find(studentFilter).select('-password').lean();
+    return res.json(students.map((student) => ({
+      ...student,
+      id: student.id || String(student._id),
+      studentId: student.id || student.studentId || String(student._id),
+      username: student.username || '',
+      profilePhotoUrl: `/coach/students/${student._id}/profile-photo`,
+    })));
   } catch (error) {
     console.error('Coach student directory error:', error);
     return res.status(500).json({ message: 'Server error while fetching students' });
