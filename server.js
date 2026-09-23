@@ -478,7 +478,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
+// Start the standalone server only when this file is executed directly.
 const startServer = async () => {
   try {
     console.log('🚀 Starting GymStat Web Application...\n');
@@ -520,4 +520,8 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = app;
