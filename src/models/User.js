@@ -115,6 +115,10 @@ const baseUserSchema = new mongoose.Schema({
     type: [mongoose.Schema.Types.Mixed],
     default: []
   },
+  strasucStudentIds: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    default: []
+  },
   studentNumber: {
     type: String,
     default: ''
@@ -239,6 +243,7 @@ const buildRoleDocument = (user) => {
     roleDocPayload.assignedSports = Array.isArray(source.assignedSports) ? source.assignedSports : [];
     roleDocPayload.coachPosition = source.coachPosition || '';
     roleDocPayload.staffMembers = Array.isArray(source.staffMembers) ? source.staffMembers : [];
+    roleDocPayload.strasucStudentIds = Array.isArray(source.strasucStudentIds) ? source.strasucStudentIds : [];
     roleDocPayload.studentNumber = source.studentNumber || '';
     roleDocPayload.graduationYear = source.graduationYear || '';
     roleDocPayload.athleteStatus = source.athleteStatus || '';

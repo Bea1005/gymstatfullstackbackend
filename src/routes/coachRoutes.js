@@ -237,12 +237,14 @@ router.put('/coach/profile', protect, authorize('coach'), async (req, res) => {
 router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   try {
     const selectedSport = String(req.query.sport || req.user?.sport || '').trim();
-    const filter = { role: 'student' };
+    const coach = await User.findById(req.user._id || req.user.id).select('strasucStudentIds').lean();
+    const selectedStudentIds = Array.isArray(coach?.strasucStudentIds) ? coach.strasucStudentIds : [];
+    const filter = { role: 'student', _id: { $in: selectedStudentIds } };
     if (selectedSport) {
-      filter.$or = [
+      filter.$and = [{ $or: [
         { sport: selectedSport },
         { 'sportParticipation.sport': selectedSport },
-      ];
+      ] }];
     }
 
     const athletes = await User.find(filter).select('-password').lean();
@@ -282,7 +284,7 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
 // Create a student profile from the Coach Records page.
 router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   try {
-    const { studentId, sport } = req.body;
+    const { studentId } = req.body;
     if (!studentId) {
       return res.status(400).json({ message: 'An existing student must be selected' });
     }
@@ -290,8 +292,10 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
     const student = await User.findOne({ _id: studentId, role: 'student' });
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
-    student.sport = sport || req.user?.sport || student.sport || '';
-    await student.save();
+    await User.updateOne(
+      { _id: req.user._id || req.user.id },
+      { $addToSet: { strasucStudentIds: student._id } }
+    );
     return res.status(200).json({ success: true, data: student.toObject() });
   } catch (error) {
     console.error('Coach athlete create error:', error);
@@ -424,13 +428,12 @@ router.get('/coach/student-directory', protect, authorize('coach'), async (req, 
 
 router.delete('/coach/athletes/:studentId', protect, authorize('coach'), async (req, res) => {
   try {
-    const student = await User.findOne({ _id: req.params.studentId, role: 'student' });
-    if (!student) return res.status(404).json({ message: 'Student not found' });
-    if (req.user?.sport && student.sport && student.sport !== req.user.sport) {
-      return res.status(403).json({ message: 'This student is not assigned to your sport' });
-    }
-    await User.deleteOne({ _id: student._id });
-    return res.json({ success: true, message: 'Student profile deleted successfully' });
+    const result = await User.updateOne(
+      { _id: req.user._id || req.user.id },
+      { $pull: { strasucStudentIds: req.params.studentId } }
+    );
+    if (!result.matchedCount) return res.status(404).json({ message: 'Coach not found' });
+    return res.json({ success: true, message: 'Student removed from the gallery successfully' });
   } catch (error) {
     console.error('Coach athlete delete error:', error);
     return res.status(500).json({ message: 'Server error while deleting student profile' });

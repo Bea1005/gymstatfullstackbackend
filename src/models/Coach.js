@@ -47,6 +47,10 @@ const CoachSchema = new mongoose.Schema({
     type: [mongoose.Schema.Types.Mixed],
     default: []
   },
+  strasucStudentIds: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    default: []
+  },
   assignedSports: {
     type: [String],
     default: []
