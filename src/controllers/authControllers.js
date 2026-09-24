@@ -35,17 +35,36 @@ const clearPasswordResetState = (user) => {
 
 const detectRoleFromId = (id) => {
   const trimmedId = String(id || '').trim();
+  const isAdminId = trimmedId.toLowerCase().startsWith('admin');
 
-  if (!trimmedId || trimmedId.length < 7 || /\s/.test(trimmedId) || !/^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)) {
+  if (!trimmedId || /\s/.test(trimmedId) || !/^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)) {
     return null;
   }
 
-  if (trimmedId.toLowerCase().startsWith('screener') || trimmedId.toLowerCase().startsWith('sc')) {
+  if (isAdminId && trimmedId.length !== 6) {
+    return null;
+  }
+
+  const isScreenerId = trimmedId.toLowerCase().startsWith('screener') || trimmedId.toLowerCase().startsWith('sc');
+
+  if (isScreenerId && trimmedId.length < 7) {
+    return null;
+  }
+
+  if (isScreenerId) {
     return 'screener';
   }
   
   if (trimmedId.toLowerCase().startsWith('admin')) {
     return 'admin';
+  }
+
+  if (trimmedId.length === 6) {
+    return 'admin';
+  }
+
+  if (trimmedId.length < 7) {
+    return null;
   }
 
   if (/^[A-Za-z0-9]{7}$/.test(trimmedId)) {

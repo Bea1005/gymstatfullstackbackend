@@ -66,7 +66,7 @@ describe('Auth Controllers', () => {
         email: 'jane@example.com',
         password: 'Password1!',
         role: 'student',
-        id: 'ABC123'
+        id: 'ABC12'
       }
     });
     const res = httpMocks.createResponse();
