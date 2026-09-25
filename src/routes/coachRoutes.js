@@ -348,41 +348,36 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     const selectedSport = String(req.query.sport || '').trim();
     if (!query) return res.json([]);
 
-    const baseFilter = { role: 'student', accountStatus: { $ne: 'archived' } };
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const queryMatcher = { $regex: escapedQuery, $options: 'i' };
+    const baseFilter = {
+      role: 'student',
+      accountStatus: { $ne: 'archived' },
+      $or: [
+        { id: queryMatcher },
+        { fullname: queryMatcher },
+      ],
+    };
     if (selectedSport) {
       const sportMatcher = { $regex: selectedSport.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-      baseFilter.$or = [
-        { sport: sportMatcher },
-        { assignedSports: sportMatcher },
-        { 'sportParticipation.sport': sportMatcher },
+      baseFilter.$and = [
+        {
+          $or: [
+            { sport: sportMatcher },
+            { assignedSports: sportMatcher },
+            { 'sportParticipation.sport': sportMatcher },
+          ],
+        },
       ];
     }
 
     const students = await User.find(baseFilter)
       .select('_id id fullname department yearLevel sport branchCampus dateOfBirth dob athleteStatus assignedSports sportParticipation')
+      .sort({ fullname: 1 })
+      .limit(30)
       .lean();
 
-    const needle = query.toLowerCase();
-    const matched = students.filter((student) => {
-      const studentId = String(student.id || student._id || '').toLowerCase();
-      const fullName = String(student.fullname || '').toLowerCase();
-      const normalizedName = fullName.replace(/\s+/g, ' ').trim();
-      const nameParts = normalizedName.split(/\s+/).filter(Boolean);
-      const sportList = [
-        student.sport,
-        ...(Array.isArray(student.assignedSports) ? student.assignedSports : []),
-        ...(Array.isArray(student.sportParticipation) ? student.sportParticipation.map((entry) => entry?.sport || entry?.name || '').filter(Boolean) : []),
-      ].map((value) => String(value).toLowerCase());
-
-      const matchesId = studentId.includes(needle);
-      const matchesName = normalizedName.includes(needle) || nameParts.some((part) => part.includes(needle));
-      const matchesAnyNameToken = nameParts.some((part) => part.startsWith(needle) || part.endsWith(needle) || part.includes(needle));
-      const matchesSport = selectedSport ? sportList.some((sport) => sport.includes(selectedSport.toLowerCase())) : true;
-
-      return matchesSport && (matchesId || matchesName || matchesAnyNameToken);
-    });
-
-    return res.json(matched.slice(0, 30).map((student) => ({
+    return res.json(students.map((student) => ({
       _id: student._id,
       id: student.id || String(student._id),
       fullname: student.fullname || '',
