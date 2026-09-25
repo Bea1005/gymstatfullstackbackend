@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Requirement = require('../models/Requirement');
 const RequirementSubmission = require('../models/RequirementSubmission');
 const Announcement = require('../models/Announcement');
@@ -89,7 +90,7 @@ exports.createRequirement = async (req, res) => {
     console.error('❌ Error creating requirement:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Failed to create requirement: ' + error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -147,7 +148,7 @@ exports.publishRequirement = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to publish requirement',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -183,7 +184,7 @@ exports.getAllRequirements = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch requirements',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -239,7 +240,7 @@ exports.getPublishedRequirements = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch requirements',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -250,8 +251,38 @@ exports.getPublishedRequirements = async (req, res) => {
 exports.getRequirementById = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    const requirement = await Requirement.findById(id)
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Requirement not found'
+      });
+    }
+
+    const role = String(req.user?.role || '').toLowerCase();
+    const filter = { _id: id };
+
+    if (role === 'student') {
+      const studentSports = [
+        req.user?.sport,
+        ...(Array.isArray(req.user?.assignedSports) ? req.user.assignedSports : []),
+        ...(Array.isArray(req.user?.sportParticipation)
+          ? req.user.sportParticipation.map((participation) => participation?.sport)
+          : []),
+      ].filter(Boolean).map((sport) => String(sport).trim());
+
+      filter.status = 'published';
+      filter.isActive = true;
+      filter.$or = [
+        { targetStudents: 'all' },
+        {
+          targetStudents: 'sport-specific',
+          sport: { $in: studentSports },
+        },
+      ];
+    }
+
+    const requirement = await Requirement.findOne(filter)
       .populate('publishedBy', 'fullname email')
       .lean();
     
@@ -270,11 +301,10 @@ exports.getRequirementById = async (req, res) => {
       data: requirement
     });
   } catch (error) {
-    console.error('❌ Error fetching requirement:', error);
+    console.error('❌ Error fetching requirement');
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch requirement',
-      error: error.message
+      message: 'Failed to fetch requirement'
     });
   }
 };
@@ -313,7 +343,7 @@ exports.updateRequirement = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update requirement',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -375,7 +405,7 @@ exports.deleteRequirement = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete requirement',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -450,7 +480,7 @@ exports.submitRequirement = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to submit requirement',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -487,7 +517,7 @@ exports.getMySubmissions = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch submissions',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -524,7 +554,7 @@ exports.getAllSubmissions = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch submissions',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -571,7 +601,7 @@ exports.reviewSubmission = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to review submission',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -672,8 +702,7 @@ exports.downloadRequirement = async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({
         success: false,
-        message: 'Failed to download file',
-        error: error.message
+        message: 'An unexpected server error occurred. Please try again.'
       });
     }
   }

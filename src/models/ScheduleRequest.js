@@ -63,6 +63,7 @@ const scheduleRequestSchema = new mongoose.Schema({
     originalname: String,
     mimetype: String,
     size: Number,
+    storageKey: String,
     path: String,
     data: String  // Base64 encoded file data if storing in DB
   },

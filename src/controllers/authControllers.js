@@ -1,9 +1,17 @@
 const User = require('../models/User');
-const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { getJWTSecret } = require('../config/security');
-const { hashPassword, verifyPassword } = require('../config/passwords');
+const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const { sendPasswordResetOtp } = require('../config/email');
+const RefreshSession = require('../models/RefreshSession');
+const {
+  createAccessToken,
+  createRefreshSession,
+  hashRefreshToken,
+  setAuthenticationCookies,
+  clearAuthenticationCookies,
+  REFRESH_COOKIE_NAME,
+} = require('../config/authTokens');
 
 const RESET_OTP_TTL_MS = 10 * 60 * 1000;
 const RESET_OTP_COOLDOWN_MS = 60 * 1000;
@@ -11,7 +19,6 @@ const RESET_OTP_MAX_ATTEMPTS = 5;
 const RESET_VERIFICATION_TTL_MS = 10 * 60 * 1000;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PASSWORD_PATTERN = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>_\-]).{8,}$/;
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const hashResetValue = (value) => crypto
@@ -33,49 +40,14 @@ const clearPasswordResetState = (user) => {
   user.passwordResetVerifiedAt = null;
 };
 
-const detectRoleFromId = (id) => {
-  const trimmedId = String(id || '').trim();
-  const isAdminId = trimmedId.toLowerCase().startsWith('admin');
-
-  if (!trimmedId || /\s/.test(trimmedId) || !/^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)) {
-    return null;
-  }
-
-  if (isAdminId && trimmedId.length !== 6) {
-    return null;
-  }
-
-  const isScreenerId = trimmedId.toLowerCase().startsWith('screener') || trimmedId.toLowerCase().startsWith('sc');
-
-  if (isScreenerId && trimmedId.length < 7) {
-    return null;
-  }
-
-  if (isScreenerId) {
-    return 'screener';
-  }
-  
-  if (trimmedId.toLowerCase().startsWith('admin')) {
-    return 'admin';
-  }
-
-  if (trimmedId.length === 6) {
-    return 'admin';
-  }
-
-  if (trimmedId.length < 7) {
-    return null;
-  }
-
-  if (/^[A-Za-z0-9]{7}$/.test(trimmedId)) {
-    return 'student';
-  }
-
-  return 'coach';
-};
-
 const isValidId = (id) => {
-  return Boolean(detectRoleFromId(id));
+  const trimmedId = String(id || '').trim();
+  return Boolean(
+    trimmedId &&
+    trimmedId.length >= 7 &&
+    !/\s/.test(trimmedId) &&
+    /^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)
+  );
 };
 
 const buildUserResponse = (user, roleOverride) => {
@@ -202,10 +174,10 @@ exports.resetPassword = async (req, res) => {
   try {
     const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
     const newPassword = String(req.body?.newPassword || '');
-    if (!EMAIL_PATTERN.test(normalizedEmail) || !PASSWORD_PATTERN.test(newPassword)) {
+    if (!EMAIL_PATTERN.test(normalizedEmail) || !isPasswordValid(newPassword)) {
       return res.status(400).json({
         success: false,
-        message: 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.'
+        message: PASSWORD_POLICY_MESSAGE
       });
     }
 
@@ -243,11 +215,11 @@ exports.register = async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
-      console.log('❌ Registration failed: Password too short');
+    if (!isPasswordValid(password)) {
+      console.log('❌ Registration failed: Password does not meet policy');
       return res.status(400).json({ 
         success: false,
-        message: 'Password must be at least 6 characters long' 
+        message: PASSWORD_POLICY_MESSAGE
       });
     }
 
@@ -258,16 +230,6 @@ exports.register = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'ID must be at least 7 characters long and contain only letters, numbers, or common special characters.'
-      });
-    }
-
-    const detectedRole = detectRoleFromId(trimmedId);
-
-    if (!detectedRole) {
-      console.log('❌ Registration failed: Unable to detect role from ID');
-      return res.status(400).json({
-        success: false,
-        message: 'Unable to determine role from provided ID.'
       });
     }
 
@@ -299,15 +261,13 @@ exports.register = async (req, res) => {
       fullname,
       email: email || '',
       password: hashedPassword,
-      role: detectedRole,
+      role: 'student',
       id: trimmedId
     };
 
-    if (detectedRole !== 'admin') {
-      userPayload.department = department || '';
-      userPayload.yearLevel = yearLevel || '';
-      userPayload.sport = sport || '';
-    }
+    userPayload.department = department || '';
+    userPayload.yearLevel = yearLevel || '';
+    userPayload.sport = sport || '';
 
     const user = await User.create(userPayload);
 
@@ -381,15 +341,12 @@ exports.login = async (req, res) => {
       user.password = await hashPassword(password);
     }
 
-    const detectedRole = detectRoleFromId(user.id);
-    let userRole = detectedRole || user.role?.toString().trim().toLowerCase();
-
-    if (!userRole || !['student', 'coach', 'admin', 'screener'].includes(userRole)) {
-      userRole = 'student';
-    }
-
-    if (user.role !== userRole) {
-      user.role = userRole;
+    const userRole = user.role?.toString().trim().toLowerCase();
+    if (!['student', 'coach', 'admin', 'screener'].includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'This account is not authorized to log in.'
+      });
     }
 
     user.lastActiveAt = new Date();
@@ -398,29 +355,16 @@ exports.login = async (req, res) => {
       await user.save();
     }
 
-    if (user.role !== userRole) {
-      console.log(`🔄 Updated user role from ${user.role} to: ${userRole}`);
-    }
-
-    // CRITICAL FIX: Generate JWT with correct role
-    const token = jwt.sign(
-      {
-        id: user._id,
-        userId: user._id,
-        role: userRole,
-        email: user.email || '',
-      },
-      getJWTSecret(),
-      { expiresIn: '7d' }
-    );
+    const accessToken = createAccessToken({ ...user, role: userRole });
+    const { refreshToken } = await createRefreshSession(user._id);
+    const csrfToken = crypto.randomBytes(32).toString('base64url');
+    setAuthenticationCookies(res, accessToken, refreshToken, csrfToken);
 
     console.log(`✅ Login successful: ${user.id} (${userRole})`);
 
-    // Return success with user data
     res.json({
       success: true,
       message: `Welcome back, ${user.fullname}!`,
-      token,
       user: buildUserResponse(user, userRole)
     });
 
@@ -431,5 +375,54 @@ exports.login = async (req, res) => {
       success: false,
       message: 'Server error during login. Please try again.'
     });
+  }
+};
+
+exports.refreshSession = async (req, res) => {
+  try {
+    const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
+    if (!rawRefreshToken) return res.status(401).json({ success: false, message: 'Not authorized' });
+
+    const tokenHash = hashRefreshToken(rawRefreshToken);
+    const session = await RefreshSession.findOneAndUpdate(
+      {
+        tokenHash,
+        revokedAt: null,
+        expiresAt: { $gt: new Date() },
+      },
+      { $set: { revokedAt: new Date() } },
+      { new: true }
+    ).select('+tokenHash');
+
+    if (!session) return res.status(401).json({ success: false, message: 'Not authorized' });
+
+    const user = await User.findById(session.userId).select('-password');
+    if (!user || user.accountStatus === 'archived') {
+      await RefreshSession.updateMany({ userId: session.userId, revokedAt: null }, { $set: { revokedAt: new Date() } });
+      return res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+
+    const nextSession = await createRefreshSession(user._id, session.familyId);
+    session.replacedByTokenHash = nextSession.tokenHash;
+    await session.save();
+    setAuthenticationCookies(res, createAccessToken(user), nextSession.refreshToken, crypto.randomBytes(32).toString('base64url'));
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(401).json({ success: false, message: 'Not authorized' });
+  }
+};
+
+exports.logout = async (req, res) => {
+  try {
+    const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
+    if (rawRefreshToken) {
+      await RefreshSession.updateOne(
+        { tokenHash: hashRefreshToken(rawRefreshToken), revokedAt: null },
+        { $set: { revokedAt: new Date() } }
+      );
+    }
+  } finally {
+    clearAuthenticationCookies(res);
+    return res.json({ success: true });
   }
 };

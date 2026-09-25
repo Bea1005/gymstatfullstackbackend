@@ -85,7 +85,7 @@ const getEquipment = async (req, res) => {
     });
   } catch (error) {
     console.error('Get equipment error:', error);
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -105,7 +105,7 @@ const getEquipmentById = async (req, res) => {
     });
   } catch (error) {
     console.error('Get equipment by id error:', error);
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -186,7 +186,7 @@ const createEquipment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -289,7 +289,7 @@ const updateEquipment = async (req, res) => {
     if (error.code === 11000) {
       return res.status(400).json({ success: false, message: 'Reference ID already exists. Please use a unique ID.' });
     }
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -318,7 +318,7 @@ const deleteEquipment = async (req, res) => {
     });
   } catch (error) {
     console.error('Delete equipment error:', error);
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -358,7 +358,7 @@ const borrowEquipment = async (req, res) => {
     });
   } catch (error) {
     console.error('Borrow equipment error:', error);
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -398,7 +398,7 @@ const returnEquipment = async (req, res) => {
     });
   } catch (error) {
     console.error('Return equipment error:', error);
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 

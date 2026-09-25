@@ -1,11 +1,12 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { getJWTSecret } = require('../config/security');
+const { ACCESS_COOKIE_NAME } = require('../config/authTokens');
 
 exports.protect = async (req, res, next) => {
   const authorization = req.headers.authorization || '';
   const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
-  const token = bearerMatch?.[1]?.trim();
+  const token = req.cookies?.[ACCESS_COOKIE_NAME] || bearerMatch?.[1]?.trim();
 
   if (!token) {
     return res.status(401).json({ 
@@ -26,9 +27,6 @@ exports.protect = async (req, res, next) => {
       user = await (userQuery && typeof userQuery.select === 'function'
         ? userQuery.select('-password')
         : userQuery);
-      if (userQuery === undefined) {
-        user = decoded;
-      }
     } catch (lookupError) {
       // Legacy login IDs are strings and cannot be cast by findById.
       if (!userId || !/Cast to ObjectId/i.test(lookupError.message || '')) {
@@ -51,6 +49,14 @@ exports.protect = async (req, res, next) => {
       });
     }
 
+    const storedRole = String(user.role || '').trim().toLowerCase();
+    if (!['student', 'student-athlete', 'studentathlete', 'admin', 'coach', 'screener'].includes(storedRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'This account does not have an authorized role.'
+      });
+    }
+
     user.lastActiveAt = new Date();
     user.status = 'Active';
     if (typeof user.save === 'function') {
@@ -60,8 +66,8 @@ exports.protect = async (req, res, next) => {
     const userData = user.toObject ? user.toObject() : { ...user };
     delete userData.password;
     const databaseRole = User.normalizeRole
-      ? User.normalizeRole(userData.role)
-      : String(userData.role || '').trim().toLowerCase();
+      ? User.normalizeRole(storedRole)
+      : storedRole;
 
     req.user = {
       ...userData,

@@ -300,7 +300,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     console.error('❌ Get screener requirements error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Server error: ' + error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -323,7 +323,7 @@ router.put('/screener/requirements/:id/viewed', protect, authorize('screener', '
     res.json({ success: true, message: 'Requirement resubmission marked as viewed', data: submission });
   } catch (error) {
     console.error('❌ Mark resubmission viewed error:', error);
-    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 });
 
@@ -411,7 +411,7 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
     console.error('❌ Review requirement error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error: ' + error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });

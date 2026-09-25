@@ -47,6 +47,28 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+const scheduleRequestFileFilter = (req, file, cb) => {
+  const allowedMimes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ];
+  const allowedExtensions = ['.pdf', '.doc', '.docx'];
+  const originalName = String(file.originalname || '');
+  const ext = path.extname(originalName).toLowerCase();
+  const baseName = path.basename(originalName);
+  const safeName = baseName.length > 120
+    || baseName !== originalName
+    || /[\u0000-\u001f\u007f]/.test(baseName);
+
+  if (!safeName && allowedMimes.includes(file.mimetype) && allowedExtensions.includes(ext)) {
+    cb(null, true);
+    return;
+  }
+
+  cb(new Error('Unsupported schedule request file'), false);
+};
+
 // Create multer instance
 const upload = multer({
   storage: storage,
@@ -64,5 +86,18 @@ const requirementUpload = multer({
   }
 });
 
+const scheduleRequestUpload = multer({
+  storage,
+  fileFilter: scheduleRequestFileFilter,
+  limits: {
+    fileSize: Number(process.env.SCHEDULE_REQUEST_FILE_MAX_BYTES) || 5 * 1024 * 1024,
+    files: 1,
+    fields: 16,
+    parts: 17,
+    fieldSize: 16 * 1024,
+  }
+});
+
 module.exports = upload;
 module.exports.requirementUpload = requirementUpload;
+module.exports.scheduleRequestUpload = scheduleRequestUpload;

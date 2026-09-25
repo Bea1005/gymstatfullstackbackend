@@ -1,68 +1,84 @@
 const ScheduleRequest = require('../models/ScheduleRequest');
 const Schedule = require('../models/Schedule');
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
+const { findScheduleConflict } = require('../utils/scheduleConflicts');
+const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
 
-const toMinutes = (time) => {
-  const [clock, meridian] = String(time || '').trim().split(/\s+/);
-  const [hours, minutes] = String(clock || '').split(':').map(Number);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return NaN;
-  let normalizedHours = hours % 12;
-  if (String(meridian).toUpperCase() === 'PM') normalizedHours += 12;
-  return normalizedHours * 60 + minutes;
-};
+const scheduleRequestUploadDir = path.resolve(__dirname, '../../uploads/requirements');
 
-const schedulesOverlap = (candidate, existing) => {
-  const candidateStartDate = new Date(`${candidate.startDate}T00:00:00`);
-  const candidateEndDate = new Date(`${candidate.endDate}T00:00:00`);
-  const existingStartDate = new Date(`${existing.startDate}T00:00:00`);
-  const existingEndDate = new Date(`${existing.endDate}T00:00:00`);
-  const prepDays = Number(existing.prepDays || 0) || 0;
-  const prepStartDate = new Date(existingStartDate);
-  prepStartDate.setDate(prepStartDate.getDate() - prepDays);
+const isValidScheduleRequestFile = (file) => {
+  if (!file?.path || !file?.filename) return false;
+  const fileHeader = Buffer.alloc(4);
+  let bytesRead = 0;
+  const descriptor = fs.openSync(file.path, 'r');
+  try {
+    bytesRead = fs.readSync(descriptor, fileHeader, 0, 4, 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
 
-  if (candidateEndDate < prepStartDate || candidateStartDate > existingEndDate) return false;
-
-  const candidateStart = candidateStartDate.getTime() + toMinutes(candidate.startTime) * 60000;
-  const candidateEnd = candidateEndDate.getTime() + toMinutes(candidate.endTime) * 60000;
-  const existingStart = existingStartDate.getTime() + toMinutes(existing.startTime) * 60000;
-  const existingEnd = existingEndDate.getTime() + toMinutes(existing.endTime) * 60000;
-
-  if (![candidateStart, candidateEnd, existingStart, existingEnd].every(Number.isFinite)) return false;
-  return candidateStart < existingEnd && candidateEnd > existingStart;
+  if (file.mimetype === 'application/pdf') return bytesRead >= 4 && fileHeader.toString('ascii', 0, 4) === '%PDF';
+  if (file.mimetype === 'application/msword') return bytesRead >= 4 && fileHeader.equals(Buffer.from([0xD0, 0xCF, 0x11, 0xE0]));
+  if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    return bytesRead >= 4 && fileHeader[0] === 0x50 && fileHeader[1] === 0x4B;
+  }
+  return false;
 };
 
 // Create a new schedule request
 exports.createScheduleRequest = async (req, res) => {
   try {
-    console.log('📝 PUBLIC: New schedule request submission');
-    console.log('📝 Requester:', req.body.requesterName);
-    console.log('📝 Event:', req.body.eventName);
-    
+    if (!isValidScheduleRequestFile(req.file)) {
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ success: false, message: 'The uploaded request letter could not be verified.' });
+    }
+
     const requestData = {
-      ...req.body,
+      eventName: req.body.eventName,
+      requesterName: req.body.requesterName,
+      requesterEmail: req.body.requesterEmail,
+      requesterPhone: req.body.requesterPhone,
+      organization: req.body.organization || '',
+      purpose: req.body.purpose || '',
+      details: req.body.details || '',
+      startDate: req.body.startDate,
+      startTime: req.body.startTime,
+      endDate: req.body.endDate,
+      endTime: req.body.endTime,
+      prepDays: req.body.prepDays,
+      file: {
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+        storageKey: req.file.filename,
+      },
       status: 'pending'
     };
-    
-    // Validate required fields
-    const requiredFields = ['eventName', 'requesterName', 'requesterEmail', 'requesterPhone', 
-                           'startDate', 'startTime', 'endDate', 'endTime'];
-    const missingFields = requiredFields.filter(field => !req.body[field]);
-    
-    if (missingFields.length > 0) {
-      console.log('❌ Missing required fields:', missingFields);
-      return res.status(400).json({
+
+    const recentDuplicate = await ScheduleRequest.findOne({
+      status: 'pending',
+      requesterEmail: requestData.requesterEmail,
+      eventName: requestData.eventName,
+      startDate: requestData.startDate,
+      startTime: requestData.startTime,
+      endDate: requestData.endDate,
+      endTime: requestData.endTime,
+      createdAt: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
+    }).select('_id').lean();
+
+    if (recentDuplicate) {
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(409).json({
         success: false,
-        message: `Missing required fields: ${missingFields.join(', ')}`
+        message: 'A matching schedule request was recently submitted.'
       });
     }
 
-    const activeSchedules = await Schedule.find({
-      status: 'active',
-      startDate: { $lte: req.body.endDate },
-      endDate: { $gte: req.body.startDate },
-    }).lean();
-
-    if (activeSchedules.some((schedule) => schedulesOverlap(req.body, schedule))) {
+    const conflict = await findScheduleConflict(Schedule, req.body);
+    if (conflict) {
       return res.status(409).json({
         success: false,
         message: 'The requested time range overlaps an existing confirmed schedule.'
@@ -72,27 +88,40 @@ exports.createScheduleRequest = async (req, res) => {
     const newRequest = new ScheduleRequest(requestData);
     await newRequest.save();
     
-    console.log(`✅ Schedule request saved to MongoDB: ${newRequest._id}`);
-    console.log(`📊 Event: ${newRequest.eventName} | Requester: ${newRequest.requesterName}`);
-    
     res.status(201).json({
       success: true,
       message: 'Schedule request submitted successfully. Admin will review your request.',
-      data: newRequest
+      data: { id: newRequest._id, status: newRequest.status }
     });
   } catch (error) {
-    console.error('❌ Error creating schedule request:', error);
+    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     if (error?.code === 10334 || /BSONObj size|document is larger than the maximum allowed size/i.test(error?.message || '')) {
       return res.status(413).json({
         success: false,
-        message: 'The request letter is too large to store. Please use a file no larger than 10 MB.'
+        message: 'The uploaded request letter is too large.'
       });
     }
     res.status(500).json({
       success: false,
-      message: 'Failed to submit schedule request',
-      error: error.message
+      message: 'Failed to submit schedule request'
     });
+  }
+};
+
+exports.downloadScheduleRequestFile = async (req, res) => {
+  try {
+    const request = await ScheduleRequest.findById(req.params.id).select('file').lean();
+    const storageKey = request?.file?.storageKey;
+    if (!storageKey || path.basename(storageKey) !== storageKey) return res.status(404).json({ success: false, message: 'File not found' });
+
+    const filePath = path.join(scheduleRequestUploadDir, storageKey);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, message: 'File not found' });
+
+    return res.download(filePath, request.file.originalname || 'request-letter', {
+      headers: { 'Content-Type': 'application/octet-stream' }
+    });
+  } catch (error) {
+    return res.status(404).json({ success: false, message: 'File not found' });
   }
 };
 
@@ -124,7 +153,7 @@ exports.getScheduleRequests = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch schedule requests',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -151,13 +180,14 @@ exports.getScheduleRequestById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch schedule request',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
 
 // Update schedule request status (approve/reject)
 exports.updateScheduleRequest = async (req, res) => {
+  let releaseLock;
   try {
     const { id } = req.params;
     const { status, rejectionReason } = req.body;
@@ -189,12 +219,21 @@ exports.updateScheduleRequest = async (req, res) => {
     }
 
     if (status === 'approved') {
+      releaseLock = await acquireScheduleConflictLock();
       const existingSchedule = await Schedule.findOne({ fromRequest: request._id });
       if (existingSchedule) {
         return res.status(200).json({
           success: true,
           message: 'Schedule request was already approved',
           data: { request, schedule: existingSchedule }
+        });
+      }
+
+      const conflict = await findScheduleConflict(Schedule, request);
+      if (conflict) {
+        return res.status(409).json({
+          success: false,
+          message: 'The requested time range overlaps an existing active schedule.'
         });
       }
     }
@@ -250,7 +289,7 @@ exports.updateScheduleRequest = async (req, res) => {
         return res.status(500).json({
           success: false,
           message: 'Schedule request could not be approved because calendar creation failed',
-          error: scheduleError.message
+          message: 'An unexpected server error occurred. Please try again.'
         });
       }
     }
@@ -265,11 +304,14 @@ exports.updateScheduleRequest = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error updating schedule request:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: 'Failed to update schedule request',
-      error: error.message
+      message: error.statusCode === 503
+        ? error.message
+        : 'An unexpected server error occurred. Please try again.'
     });
+  } finally {
+    if (releaseLock) await releaseLock();
   }
 };
 
@@ -313,7 +355,7 @@ exports.deleteScheduleRequest = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete schedule request',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -344,7 +386,7 @@ exports.getRequestsByStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch requests',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };

@@ -81,7 +81,7 @@ describe('Equipment Controller Unit Tests', () => {
       await getEquipment(req, res);
 
       expect(res.statusCode).toBe(500);
-      expect(res._getJSONData().message).toContain('Server error');
+      expect(res._getJSONData().message).toBe('An unexpected server error occurred. Please try again.');
     });
   });
 

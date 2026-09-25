@@ -1,7 +1,10 @@
 const Schedule = require('../models/Schedule');
+const { findScheduleConflict } = require('../utils/scheduleConflicts');
+const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
 
 // Create a new schedule
 exports.createSchedule = async (req, res) => {
+  let releaseLock;
   try {
     console.log('📅 ADMIN: Creating new schedule');
     console.log('📅 Event:', req.body.event);
@@ -11,6 +14,15 @@ exports.createSchedule = async (req, res) => {
       ...req.body,
       createdBy: req.user ? req.user._id : null
     };
+
+    releaseLock = await acquireScheduleConflictLock();
+    const conflict = await findScheduleConflict(Schedule, scheduleData);
+    if (conflict) {
+      return res.status(409).json({
+        success: false,
+        message: 'The requested time range overlaps an existing active schedule.'
+      });
+    }
     
     const newSchedule = new Schedule(scheduleData);
     await newSchedule.save();
@@ -25,11 +37,14 @@ exports.createSchedule = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error creating schedule:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: 'Failed to create schedule',
-      error: error.message
+      message: error.statusCode === 503
+        ? error.message
+        : 'An unexpected server error occurred. Please try again.'
     });
+  } finally {
+    if (releaseLock) await releaseLock();
   }
 };
 
@@ -69,7 +84,7 @@ exports.getSchedules = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch schedules',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -96,7 +111,7 @@ exports.getScheduleById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch schedule',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -128,7 +143,7 @@ exports.updateSchedule = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update schedule',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -156,7 +171,7 @@ exports.deleteSchedule = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete schedule',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };
@@ -192,7 +207,7 @@ exports.getSchedulesByDateRange = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch schedules',
-      error: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 };

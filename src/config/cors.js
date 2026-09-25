@@ -29,8 +29,8 @@ const corsOptions = {
     return callback(error);
   },
   methods: allowedMethods,
-  allowedHeaders,
-  credentials: false,
+  allowedHeaders: [...new Set([...allowedHeaders, 'Content-Type', 'Authorization', 'X-CSRF-Token'])],
+  credentials: true,
   optionsSuccessStatus: 204
 };
 

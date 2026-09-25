@@ -5,6 +5,12 @@ const User = require('../../src/models/User');
 const { register, login, requestPasswordReset, resetPassword } = require('../../src/controllers/authControllers');
 
 jest.mock('../../src/models/User');
+jest.mock('../../src/models/RefreshSession', () => ({
+  create: jest.fn().mockResolvedValue({}),
+  findOneAndUpdate: jest.fn(),
+  updateOne: jest.fn(),
+  updateMany: jest.fn(),
+}));
 jest.mock('bcryptjs');
 jest.mock('jsonwebtoken');
 jest.mock('../../src/config/email', () => ({
@@ -98,14 +104,14 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().message).toContain('already exists');
   });
 
-  it('infers a coach role from a longer ID during registration', async () => {
+  it('keeps the default student role for a valid long ID during registration', async () => {
     const req = httpMocks.createRequest({
       body: {
         fullname: 'Coach User',
         username: 'coachuser',
         email: 'coach@example.com',
         password: 'Password1!',
-        role: 'student',
+        role: 'coach',
         id: 'A1234567'
       }
     });
@@ -119,16 +125,16 @@ describe('Auth Controllers', () => {
       fullname: 'Coach User',
       username: 'coachuser',
       email: 'coach@example.com',
-      role: 'coach',
+      role: 'student',
       department: '',
       sport: '',
-      id: 'A123456'
+      id: 'A1234567'
     });
 
     await register(req, res);
 
-    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({ role: 'coach' }));
-    expect(res._getJSONData().user.role).toBe('coach');
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({ role: 'student' }));
+    expect(res._getJSONData().user.role).toBe('student');
   });
 
   it('returns the saved role from the database during login', async () => {
@@ -165,7 +171,7 @@ describe('Auth Controllers', () => {
     );
   });
 
-  it('corrects a mismatched stored role using the ID format during login', async () => {
+  it('uses the persisted user role during login without re-inferring from the ID format', async () => {
     const req = httpMocks.createRequest({
       body: {
         id: 'Coach1234',
@@ -194,8 +200,8 @@ describe('Auth Controllers', () => {
     await login(req, res);
 
     expect(user.save).toHaveBeenCalled();
-    expect(user.role).toBe('coach');
-    expect(res._getJSONData().user.role).toBe('coach');
+    expect(user.role).toBe('student');
+    expect(res._getJSONData().user.role).toBe('student');
   });
 
   it('creates a reset challenge without exposing whether an email exists', async () => {

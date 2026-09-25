@@ -32,14 +32,44 @@ describe('Auth Middleware Tests', () => {
     it('should call next() if valid token is provided', async () => {
       req.headers = { authorization: 'Bearer valid_token' };
       const decodedUser = { id: 'user123', role: 'admin' };
+      const databaseUser = { _id: 'user123', id: 'user123', role: 'student' };
       jwt.verify.mockReturnValue(decodedUser);
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue(databaseUser)
+      });
 
       await protect(req, res, next);
 
       expect(jwt.verify).toHaveBeenCalled();
-      expect(req.user.role).toBe(decodedUser.role);
-      expect(req.user.id).toBe(decodedUser.id);
+      expect(req.user.role).toBe(databaseUser.role);
+      expect(req.user.id).toBe(databaseUser.id);
       expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reject a valid JWT if its user no longer exists in the database', async () => {
+      req.headers = { authorization: 'Bearer valid_token' };
+      jwt.verify.mockReturnValue({ id: 'deleted-user', role: 'admin' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue(null)
+      });
+
+      await protect(req, res, next);
+
+      expect(res.statusCode).toBe(401);
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('should reject a database user without a stored role', async () => {
+      req.headers = { authorization: 'Bearer valid_token' };
+      jwt.verify.mockReturnValue({ id: 'user-without-role', role: 'admin' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({ _id: 'user-without-role', id: 'user-without-role' })
+      });
+
+      await protect(req, res, next);
+
+      expect(res.statusCode).toBe(403);
+      expect(next).not.toHaveBeenCalled();
     });
 
     it('should resolve a legacy string login id from the user record', async () => {

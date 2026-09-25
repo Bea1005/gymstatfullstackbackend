@@ -179,28 +179,6 @@ const normalizeRole = (role) => {
   return 'student';
 };
 
-const detectRoleFromId = (id) => {
-  const trimmedId = String(id || '').trim();
-
-  if (!trimmedId || trimmedId.length < 7 || /\s/.test(trimmedId) || !/^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)) {
-    return null;
-  }
-
-  if (trimmedId.toLowerCase().startsWith('screener') || trimmedId.toLowerCase().startsWith('sc')) {
-    return 'screener';
-  }
-
-  if (trimmedId.toLowerCase().startsWith('admin')) {
-    return 'admin';
-  }
-
-  if (/^[A-Za-z0-9]{7}$/.test(trimmedId)) {
-    return 'student';
-  }
-
-  return 'coach';
-};
-
 const getRoleModel = (role) => {
   const normalizedRole = normalizeRole(role);
   return roleModelMap[normalizedRole] || StudentAthlete;
@@ -259,7 +237,7 @@ const syncRoleDocument = async (user) => {
     return;
   }
 
-  const normalizedRole = normalizeRole(user.role || detectRoleFromId(user.id));
+  const normalizedRole = normalizeRole(user.role);
   const targetModel = getRoleModel(normalizedRole);
   const source = user && typeof user.toObject === 'function' ? user.toObject() : user;
   const roleDocPayload = buildRoleDocument({ ...source, role: normalizedRole });
@@ -344,7 +322,6 @@ baseUserSchema.post('findOneAndUpdate', async function(doc) {
 const User = mongoose.model('User', baseUserSchema, 'users');
 
 User.normalizeRole = normalizeRole;
-User.detectRoleFromId = detectRoleFromId;
 User.getRoleModel = getRoleModel;
 User.syncRoleDocument = syncRoleDocument;
 User.syncAllRoleDocuments = syncAllRoleDocuments;

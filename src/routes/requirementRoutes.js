@@ -40,7 +40,7 @@ router.get('/:id/download', protect, authorize('student', 'admin'), downloadRequ
 router.post('/:requirementId/submit', protect, authorize('student'), submitRequirement);
 
 // Get single requirement details (AFTER specific routes)
-router.get('/:id', protect, getRequirementById);
+router.get('/:id', protect, authorize('student', 'admin'), getRequirementById);
 
 // ============================================
 // ADMIN ROUTES - Protected (Admin role)

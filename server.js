@@ -10,7 +10,7 @@ const mongoose = require('mongoose');
 const connectDB = require('./src/config/db');
 const { corsOptions } = require('./src/config/cors');
 const { getJWTSecret } = require('./src/config/security');
-const { hashPassword } = require('./src/config/passwords');
+const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('./src/config/passwords');
 const { getEmailConfigurationStatus } = require('./src/config/email');
 const { apiRateLimiter } = require('./src/config/rateLimit');
 const User = require('./src/models/User');
@@ -53,9 +53,60 @@ const BASE_URI = rawBaseUri.replace(/\/+$|^\s+|\s+$/g, '') || '/api/v1';
 const PORT_FILE = path.join(__dirname, '.port');
 const isProduction = process.env.NODE_ENV === 'production';
 
+const getConfiguredSecurityOrigins = () => String(
+  [process.env.CORS_ALLOWED_ORIGINS, process.env.FRONTEND_URL]
+    .filter(Boolean)
+    .join(',')
+)
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value) => {
+    try {
+      const parsed = new URL(value);
+      return ['http:', 'https:'].includes(parsed.protocol)
+        && (!isProduction || parsed.protocol === 'https:');
+    } catch {
+      return false;
+    }
+  })
+  .map((value) => new URL(value).origin);
+
+const cspConnectSources = [...new Set(['\'self\'', ...getConfiguredSecurityOrigins()])].join(' ');
+
 if (isProduction) {
   app.set('trust proxy', 1);
 }
+
+app.use((req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'none'",
+      "object-src 'none'",
+      "script-src 'none'",
+      "style-src 'none'",
+      "font-src 'none'",
+      "img-src 'self' data: blob:",
+      `connect-src ${cspConnectSources}`,
+    ].join('; ')
+  );
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+
+  if (isProduction) {
+    const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0].trim();
+    if (forwardedProtocol === 'https' || req.secure) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+  }
+
+  return next();
+});
 
 const writePortFile = (port) => {
   fs.writeFileSync(PORT_FILE, String(port), 'utf8');
@@ -95,10 +146,6 @@ if (isProduction) {
       return res.redirect(308, `https://${req.get('host')}${req.originalUrl}`);
     }
 
-    res.setHeader(
-      'Strict-Transport-Security',
-      'max-age=31536000; includeSubDomains'
-    );
     return next();
   });
 }
@@ -106,25 +153,30 @@ if (isProduction) {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// Middleware
-app.use(express.json({ limit: '16mb' }));
 app.use(auditSecurityEvents);
-app.use(validateRequestBody);
-app.use(cookieParser());
+
+// Never expose unexpected database, filesystem, or runtime details to clients.
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = (body) => {
-    const isPasswordResetRoute = req.path.startsWith('/forgot-password/');
-    if (res.statusCode >= 500 && !isPasswordResetRoute) {
+    if (res.statusCode >= 500) {
       return originalJson({
         success: false,
-        message: 'Internal server error'
+        message: 'An unexpected server error occurred. Please try again.'
       });
     }
     return originalJson(body);
   };
   next();
 });
+
+// The public schedule-request router owns its own small JSON/multipart limits.
+app.use(`${BASE_URI}/schedule-requests`, scheduleRequestsRouter);
+
+// Middleware
+app.use(express.json({ limit: '16mb' }));
+app.use(validateRequestBody);
+app.use(cookieParser());
 
 // ============================================================
 // ⚠️ IMPORTANT: PUBLIC ROUTES - NO AUTHENTICATION REQUIRED
@@ -141,14 +193,10 @@ app.get(`${BASE_URI}/health`, (req, res) => {
   });
 });
 
-// 2. SCHEDULE REQUESTS - POST is PUBLIC (NO TOKEN NEEDED!)
-// ✅ Public can submit schedule requests without authentication
-app.use(`${BASE_URI}/schedule-requests`, scheduleRequestsRouter);
-
-// 3. SCHEDULES - GET is PUBLIC (NO TOKEN NEEDED!)
+// 2. SCHEDULES - GET is PUBLIC (NO TOKEN NEEDED!)
 app.use(`${BASE_URI}/schedules`, scheduleRoutes);
 
-// 4. AUTH - Login, Register, and Password Reset are PUBLIC
+// 3. AUTH - Login, Register, and Password Reset are PUBLIC
 app.use(`${BASE_URI}`, authRoutes);
 
 // PROFILE - current user routes
@@ -188,7 +236,7 @@ const handleProfileGet = async (req, res) => {
 
 const handleProfileUpdate = async (req, res) => {
   try {
-    const { email, fullname, contactNumber, dateOfBirth, dob, department, yearLevel, sport, branchCampus, graduationYear, athleteStatus, newPassword, notifications } = req.body;
+    const { email, fullname, contactNumber, dateOfBirth, dob, department, yearLevel, sport, branchCampus, graduationYear, athleteStatus, currentPassword, newPassword, notifications } = req.body;
     const user = await User.findById(req.user?._id);
 
     if (!user) {
@@ -282,6 +330,21 @@ const handleProfileUpdate = async (req, res) => {
     }
 
     if (newPassword !== undefined) {
+      if (!currentPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is required.'
+        });
+      }
+
+      const passwordCheck = await verifyPassword(currentPassword, user.password);
+      if (!passwordCheck.valid) {
+        return res.status(401).json({
+          success: false,
+          message: 'Current password is incorrect.'
+        });
+      }
+
       const passwordValue = String(newPassword || '');
       if (!passwordValue) {
         return res.status(400).json({
@@ -290,10 +353,10 @@ const handleProfileUpdate = async (req, res) => {
         });
       }
 
-      if (passwordValue.length < 8) {
+      if (!isPasswordValid(passwordValue)) {
         return res.status(400).json({
           success: false,
-          message: 'Password must be at least 8 characters long.'
+          message: PASSWORD_POLICY_MESSAGE
         });
       }
 
@@ -454,7 +517,14 @@ app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({
       success: false,
-      message: 'The uploaded file is too large. Maximum size is 10 MB.'
+      message: 'The uploaded file is too large.'
+    });
+  }
+
+  if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.message === 'Unsupported schedule request file') {
+    return res.status(400).json({
+      success: false,
+      message: 'The uploaded request letter is invalid.'
     });
   }
 

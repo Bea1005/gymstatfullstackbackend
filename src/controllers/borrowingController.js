@@ -220,7 +220,7 @@ const getBorrowingRecords = async (req, res) => {
     res.status(200).json(formattedBorrowings);
   } catch (error) {
     console.error('Get borrowing records error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -366,7 +366,7 @@ const createBorrowing = async (req, res) => {
     });
   } catch (error) {
     console.error('Create borrowing error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -508,7 +508,7 @@ const updateBorrowingRecord = async (req, res) => {
     });
   } catch (error) {
     console.error('Update borrowing error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -593,7 +593,7 @@ const returnBorrowedItem = async (req, res) => {
     });
   } catch (error) {
     console.error('Return item error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -622,7 +622,7 @@ const deleteBorrowingRecord = async (req, res) => {
     res.status(200).json({ message: 'Borrowing record deleted successfully' });
   } catch (error) {
     console.error('Delete borrowing error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -667,7 +667,7 @@ const getBorrowingById = async (req, res) => {
     });
   } catch (error) {
     console.error('Get borrowing by ID error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -700,7 +700,7 @@ const getBorrowingStats = async (req, res) => {
     });
   } catch (error) {
     console.error('Get borrowing stats error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -737,7 +737,7 @@ const getEquipmentWithRefs = async (req, res) => {
     res.status(200).json(equipmentWithRefs);
   } catch (error) {
     console.error('Get equipment with refs error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 

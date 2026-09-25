@@ -78,7 +78,7 @@ router.get('/admin/dashboard', protect, authorize('admin'), async (req, res) => 
     });
   } catch (error) {
     console.error('Admin dashboard error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
   }
 });
 

@@ -185,7 +185,7 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     
     res.status(400).json({ 
       success: false, 
-      message: error.message || 'Failed to create user'
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -204,7 +204,7 @@ router.get('/students', protect, authorize('admin'), async (req, res) => {
     console.error('List students error:', error);
     res.status(400).json({ 
       success: false,
-      message: error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -237,7 +237,7 @@ router.get('/screeners', protect, authorize('admin'), async (req, res) => {
     console.error('List screeners error:', error);
     res.status(400).json({ 
       success: false,
-      message: error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -283,7 +283,7 @@ router.patch('/archive', protect, authorize('admin'), async (req, res) => {
     console.error('Bulk delete error:', error);
     res.status(400).json({ 
       success: false, 
-      message: error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -350,7 +350,7 @@ router.put('/:id', protect, authorize('admin'), async (req, res) => {
 
     res.status(400).json({
       success: false,
-      message: error.message
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -389,7 +389,7 @@ router.patch('/:id/:action(archive|restore)', protect, authorize('admin'), async
     console.error('❌ Delete user error:', error);
     res.status(400).json({ 
       success: false, 
-      message: error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -414,7 +414,7 @@ router.get('/:id', protect, authorize('admin'), async (req, res) => {
     console.error('Get user error:', error);
     res.status(400).json({ 
       success: false,
-      message: error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });
@@ -435,9 +435,9 @@ router.get('/', protect, authorize('admin'), async (req, res) => {
     res.json(users.map(mapUserToResponse));
   } catch (error) {
     console.error('Get users error:', error);
-    res.status(400).json({ 
+    res.status(500).json({
       success: false,
-      message: error.message 
+      message: 'An unexpected server error occurred. Please try again.'
     });
   }
 });

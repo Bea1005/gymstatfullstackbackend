@@ -9,6 +9,37 @@ const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
 const { protect, authorize } = require('../middleware/auth');
 
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getCoachAccess = async (coachId) => {
+  const coach = await User.findOne({ _id: coachId, role: 'coach' })
+    .select('sport assignedSports strasucStudentIds')
+    .lean();
+  if (!coach) return null;
+
+  const allowedSports = [...new Set([
+    coach.sport,
+    ...(Array.isArray(coach.assignedSports) ? coach.assignedSports : []),
+  ].map((sport) => String(sport || '').trim()).filter(Boolean))];
+
+  return { coach, allowedSports };
+};
+
+const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob';
+
+const toStudentResponse = (student, profile) => ({
+  _id: student._id,
+  id: student.id || String(student._id),
+  studentId: String(student._id),
+  fullname: student.fullname || '',
+  department: student.department || '',
+  yearLevel: student.yearLevel || '',
+  dateOfBirth: student.dateOfBirth || student.dob || '',
+  dob: student.dob || student.dateOfBirth || '',
+  branchCampus: student.branchCampus || '',
+  profilePhotoUrl: profile?.imageFileId ? `/coach/students/${student._id}/profile-photo` : '',
+});
+
 const facultyPhotoUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter: (req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.mimetype)),
@@ -170,6 +201,13 @@ router.delete('/coach/faculty-members/:facultyId', protect, authorize('coach'), 
 
 router.get('/coach/students/:studentId/profile-photo', protect, authorize('coach'), async (req, res) => {
   try {
+    const coach = await User.findOne({
+      _id: req.user._id,
+      role: 'coach',
+      strasucStudentIds: req.params.studentId,
+    }).select('_id').lean();
+    if (!coach) return res.status(403).json({ message: 'You are not authorized to view this student' });
+
     const student = await User.findOne({ _id: req.params.studentId, role: 'student' }).select('_id').lean();
     const profile = student ? await StudentProfile.findOne({ studentId: student._id }).lean() : null;
     if (!profile?.imageFileId) return res.status(404).json({ message: 'Profile photo not found' });
@@ -237,7 +275,9 @@ router.put('/coach/profile', protect, authorize('coach'), async (req, res) => {
 router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   try {
     const selectedSport = String(req.query.sport || req.user?.sport || '').trim();
-    const coach = await User.findById(req.user._id || req.user.id).select('strasucStudentIds').lean();
+    const coach = await User.findOne({ _id: req.user._id || req.user.id, role: 'coach' })
+      .select('strasucStudentIds')
+      .lean();
     const selectedStudentIds = Array.isArray(coach?.strasucStudentIds) ? coach.strasucStudentIds : [];
     const filter = { role: 'student', _id: { $in: selectedStudentIds } };
     if (selectedSport) {
@@ -247,7 +287,7 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
       ] }];
     }
 
-    const athletes = await User.find(filter).select('-password').lean();
+    const athletes = await User.find(filter).select(studentProjection).lean();
     const studentIds = athletes.map((athlete) => athlete._id);
     const profiles = studentIds.length > 0
       ? await StudentProfile.find({ studentId: { $in: studentIds } }).select('studentId imageFileId').lean()
@@ -256,24 +296,7 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
 
     return res.json(athletes.map((athlete) => {
       const studentProfile = profilesByStudentId.get(String(athlete._id));
-      return ({
-      _id: athlete._id,
-      id: athlete.id || String(athlete._id),
-      studentId: String(athlete._id),
-      fullname: athlete.fullname || '',
-      email: athlete.email || '',
-      department: athlete.department || '',
-      yearLevel: athlete.yearLevel || '',
-      dateOfBirth: athlete.dateOfBirth || athlete.dob || '',
-      dob: athlete.dob || athlete.dateOfBirth || '',
-      athleteStatus: athlete.athleteStatus || '',
-      branchCampus: athlete.branchCampus || '',
-      profilePhoto: '',
-      profilePhotoUrl: studentProfile?.imageFileId ? `/coach/students/${athlete._id}/profile-photo` : '',
-      sport: athlete.sport || '',
-      createdAt: athlete.createdAt,
-      updatedAt: athlete.updatedAt,
-      });
+      return toStudentResponse(athlete, studentProfile);
     }));
   } catch (error) {
     console.error('Coach athletes error:', error);
@@ -289,14 +312,28 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
       return res.status(400).json({ message: 'An existing student must be selected' });
     }
 
-    const student = await User.findOne({ _id: studentId, role: 'student' });
+    const access = await getCoachAccess(req.user._id || req.user.id);
+    if (!access) return res.status(403).json({ message: 'Coach access could not be verified' });
+
+    const studentFilter = { _id: studentId, role: 'student' };
+    if (access.allowedSports.length === 0) {
+      return res.status(403).json({ message: 'You are not authorized to add this student' });
+    }
+    studentFilter.$or = access.allowedSports.map((sport) => ({
+      $or: [
+        { sport: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
+        { assignedSports: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
+      ],
+    }));
+
+    const student = await User.findOne(studentFilter).select(studentProjection).lean();
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
     await User.updateOne(
       { _id: req.user._id || req.user.id },
       { $addToSet: { strasucStudentIds: student._id } }
     );
-    return res.status(200).json({ success: true, data: student.toObject() });
+    return res.status(200).json({ success: true, data: toStudentResponse(student) });
   } catch (error) {
     console.error('Coach athlete create error:', error);
     return res.status(500).json({ message: 'Server error while creating student profile' });
@@ -313,8 +350,15 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    if (req.user?.sport && student.sport && student.sport !== req.user.sport) {
-      return res.status(403).json({ message: 'This student is not assigned to your sport' });
+    const coachId = req.user?._id || req.user?.id;
+    const coachAssignment = await User.findOne({
+      _id: coachId,
+      role: 'coach',
+      strasucStudentIds: student._id,
+    }).select('_id').lean();
+
+    if (!coachAssignment) {
+      return res.status(403).json({ message: 'You are not authorized to update this student' });
     }
 
     if (typeof fullname === 'string') student.fullname = fullname;
@@ -348,8 +392,20 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     const selectedSport = String(req.query.sport || '').trim();
     if (!query) return res.json([]);
 
+    const access = await getCoachAccess(req.user._id || req.user.id);
+    if (!access || access.allowedSports.length === 0) return res.json([]);
+    if (selectedSport && !access.allowedSports.some((sport) => sport.toLowerCase() === selectedSport.toLowerCase())) {
+      return res.status(403).json({ message: 'You are not authorized to search this sport' });
+    }
+
     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const queryMatcher = { $regex: escapedQuery, $options: 'i' };
+    const authorizedSportMatcher = access.allowedSports.map((sport) => ({
+      $or: [
+        { sport: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
+        { assignedSports: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
+      ],
+    }));
     const baseFilter = {
       role: 'student',
       accountStatus: { $ne: 'archived' },
@@ -357,22 +413,23 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
         { id: queryMatcher },
         { fullname: queryMatcher },
       ],
+      $and: [{ $or: authorizedSportMatcher }],
     };
     if (selectedSport) {
       const sportMatcher = { $regex: selectedSport.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-      baseFilter.$and = [
+      baseFilter.$and.push(
         {
           $or: [
             { sport: sportMatcher },
             { assignedSports: sportMatcher },
             { 'sportParticipation.sport': sportMatcher },
           ],
-        },
-      ];
+        }
+      );
     }
 
     const students = await User.find(baseFilter)
-      .select('_id id fullname department yearLevel sport branchCampus dateOfBirth dob athleteStatus assignedSports sportParticipation')
+      .select(studentProjection)
       .sort({ fullname: 1 })
       .limit(30)
       .lean();
@@ -383,11 +440,9 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
       fullname: student.fullname || '',
       department: student.department || '',
       yearLevel: student.yearLevel || '',
-      sport: student.sport || '',
-      branchCampus: student.branchCampus || '',
       dateOfBirth: student.dateOfBirth || student.dob || '',
-      athleteStatus: student.athleteStatus || '',
-      profilePhotoUrl: `/coach/students/${student._id}/profile-photo`,
+      dob: student.dob || student.dateOfBirth || '',
+      branchCampus: student.branchCampus || '',
     })));
   } catch (err) {
     console.error('Coach student search error:', err);
@@ -397,24 +452,19 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
 
 router.get('/coach/student-directory', protect, authorize('coach'), async (req, res) => {
   try {
-    const selectedSport = String(req.query.sport || '').trim();
-    const studentFilter = { role: 'student' };
-    if (selectedSport) {
-      studentFilter.$or = [
-        { sport: selectedSport },
-        { assignedSports: selectedSport },
-        { 'sportParticipation.sport': selectedSport },
-      ];
-    }
+    const coach = await User.findOne({ _id: req.user._id || req.user.id, role: 'coach' })
+      .select('strasucStudentIds')
+      .lean();
+    if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
 
-    const students = await User.find(studentFilter).select('-password').lean();
-    return res.json(students.map((student) => ({
-      ...student,
-      id: student.id || String(student._id),
-      studentId: student.id || student.studentId || String(student._id),
-      username: student.username || '',
-      profilePhotoUrl: `/coach/students/${student._id}/profile-photo`,
-    })));
+    const students = await User.find({ role: 'student', _id: { $in: coach.strasucStudentIds || [] } })
+      .select(studentProjection)
+      .lean();
+    const profiles = await StudentProfile.find({ studentId: { $in: students.map((student) => student._id) } })
+      .select('studentId imageFileId')
+      .lean();
+    const profilesByStudentId = new Map(profiles.map((profile) => [String(profile.studentId), profile]));
+    return res.json(students.map((student) => toStudentResponse(student, profilesByStudentId.get(String(student._id)))));
   } catch (error) {
     console.error('Coach student directory error:', error);
     return res.status(500).json({ message: 'Server error while fetching students' });

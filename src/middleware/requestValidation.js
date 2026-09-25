@@ -4,8 +4,9 @@ const MAX_STRING_LENGTH = 5000;
 const MAX_FILE_DATA_LENGTH = 14 * 1024 * 1024;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/;
+const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
-  'fullname', 'email', 'password', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
+  'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
   'event', 'eventName', 'requesterName', 'requesterEmail', 'requesterPhone', 'organization', 'purpose', 'details',
   'startDate', 'startTime', 'endDate', 'endTime', 'prepDays', 'status', 'rejectionReason', 'fromRequest',
   'Name', 'contactNo', 'facebookAccount', 'equipment', 'quantity', 'qty', 'referenceIds', 'referenceConditions',
@@ -126,6 +127,11 @@ const validateRequestBody = (req, res, next) => {
 
   try {
     req.body = normalizeKeyValue('body', req.body);
+    const isRegistration = /\/register$/.test(req.path);
+    const passwordValue = isRegistration ? req.body.password : req.body.newPassword;
+    if (passwordValue !== undefined && !isPasswordValid(passwordValue)) {
+      return res.status(400).json({ success: false, message: PASSWORD_POLICY_MESSAGE });
+    }
     return next();
   } catch (error) {
     if (error.statusCode === 400) {

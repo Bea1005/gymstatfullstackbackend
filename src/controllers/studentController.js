@@ -258,7 +258,7 @@ exports.uploadRequirement = async (req, res) => {
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -320,7 +320,7 @@ exports.getStudentRequirements = async (req, res) => {
       data: enrichedRequirements
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -347,7 +347,7 @@ exports.markRequirementNotificationRead = async (req, res) => {
 
     res.json({ success: true, data: requirement });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -413,7 +413,7 @@ exports.importPreviousYearRequirements = async (req, res) => {
       data: importedRecords
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -451,7 +451,7 @@ exports.downloadRequirement = async (req, res) => {
 
     res.download(resolvedFilePath, requirement.fileName || path.basename(resolvedFilePath));
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -489,7 +489,7 @@ exports.deleteRequirement = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Requirement deleted successfully' });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -515,7 +515,7 @@ exports.getAnnouncements = async (req, res) => {
       data: announcements
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };
 
@@ -554,6 +554,6 @@ exports.getStudentStats = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };

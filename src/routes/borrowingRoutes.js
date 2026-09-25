@@ -222,7 +222,7 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
     res.status(201).json(buildBorrowingResponse(borrowing));
   } catch (error) {
     console.error('Create borrowing error:', error);
-    res.status(500).json({ error: 'Failed to create borrowing record', details: error.message });
+    res.status(500).json({ error: 'An unexpected server error occurred. Please try again.' });
   }
 });
 
@@ -292,7 +292,7 @@ router.put('/admin/borrowing/:id', protect, authorize('admin'), async (req, res)
     res.json(buildBorrowingResponse(updatedBorrowing));
   } catch (error) {
     console.error('Update borrowing error:', error);
-    res.status(500).json({ error: 'Failed to update borrowing record', details: error.message });
+    res.status(500).json({ error: 'An unexpected server error occurred. Please try again.' });
   }
 });
 
@@ -355,7 +355,7 @@ router.put('/admin/borrowing/:id/return', protect, authorize('admin'), async (re
     res.json(buildBorrowingResponse(borrowing));
   } catch (error) {
     console.error('Return item error:', error);
-    res.status(500).json({ error: error.message || 'Server error' });
+    res.status(500).json({ error: 'An unexpected server error occurred. Please try again.' });
   }
 });
 
