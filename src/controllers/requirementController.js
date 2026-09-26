@@ -2,11 +2,20 @@ const mongoose = require('mongoose');
 const Requirement = require('../models/Requirement');
 const RequirementSubmission = require('../models/RequirementSubmission');
 const Announcement = require('../models/Announcement');
+const {
+  storeUploadedFile,
+  deleteStoredUpload,
+  getGridFsId,
+  resolveLegacyUploadPath,
+  streamUploadFile,
+  removeLegacyPathFromResponse,
+} = require('../config/uploadedFileStorage');
 
 // ============================================
 // ADMIN - Create Requirement
 // ============================================
 exports.createRequirement = async (req, res) => {
+  let storedFileReference;
   try {
     console.log('📝 ADMIN: Creating new requirement');
     
@@ -49,6 +58,14 @@ exports.createRequirement = async (req, res) => {
     
     const isActive = req.body.isActive === 'true' || req.body.isActive === true;
     
+    const storedFile = await storeUploadedFile({
+      buffer: req.file.buffer,
+      filename: req.file.originalname,
+      contentType: req.file.mimetype,
+      metadata: { purpose: 'admin-requirement' },
+    });
+    storedFileReference = storedFile.reference;
+
     const requirementData = {
       title: title.trim(),
       description: (req.body.description || '').trim(),
@@ -62,11 +79,11 @@ exports.createRequirement = async (req, res) => {
       publishedBy: req.user ? req.user._id : null,
       status: 'draft',
       file: {
-        filename: req.file.filename,
+        filename: storedFile.filename,
         originalname: req.file.originalname,
         mimetype: req.file.mimetype,
         size: req.file.size,
-        path: req.file.path
+        path: storedFile.reference
       }
     };
     
@@ -87,6 +104,7 @@ exports.createRequirement = async (req, res) => {
       data: newRequirement
     });
   } catch (error) {
+    if (storedFileReference) await deleteStoredUpload(storedFileReference).catch(() => {});
     console.error('❌ Error creating requirement:', error.message);
     res.status(500).json({
       success: false,
@@ -141,7 +159,7 @@ exports.publishRequirement = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Requirement published successfully. Students will be notified.',
-      data: requirement
+      data: removeLegacyPathFromResponse(requirement)
     });
   } catch (error) {
     console.error('❌ Error publishing requirement:', error);
@@ -177,7 +195,7 @@ exports.getAllRequirements = async (req, res) => {
     res.status(200).json({
       success: true,
       count: requirements.length,
-      data: requirements
+      data: removeLegacyPathFromResponse(requirements)
     });
   } catch (error) {
     console.error('❌ Error fetching requirements:', error);
@@ -233,7 +251,7 @@ exports.getPublishedRequirements = async (req, res) => {
     res.status(200).json({
       success: true,
       count: requirements.length,
-      data: requirements
+      data: removeLegacyPathFromResponse(requirements)
     });
   } catch (error) {
     console.error('❌ Error fetching published requirements:', error);
@@ -298,7 +316,7 @@ exports.getRequirementById = async (req, res) => {
     
     res.status(200).json({
       success: true,
-      data: requirement
+      data: removeLegacyPathFromResponse(requirement)
     });
   } catch (error) {
     console.error('❌ Error fetching requirement');
@@ -336,7 +354,7 @@ exports.updateRequirement = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Requirement updated successfully',
-      data: updatedRequirement
+      data: removeLegacyPathFromResponse(updatedRequirement)
     });
   } catch (error) {
     console.error('❌ Error updating requirement:', error);
@@ -367,15 +385,15 @@ exports.deleteRequirement = async (req, res) => {
       });
     }
     
-    // Delete the physical file from disk if it exists
+    // Delete the stored upload while retaining compatibility with legacy disk references.
     if (requirement.file && requirement.file.path) {
       try {
         const fs = require('fs');
-        const path = require('path');
-        
-        if (fs.existsSync(requirement.file.path)) {
-          fs.unlinkSync(requirement.file.path);
-          console.log(`✅ File deleted from disk: ${requirement.file.path}`);
+        if (getGridFsId(requirement.file.path)) {
+          await deleteStoredUpload(requirement.file.path);
+        } else {
+          const legacyPath = resolveLegacyUploadPath(requirement.file.path, requirement.file.filename);
+          if (legacyPath && fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath);
         }
       } catch (fileError) {
         console.warn(`⚠️ Warning: Could not delete file from disk:`, fileError.message);
@@ -398,7 +416,7 @@ exports.deleteRequirement = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Requirement deleted successfully',
-      data: deletedRequirement
+      data: removeLegacyPathFromResponse(deletedRequirement)
     });
   } catch (error) {
     console.error('❌ Error deleting requirement:', error);
@@ -460,19 +478,18 @@ exports.submitRequirement = async (req, res) => {
       isLate,
       remarks: req.body.remarks || ''
     });
-    
+
     await submission.save();
-    
-    // Increment submission count on requirement
+
     await requirement.incrementSubmissionCount();
-    
+
     console.log(`✅ Submission saved to MongoDB: ${submission._id}`);
-    
+
     res.status(201).json({
       success: true,
-      message: isLate ? 
-        'Requirement submitted successfully (marked as late)' :
-        'Requirement submitted successfully',
+      message: isLate
+        ? 'Requirement submitted successfully (marked as late)'
+        : 'Requirement submitted successfully',
       data: submission
     });
   } catch (error) {
@@ -491,26 +508,26 @@ exports.submitRequirement = async (req, res) => {
 exports.getMySubmissions = async (req, res) => {
   try {
     const studentId = req.user._id;
-    
+
     console.log(`📋 STUDENT: Fetching submissions for student ${studentId}`);
-    
+
     const { status } = req.query;
     const filter = { studentId };
-    
+
     if (status) filter.status = status;
-    
+
     const submissions = await RequirementSubmission.find(filter)
       .populate('requirementId')
       .populate('reviewedBy', 'fullname email')
       .sort({ submittedAt: -1 })
       .lean();
-    
+
     console.log(`✅ Retrieved ${submissions.length} submissions from MongoDB`);
-    
+
     res.status(200).json({
       success: true,
       count: submissions.length,
-      data: submissions
+      data: removeLegacyPathFromResponse(submissions)
     });
   } catch (error) {
     console.error('❌ Error fetching submissions:', error);
@@ -547,7 +564,7 @@ exports.getAllSubmissions = async (req, res) => {
     res.status(200).json({
       success: true,
       count: submissions.length,
-      data: submissions
+      data: removeLegacyPathFromResponse(submissions)
     });
   } catch (error) {
     console.error('❌ Error fetching submissions:', error);
@@ -594,7 +611,7 @@ exports.reviewSubmission = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Submission reviewed successfully',
-      data: submission
+      data: removeLegacyPathFromResponse(submission)
     });
   } catch (error) {
     console.error('❌ Error reviewing submission:', error);
@@ -634,68 +651,20 @@ exports.downloadRequirement = async (req, res) => {
       });
     }
     
-    const path = require('path');
-    const fs = require('fs');
-    
-    // Try multiple possible file paths
-    const possiblePaths = [
-      // Absolute path from database
-      requirement.file.path,
-      // Relative to backend root
-      path.join(__dirname, '../../uploads/requirements', requirement.file.filename),
-      // Direct filename in uploads directory
-      path.join(__dirname, '../../uploads/requirements', path.basename(requirement.file.filename))
-    ];
-    
-    console.log(`📍 Trying file paths:`, possiblePaths);
-    
-    let filePath = null;
-    for (let p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        filePath = p;
-        console.log(`✅ File found at: ${filePath}`);
-        break;
-      }
-    }
-    
-    if (!filePath) {
-      console.error(`❌ File not found at any path. Stored path: ${requirement.file.path}`);
-      console.error(`📂 Upload directory contents:`);
-      const uploadDir = path.join(__dirname, '../../uploads/requirements');
-      if (fs.existsSync(uploadDir)) {
-        const files = fs.readdirSync(uploadDir);
-        console.error(`   Files in upload dir: ${files.join(', ')}`);
-      } else {
-        console.error(`   Upload directory doesn't exist: ${uploadDir}`);
-      }
-      
+    const storedReference = requirement.file.path || requirement.file.filename;
+    const streamed = await streamUploadFile(storedReference, res, {
+      filename: requirement.file.originalname || requirement.file.filename,
+      contentType: requirement.file.mimetype || 'application/octet-stream',
+      fallbackFilename: requirement.file.filename,
+    });
+
+    if (!streamed) {
       return res.status(404).json({
         success: false,
-        message: 'File not found on server'
+        message: 'File not found'
       });
     }
-    
-    // Set proper headers
-    res.setHeader('Content-Type', requirement.file.mimetype || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${requirement.file.originalname}"`);
-    
-    // Send file using stream
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.on('error', (err) => {
-      console.error('❌ Error streaming file:', err);
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          message: 'Error downloading file'
-        });
-      }
-    });
-    
-    fileStream.pipe(res);
-    
-    fileStream.on('end', () => {
-      console.log(`✅ File downloaded successfully: ${requirement.file.originalname}`);
-    });
+    return res;
     
   } catch (error) {
     console.error('❌ Download error:', error);

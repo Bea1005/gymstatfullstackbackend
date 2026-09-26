@@ -25,17 +25,21 @@ const getCoachAccess = async (coachId) => {
   return { coach, allowedSports };
 };
 
-const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob';
+const studentProjection = '_id id fullname email department yearLevel branchCampus dateOfBirth dob sport assignedSports athleteStatus';
 
 const toStudentResponse = (student, profile) => ({
   _id: student._id,
   id: student.id || String(student._id),
   studentId: String(student._id),
   fullname: student.fullname || '',
+  email: student.email || '',
   department: student.department || '',
   yearLevel: student.yearLevel || '',
   dateOfBirth: student.dateOfBirth || student.dob || '',
   dob: student.dob || student.dateOfBirth || '',
+  sport: student.sport || '',
+  assignedSports: Array.isArray(student.assignedSports) ? student.assignedSports : [],
+  athleteStatus: student.athleteStatus || '',
   branchCampus: student.branchCampus || '',
   profilePhotoUrl: profile?.imageFileId ? `/coach/students/${student._id}/profile-photo` : '',
 });
@@ -281,9 +285,11 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
     const selectedStudentIds = Array.isArray(coach?.strasucStudentIds) ? coach.strasucStudentIds : [];
     const filter = { role: 'student', _id: { $in: selectedStudentIds } };
     if (selectedSport) {
+      const sportMatcher = { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' };
       filter.$and = [{ $or: [
-        { sport: selectedSport },
-        { 'sportParticipation.sport': selectedSport },
+        { sport: sportMatcher },
+        { assignedSports: sportMatcher },
+        { 'sportParticipation.sport': sportMatcher },
       ] }];
     }
 
@@ -371,7 +377,14 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
     }
     if (typeof yearLevel === 'string') student.yearLevel = yearLevel;
     if (typeof dateOfBirth === 'string' || typeof dob === 'string') student.dateOfBirth = dateOfBirth || dob;
-    if (typeof branchCampus === 'string' || typeof location === 'string') student.branchCampus = branchCampus || location;
+    const requestedCampus = branchCampus ?? location;
+    if (typeof requestedCampus === 'string' && requestedCampus !== student.branchCampus) {
+      const allowedCampuses = User.schema.path('branchCampus')?.enumValues || [];
+      if (!allowedCampuses.includes(requestedCampus)) {
+        return res.status(400).json({ message: 'Please select a supported school campus' });
+      }
+      student.branchCampus = requestedCampus;
+    }
     if (typeof profilePhoto === 'string' || typeof photo === 'string') student.profilePhoto = profilePhoto || photo;
     if (typeof sport === 'string') student.sport = sport;
     if (typeof athleteStatus === 'string' || typeof status === 'string') student.athleteStatus = athleteStatus || status;
@@ -381,6 +394,9 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
     return res.json({ success: true, message: 'Student profile updated successfully' });
   } catch (error) {
     console.error('Coach athlete update error:', error);
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ message: 'Some student profile fields are invalid. Please review them and try again.' });
+    }
     return res.status(500).json({ message: 'Server error while updating student profile' });
   }
 });

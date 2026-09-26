@@ -6,7 +6,8 @@ const User = require('../../src/models/User');
 jest.mock('jsonwebtoken');
 jest.mock('../../src/models/User', () => ({
   findById: jest.fn(),
-  findOne: jest.fn()
+  findOne: jest.fn(),
+  updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 })
 }));
 
 describe('Auth Middleware Tests', () => {
@@ -43,7 +44,68 @@ describe('Auth Middleware Tests', () => {
       expect(jwt.verify).toHaveBeenCalled();
       expect(req.user.role).toBe(databaseUser.role);
       expect(req.user.id).toBe(databaseUser.id);
+      expect(User.updateOne).toHaveBeenCalledWith(
+        { _id: databaseUser._id },
+        { $set: { lastActiveAt: expect.any(Date), status: 'Active' } }
+      );
       expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not update activity on every request', async () => {
+      req.headers = { authorization: 'Bearer valid_token' };
+      const recentActivity = new Date();
+      jwt.verify.mockReturnValue({ id: 'user123', role: 'admin' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({
+          _id: 'user123',
+          role: 'admin',
+          status: 'Active',
+          lastActiveAt: recentActivity,
+        })
+      });
+
+      await protect(req, res, next);
+
+      expect(User.updateOne).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('selects the access cookie matching the active portal role', async () => {
+      req.headers = { 'x-portal-role': 'admin' };
+      req.cookies = {
+        accessToken_admin: 'admin_access',
+        accessToken_student: 'student_access',
+      };
+      jwt.verify.mockReturnValue({ id: 'admin-user', role: 'admin' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({
+          _id: 'admin-user',
+          role: 'admin',
+          status: 'Active',
+          lastActiveAt: new Date(),
+        })
+      });
+
+      await protect(req, res, next);
+
+      expect(jwt.verify.mock.calls[0][0]).toBe('admin_access');
+      expect(req.user.role).toBe('admin');
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a role cookie whose database user does not match the tab context', async () => {
+      req.headers = { 'x-portal-role': 'admin' };
+      req.cookies = { accessToken_admin: 'wrong_role_access' };
+      jwt.verify.mockReturnValue({ id: 'student-user', role: 'student' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({ _id: 'student-user', role: 'student' })
+      });
+
+      await protect(req, res, next);
+
+      expect(jwt.verify.mock.calls[0][0]).toBe('wrong_role_access');
+      expect(res.statusCode).toBe(401);
+      expect(next).not.toHaveBeenCalled();
     });
 
     it('should reject a valid JWT if its user no longer exists in the database', async () => {
@@ -69,6 +131,28 @@ describe('Auth Middleware Tests', () => {
       await protect(req, res, next);
 
       expect(res.statusCode).toBe(403);
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('should reject an access token issued before the password was reset', async () => {
+      req.headers = { authorization: 'Bearer old_access_token' };
+      const passwordChangedAt = new Date(Date.now() - 5_000);
+      jwt.verify.mockReturnValue({
+        id: 'user123',
+        role: 'student',
+        iat: Math.floor((passwordChangedAt.getTime() - 1_000) / 1000)
+      });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({
+          _id: 'user123',
+          role: 'student',
+          passwordChangedAt
+        })
+      });
+
+      await protect(req, res, next);
+
+      expect(res.statusCode).toBe(401);
       expect(next).not.toHaveBeenCalled();
     });
 

@@ -33,9 +33,14 @@
     "express": "^4.22.1",
     "express-rate-limit": "^8.7.0",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^7.8.9",
-    "multer": "^2.1.1",
+    "mongoose": "^7.8.12",
+    "multer": "^2.4.0",
     "nodemailer": "^10.0.10"
+  },
+  "overrides": {
+    "express": {
+      "qs": "6.16.0"
+    }
   },
   "devDependencies": {
     "jest": "^29.7.0",

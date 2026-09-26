@@ -430,7 +430,8 @@ router.get('/', protect, authorize('admin'), async (req, res) => {
     const filter = roleFilter ? { role: roleFilter, accountStatus } : { accountStatus };
     const users = await User.find(filter)
       .select('-password -__v')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
     console.log(`✅ Found ${users.length} users with filter:`, filter);
     res.json(users.map(mapUserToResponse));
   } catch (error) {

@@ -170,13 +170,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// The public schedule-request router owns its own small JSON/multipart limits.
-app.use(`${BASE_URI}/schedule-requests`, scheduleRequestsRouter);
-
 // Middleware
 app.use(express.json({ limit: '16mb' }));
 app.use(validateRequestBody);
 app.use(cookieParser());
+
+// Mount after cookie parsing so protected schedule-request routes can authenticate.
+app.use(`${BASE_URI}/schedule-requests`, scheduleRequestsRouter);
 
 // ============================================================
 // ⚠️ IMPORTANT: PUBLIC ROUTES - NO AUTHENTICATION REQUIRED

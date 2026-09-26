@@ -1,12 +1,35 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { getJWTSecret } = require('../config/security');
-const { ACCESS_COOKIE_NAME } = require('../config/authTokens');
+const {
+  ACCESS_COOKIE_NAME,
+  IS_CROSS_SITE_COOKIE_MODE,
+  getAuthCookie,
+  getPortalRole,
+  normalizePortalRole,
+  isCsrfTokenValid,
+} = require('../config/authTokens');
+
+const ACTIVITY_UPDATE_INTERVAL_MS = 5 * 60 * 1000;
 
 exports.protect = async (req, res, next) => {
+  const method = String(req.method || '').toUpperCase();
+  const isStateChanging = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  const requestedPortalRole = req.get?.('x-portal-role') || req.headers?.['x-portal-role'];
+  const portalRole = getPortalRole(req);
+
+  if (requestedPortalRole && !normalizePortalRole(requestedPortalRole)) {
+    return res.status(400).json({ success: false, message: 'Invalid portal role context.' });
+  }
+
+  if (IS_CROSS_SITE_COOKIE_MODE && isStateChanging
+    && getAuthCookie(req, ACCESS_COOKIE_NAME).value && !isCsrfTokenValid(req)) {
+    return res.status(403).json({ success: false, message: 'Request could not be verified.' });
+  }
+
   const authorization = req.headers.authorization || '';
   const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
-  const token = req.cookies?.[ACCESS_COOKIE_NAME] || bearerMatch?.[1]?.trim();
+  const token = getAuthCookie(req, ACCESS_COOKIE_NAME).value || bearerMatch?.[1]?.trim();
 
   if (!token) {
     return res.status(401).json({ 
@@ -25,20 +48,31 @@ exports.protect = async (req, res, next) => {
     try {
       const userQuery = User.findById(userId);
       user = await (userQuery && typeof userQuery.select === 'function'
-        ? userQuery.select('-password')
+        ? userQuery.select('-password +passwordChangedAt')
         : userQuery);
     } catch (lookupError) {
       // Legacy login IDs are strings and cannot be cast by findById.
       if (!userId || !/Cast to ObjectId/i.test(lookupError.message || '')) {
         throw lookupError;
       }
-      user = await User.findOne({ $or: [{ _id: userId }, { id: userId }] });
+      const legacyUserQuery = User.findOne({ $or: [{ _id: userId }, { id: userId }] });
+      user = await (legacyUserQuery && typeof legacyUserQuery.select === 'function'
+        ? legacyUserQuery.select('+passwordChangedAt')
+        : legacyUserQuery);
     }
     
     if (!user) {
       return res.status(401).json({ 
         success: false, 
         message: 'User not found' 
+      });
+    }
+
+    const passwordChangedAt = user.passwordChangedAt ? new Date(user.passwordChangedAt).getTime() : 0;
+    if (passwordChangedAt && Number.isFinite(decoded.iat) && decoded.iat * 1000 < passwordChangedAt) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authorized to access this route'
       });
     }
 
@@ -57,14 +91,30 @@ exports.protect = async (req, res, next) => {
       });
     }
 
-    user.lastActiveAt = new Date();
-    user.status = 'Active';
-    if (typeof user.save === 'function') {
-      await user.save();
+    if (portalRole && normalizePortalRole(storedRole) !== portalRole) {
+      return res.status(401).json({
+        success: false,
+        message: 'The active session does not match this portal.'
+      });
+    }
+
+    const now = Date.now();
+    const lastActiveAt = user.lastActiveAt ? new Date(user.lastActiveAt).getTime() : 0;
+    if (user.status !== 'Active' || !Number.isFinite(lastActiveAt)
+      || now - lastActiveAt >= ACTIVITY_UPDATE_INTERVAL_MS) {
+      try {
+        await User.updateOne(
+          { _id: user._id },
+          { $set: { lastActiveAt: new Date(now), status: 'Active' } }
+        );
+      } catch {
+        console.warn('User activity update failed');
+      }
     }
 
     const userData = user.toObject ? user.toObject() : { ...user };
     delete userData.password;
+    delete userData.passwordChangedAt;
     const databaseRole = User.normalizeRole
       ? User.normalizeRole(storedRole)
       : storedRole;

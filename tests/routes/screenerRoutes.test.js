@@ -84,4 +84,28 @@ describe('Screener routes', () => {
     expect(submission.resubmitted).toBe(false);
     expect(submission.save).toHaveBeenCalled();
   });
+
+  it('previews the stored submission bytes by MongoDB ID with the saved MIME type', async () => {
+    const submissionId = '507f1f77bcf86cd799439011';
+    const uploadedImage = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    StudentRequirement.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: submissionId,
+        fileName: 'student-profile.png',
+        fileType: 'image/png',
+        fileData: uploadedImage,
+        participationType: 'Intrams',
+      }),
+    });
+
+    const response = await request(app)
+      .get(`/api/v1/screener/requirements/${submissionId}/preview?participationType=Intrams`);
+
+    expect(response.status).toBe(200);
+    expect(StudentRequirement.findById).toHaveBeenCalledWith(submissionId);
+    expect(response.headers['content-type']).toBe('image/png');
+    expect(response.headers['content-disposition']).toContain('inline');
+    expect(Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body)).toEqual(uploadedImage);
+  });
 });

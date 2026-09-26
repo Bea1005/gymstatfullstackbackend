@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { register, login, refreshSession, logout, requestPasswordReset, verifyPasswordResetOtp, resetPassword } = require('../controllers/authControllers');
 const { loginRateLimiter, passwordResetRateLimiter, refreshRateLimiter } = require('../config/rateLimit');
-const { csrfProtection } = require('../config/authTokens');
+const { csrfProtection, recoverCsrfToken } = require('../config/authTokens');
 
 // Dapat ganito:
+router.get('/csrf', recoverCsrfToken);
 router.post('/register', loginRateLimiter, register);
 router.post('/login', loginRateLimiter, login);
 router.post('/refresh', refreshRateLimiter, csrfProtection, refreshSession);

@@ -1,23 +1,19 @@
 const ScheduleRequest = require('../models/ScheduleRequest');
 const Schedule = require('../models/Schedule');
 const mongoose = require('mongoose');
-const fs = require('fs');
-const path = require('path');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
-
-const scheduleRequestUploadDir = path.resolve(__dirname, '../../uploads/requirements');
+const {
+  storeUploadedFile,
+  deleteStoredUpload,
+  streamUploadFile,
+  removeLegacyPathFromResponse,
+} = require('../config/uploadedFileStorage');
 
 const isValidScheduleRequestFile = (file) => {
-  if (!file?.path || !file?.filename) return false;
-  const fileHeader = Buffer.alloc(4);
-  let bytesRead = 0;
-  const descriptor = fs.openSync(file.path, 'r');
-  try {
-    bytesRead = fs.readSync(descriptor, fileHeader, 0, 4, 0);
-  } finally {
-    fs.closeSync(descriptor);
-  }
+  if (!Buffer.isBuffer(file?.buffer)) return false;
+  const fileHeader = file.buffer.subarray(0, 4);
+  const bytesRead = fileHeader.length;
 
   if (file.mimetype === 'application/pdf') return bytesRead >= 4 && fileHeader.toString('ascii', 0, 4) === '%PDF';
   if (file.mimetype === 'application/msword') return bytesRead >= 4 && fileHeader.equals(Buffer.from([0xD0, 0xCF, 0x11, 0xE0]));
@@ -29,9 +25,9 @@ const isValidScheduleRequestFile = (file) => {
 
 // Create a new schedule request
 exports.createScheduleRequest = async (req, res) => {
+  let storedFileReference;
   try {
     if (!isValidScheduleRequestFile(req.file)) {
-      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(400).json({ success: false, message: 'The uploaded request letter could not be verified.' });
     }
 
@@ -48,13 +44,6 @@ exports.createScheduleRequest = async (req, res) => {
       endDate: req.body.endDate,
       endTime: req.body.endTime,
       prepDays: req.body.prepDays,
-      file: {
-        filename: req.file.filename,
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-        storageKey: req.file.filename,
-      },
       status: 'pending'
     };
 
@@ -70,7 +59,6 @@ exports.createScheduleRequest = async (req, res) => {
     }).select('_id').lean();
 
     if (recentDuplicate) {
-      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(409).json({
         success: false,
         message: 'A matching schedule request was recently submitted.'
@@ -84,6 +72,21 @@ exports.createScheduleRequest = async (req, res) => {
         message: 'The requested time range overlaps an existing confirmed schedule.'
       });
     }
+
+    const storedFile = await storeUploadedFile({
+      buffer: req.file.buffer,
+      filename: req.file.originalname,
+      contentType: req.file.mimetype,
+      metadata: { purpose: 'schedule-request-attachment' },
+    });
+    storedFileReference = storedFile.reference;
+    requestData.file = {
+      filename: storedFile.filename,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      storageKey: storedFile.reference,
+    };
     
     const newRequest = new ScheduleRequest(requestData);
     await newRequest.save();
@@ -94,7 +97,7 @@ exports.createScheduleRequest = async (req, res) => {
       data: { id: newRequest._id, status: newRequest.status }
     });
   } catch (error) {
-    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    if (storedFileReference) await deleteStoredUpload(storedFileReference).catch(() => {});
     if (error?.code === 10334 || /BSONObj size|document is larger than the maximum allowed size/i.test(error?.message || '')) {
       return res.status(413).json({
         success: false,
@@ -112,14 +115,15 @@ exports.downloadScheduleRequestFile = async (req, res) => {
   try {
     const request = await ScheduleRequest.findById(req.params.id).select('file').lean();
     const storageKey = request?.file?.storageKey;
-    if (!storageKey || path.basename(storageKey) !== storageKey) return res.status(404).json({ success: false, message: 'File not found' });
+    if (!storageKey) return res.status(404).json({ success: false, message: 'File not found' });
 
-    const filePath = path.join(scheduleRequestUploadDir, storageKey);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, message: 'File not found' });
-
-    return res.download(filePath, request.file.originalname || 'request-letter', {
-      headers: { 'Content-Type': 'application/octet-stream' }
+    const streamed = await streamUploadFile(storageKey, res, {
+      filename: request.file.originalname || 'request-letter',
+      contentType: request.file.mimetype || 'application/octet-stream',
+      fallbackFilename: request.file.filename,
     });
+    if (!streamed) return res.status(404).json({ success: false, message: 'File not found' });
+    return res;
   } catch (error) {
     return res.status(404).json({ success: false, message: 'File not found' });
   }
@@ -137,9 +141,9 @@ exports.getScheduleRequests = async (req, res) => {
       filter.status = status;
     }
     
-    const requests = await ScheduleRequest.find(filter)
+    const requests = (await ScheduleRequest.find(filter)
       .sort({ createdAt: 1 }) // Ascending order (oldest first)
-      .lean();
+      .lean()).map(removeLegacyPathFromResponse);
     
     console.log(`✅ Retrieved ${requests.length} schedule requests from MongoDB`);
     
@@ -173,7 +177,7 @@ exports.getScheduleRequestById = async (req, res) => {
     
     res.status(200).json({
       success: true,
-      data: request
+      data: removeLegacyPathFromResponse(request.toObject ? request.toObject() : request)
     });
   } catch (error) {
     console.error('Error fetching schedule request:', error);
@@ -225,7 +229,10 @@ exports.updateScheduleRequest = async (req, res) => {
         return res.status(200).json({
           success: true,
           message: 'Schedule request was already approved',
-          data: { request, schedule: existingSchedule }
+          data: {
+            request: removeLegacyPathFromResponse(request.toObject ? request.toObject() : request),
+            schedule: existingSchedule
+          }
         });
       }
 
@@ -280,7 +287,7 @@ exports.updateScheduleRequest = async (req, res) => {
           success: true,
           message: 'Schedule request approved and schedule created successfully',
           data: {
-            request,
+            request: removeLegacyPathFromResponse(request.toObject ? request.toObject() : request),
             schedule: newSchedule
           }
         });
@@ -300,7 +307,7 @@ exports.updateScheduleRequest = async (req, res) => {
     res.status(200).json({
       success: true,
       message: `Schedule request ${status} successfully`,
-      data: request
+      data: removeLegacyPathFromResponse(request.toObject ? request.toObject() : request)
     });
   } catch (error) {
     console.error('❌ Error updating schedule request:', error);
@@ -335,6 +342,12 @@ exports.deleteScheduleRequest = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Schedule request not found'
+      });
+    }
+
+    if (deletedRequest.file?.storageKey) {
+      await deleteStoredUpload(deletedRequest.file.storageKey).catch((error) => {
+        console.warn('Unable to remove stored schedule request attachment:', error.message);
       });
     }
     
@@ -372,9 +385,9 @@ exports.getRequestsByStatus = async (req, res) => {
       });
     }
     
-    const requests = await ScheduleRequest.find({ status })
+    const requests = (await ScheduleRequest.find({ status })
       .sort({ createdAt: 1 })
-      .lean();
+      .lean()).map(removeLegacyPathFromResponse);
     
     res.status(200).json({
       success: true,

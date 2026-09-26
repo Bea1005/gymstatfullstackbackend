@@ -8,6 +8,9 @@ const {
   createAccessToken,
   createRefreshSession,
   hashRefreshToken,
+  getAuthCookie,
+  getPortalRole,
+  normalizePortalRole,
   setAuthenticationCookies,
   clearAuthenticationCookies,
   REFRESH_COOKIE_NAME,
@@ -16,7 +19,7 @@ const {
 const RESET_OTP_TTL_MS = 10 * 60 * 1000;
 const RESET_OTP_COOLDOWN_MS = 60 * 1000;
 const RESET_OTP_MAX_ATTEMPTS = 5;
-const RESET_VERIFICATION_TTL_MS = 10 * 60 * 1000;
+const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -37,7 +40,9 @@ const clearPasswordResetState = (user) => {
   user.passwordResetOtpExpiresAt = null;
   user.passwordResetOtpAttempts = 0;
   user.passwordResetLastSentAt = null;
-  user.passwordResetVerifiedAt = null;
+  user.passwordResetTokenHash = null;
+  user.passwordResetTokenExpiresAt = null;
+  user.passwordResetTokenConsumedAt = null;
 };
 
 const isValidId = (id) => {
@@ -104,7 +109,9 @@ exports.requestPasswordReset = async (req, res) => {
     user.passwordResetOtpExpiresAt = new Date(now + RESET_OTP_TTL_MS);
     user.passwordResetOtpAttempts = 0;
     user.passwordResetLastSentAt = new Date(now);
-    user.passwordResetVerifiedAt = null;
+    user.passwordResetTokenHash = null;
+    user.passwordResetTokenExpiresAt = null;
+    user.passwordResetTokenConsumedAt = null;
     await user.save();
 
     try {
@@ -158,12 +165,32 @@ exports.verifyPasswordResetOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
     }
 
-    user.passwordResetOtpHash = null;
-    user.passwordResetOtpExpiresAt = null;
-    user.passwordResetOtpAttempts = 0;
-    user.passwordResetVerifiedAt = new Date(now);
-    await user.save();
-    return res.json({ success: true, message: 'Verification successful.' });
+    const resetToken = crypto.randomBytes(32).toString('base64url');
+    const resetTokenUpdate = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        passwordResetOtpHash: user.passwordResetOtpHash,
+        passwordResetOtpExpiresAt: { $gt: new Date(now) },
+        passwordResetOtpAttempts: { $lt: RESET_OTP_MAX_ATTEMPTS },
+      },
+      {
+        $set: {
+          passwordResetOtpHash: null,
+          passwordResetOtpExpiresAt: null,
+          passwordResetOtpAttempts: 0,
+          passwordResetTokenHash: hashResetValue(resetToken),
+          passwordResetTokenExpiresAt: new Date(now + RESET_TOKEN_TTL_MS),
+          passwordResetTokenConsumedAt: null,
+        },
+      },
+      { new: true }
+    );
+
+    if (!resetTokenUpdate) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    return res.json({ success: true, message: 'Verification successful.', resetToken });
   } catch (error) {
     console.error('Password reset verification failed:', error.message);
     return res.status(500).json({ success: false, message: 'Unable to verify the code. Please try again later.' });
@@ -173,6 +200,7 @@ exports.verifyPasswordResetOtp = async (req, res) => {
 exports.resetPassword = async (req, res) => {
   try {
     const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    const resetToken = String(req.body?.resetToken || '').trim();
     const newPassword = String(req.body?.newPassword || '');
     if (!EMAIL_PATTERN.test(normalizedEmail) || !isPasswordValid(newPassword)) {
       return res.status(400).json({
@@ -181,18 +209,41 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({
-      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' }
-    })
-      .select('+passwordResetVerifiedAt');
-    const verifiedAt = user?.passwordResetVerifiedAt?.getTime() || 0;
-    if (!user || Date.now() - verifiedAt > RESET_VERIFICATION_TTL_MS) {
+    if (!resetToken) {
       return res.status(400).json({ success: false, message: 'Your verification has expired. Please request a new code.' });
     }
 
-    user.password = await hashPassword(newPassword);
-    clearPasswordResetState(user);
-    await user.save();
+    const now = new Date();
+    const passwordHash = await hashPassword(newPassword);
+    const user = await User.findOneAndUpdate(
+      {
+        email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' },
+        passwordResetTokenHash: hashResetValue(resetToken),
+        passwordResetTokenExpiresAt: { $gt: now },
+        passwordResetTokenConsumedAt: null,
+      },
+      {
+        $set: {
+          password: passwordHash,
+          passwordChangedAt: now,
+          passwordResetTokenConsumedAt: now,
+          passwordResetOtpHash: null,
+          passwordResetOtpExpiresAt: null,
+          passwordResetOtpAttempts: 0,
+          passwordResetLastSentAt: null,
+        },
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Your verification is invalid or expired. Please verify a new code.' });
+    }
+
+    await RefreshSession.updateMany(
+      { userId: user._id, revokedAt: null },
+      { $set: { revokedAt: now } }
+    );
     return res.json({ success: true, message: 'Password reset successfully.' });
   } catch (error) {
     console.error('Password reset failed:', error.message);
@@ -358,7 +409,7 @@ exports.login = async (req, res) => {
     const accessToken = createAccessToken({ ...user, role: userRole });
     const { refreshToken } = await createRefreshSession(user._id);
     const csrfToken = crypto.randomBytes(32).toString('base64url');
-    setAuthenticationCookies(res, accessToken, refreshToken, csrfToken);
+    setAuthenticationCookies(res, accessToken, refreshToken, csrfToken, userRole);
 
     console.log(`✅ Login successful: ${user.id} (${userRole})`);
 
@@ -380,10 +431,27 @@ exports.login = async (req, res) => {
 
 exports.refreshSession = async (req, res) => {
   try {
-    const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
+    const refreshCookie = getAuthCookie(req, REFRESH_COOKIE_NAME);
+    const rawRefreshToken = refreshCookie.value;
     if (!rawRefreshToken) return res.status(401).json({ success: false, message: 'Not authorized' });
 
     const tokenHash = hashRefreshToken(rawRefreshToken);
+    const requestedRole = getPortalRole(req);
+    if (requestedRole && refreshCookie.name === REFRESH_COOKIE_NAME) {
+      const legacySession = await RefreshSession.findOne({
+        tokenHash,
+        revokedAt: null,
+        expiresAt: { $gt: new Date() },
+      }).select('userId').lean();
+      if (!legacySession) return res.status(401).json({ success: false, message: 'Not authorized' });
+
+      const legacyUser = await User.findById(legacySession.userId).select('role accountStatus').lean();
+      if (!legacyUser || legacyUser.accountStatus === 'archived'
+        || normalizePortalRole(legacyUser.role) !== requestedRole) {
+        return res.status(401).json({ success: false, message: 'Not authorized' });
+      }
+    }
+
     const session = await RefreshSession.findOneAndUpdate(
       {
         tokenHash,
@@ -396,33 +464,77 @@ exports.refreshSession = async (req, res) => {
 
     if (!session) return res.status(401).json({ success: false, message: 'Not authorized' });
 
-    const user = await User.findById(session.userId).select('-password');
+    const user = await User.findById(session.userId).select('-password +passwordChangedAt');
     if (!user || user.accountStatus === 'archived') {
       await RefreshSession.updateMany({ userId: session.userId, revokedAt: null }, { $set: { revokedAt: new Date() } });
+      return res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+
+    const portalRole = getPortalRole(req);
+    if (portalRole && normalizePortalRole(user.role) !== portalRole) {
+      return res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+
+    if (user.passwordChangedAt && session.createdAt
+      && new Date(session.createdAt).getTime() <= new Date(user.passwordChangedAt).getTime()) {
+      await RefreshSession.updateMany(
+        { userId: session.userId, familyId: session.familyId, revokedAt: null },
+        { $set: { revokedAt: new Date() } }
+      );
       return res.status(401).json({ success: false, message: 'Not authorized' });
     }
 
     const nextSession = await createRefreshSession(user._id, session.familyId);
     session.replacedByTokenHash = nextSession.tokenHash;
     await session.save();
-    setAuthenticationCookies(res, createAccessToken(user), nextSession.refreshToken, crypto.randomBytes(32).toString('base64url'));
+
+    const latestUser = await User.findById(session.userId).select('-password +passwordChangedAt');
+    const latestPasswordChangedAt = latestUser?.passwordChangedAt
+      ? new Date(latestUser.passwordChangedAt).getTime()
+      : 0;
+    if (!latestUser || (latestPasswordChangedAt && session.createdAt
+      && new Date(session.createdAt).getTime() <= latestPasswordChangedAt)) {
+      await RefreshSession.updateOne(
+        { tokenHash: nextSession.tokenHash, revokedAt: null },
+        { $set: { revokedAt: new Date() } }
+      );
+      return res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+
+    setAuthenticationCookies(
+      res,
+      createAccessToken(user),
+      nextSession.refreshToken,
+      crypto.randomBytes(32).toString('base64url'),
+      normalizePortalRole(user.role)
+    );
     return res.json({ success: true });
   } catch (error) {
-    return res.status(401).json({ success: false, message: 'Not authorized' });
+    console.error('Refresh session persistence failed');
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to refresh session. Please try again later.'
+    });
   }
 };
 
 exports.logout = async (req, res) => {
   try {
-    const rawRefreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
+    const rawRefreshToken = getAuthCookie(req, REFRESH_COOKIE_NAME).value;
     if (rawRefreshToken) {
       await RefreshSession.updateOne(
         { tokenHash: hashRefreshToken(rawRefreshToken), revokedAt: null },
         { $set: { revokedAt: new Date() } }
       );
     }
-  } finally {
-    clearAuthenticationCookies(res);
+    clearAuthenticationCookies(res, getPortalRole(req));
     return res.json({ success: true });
+  } catch (error) {
+    console.error('Logout session revocation failed');
+    clearAuthenticationCookies(res, getPortalRole(req));
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to log out. Please try again later.'
+    });
   }
 };

@@ -34,8 +34,10 @@ const schedulesOverlap = (candidate, existing) => {
     && candidateRange.end > existingRange.start;
 };
 
-const findScheduleConflict = async (Schedule, candidate) => {
-  const schedules = await Schedule.find({ status: 'active' }).lean();
+const findScheduleConflict = async (Schedule, candidate, excludeScheduleId) => {
+  const filter = { status: 'active' };
+  if (excludeScheduleId) filter._id = { $ne: excludeScheduleId };
+  const schedules = await Schedule.find(filter).lean();
 
   return schedules.find((schedule) => schedulesOverlap(candidate, schedule)) || null;
 };

@@ -151,7 +151,22 @@ const baseUserSchema = new mongoose.Schema({
     default: null,
     select: false
   },
-  passwordResetVerifiedAt: {
+  passwordResetTokenHash: {
+    type: String,
+    default: null,
+    select: false
+  },
+  passwordResetTokenExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  passwordResetTokenConsumedAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  passwordChangedAt: {
     type: Date,
     default: null,
     select: false
@@ -162,6 +177,7 @@ const baseUserSchema = new mongoose.Schema({
 
 baseUserSchema.index({ id: 1 }, { unique: true });
 baseUserSchema.index({ email: 1 }, { sparse: true });
+baseUserSchema.index({ role: 1, accountStatus: 1, createdAt: -1 });
 
 const roleModelMap = {
   admin: Admin,

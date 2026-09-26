@@ -118,8 +118,34 @@ exports.getScheduleById = async (req, res) => {
 
 // Update a schedule
 exports.updateSchedule = async (req, res) => {
+  let releaseLock;
   try {
     const { id } = req.params;
+    releaseLock = await acquireScheduleConflictLock();
+
+    const currentSchedule = await Schedule.findById(id);
+    if (!currentSchedule) {
+      return res.status(404).json({
+        success: false,
+        message: 'Schedule not found'
+      });
+    }
+
+    const currentData = typeof currentSchedule.toObject === 'function'
+      ? currentSchedule.toObject()
+      : currentSchedule;
+    const scheduleData = { ...currentData, ...req.body };
+
+    if (scheduleData.status === 'active') {
+      const conflict = await findScheduleConflict(Schedule, scheduleData, id);
+      if (conflict) {
+        return res.status(409).json({
+          success: false,
+          message: 'The requested time range overlaps an existing active schedule.'
+        });
+      }
+    }
+
     const updatedSchedule = await Schedule.findByIdAndUpdate(
       id,
       { ...req.body, updatedAt: new Date() },
@@ -140,11 +166,14 @@ exports.updateSchedule = async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating schedule:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: 'Failed to update schedule',
-      message: 'An unexpected server error occurred. Please try again.'
+      message: error.statusCode === 503
+        ? error.message
+        : 'An unexpected server error occurred. Please try again.'
     });
+  } finally {
+    if (releaseLock) await releaseLock();
   }
 };
 
