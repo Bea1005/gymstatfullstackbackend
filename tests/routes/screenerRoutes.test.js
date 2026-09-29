@@ -20,6 +20,14 @@ describe('Screener routes', () => {
     jest.clearAllMocks();
     app = express();
     app.use(express.json());
+    app.use((req, res, next) => {
+      req.user = {
+        _id: 'screener-1',
+        role: req.get('x-test-role') || 'admin',
+        department: req.get('x-test-department') || 'CICS'
+      };
+      next();
+    });
     app.use('/api/v1', screenerRoutes);
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -86,6 +94,68 @@ describe('Screener routes', () => {
     expect(submission.save).toHaveBeenCalled();
   });
 
+  it('excludes the Screener department from listed requirements', async () => {
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        { _id: 'student-own', fullname: 'Own Department Student', department: 'CICS' },
+        { _id: 'student-other', fullname: 'Other Department Student', department: 'Engineering' }
+      ])
+    });
+    StudentRequirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          _id: 'own-submission',
+          studentId: { _id: 'student-own', fullname: 'Own Department Student', department: 'CICS' },
+          requirementType: 'cor',
+          fileName: 'own.pdf',
+          fileData: Buffer.from('own')
+        },
+        {
+          _id: 'other-submission',
+          studentId: { _id: 'student-other', fullname: 'Other Department Student', department: 'Engineering' },
+          requirementType: 'cor',
+          fileName: 'other.pdf',
+          fileData: Buffer.from('other')
+        }
+      ])
+    });
+
+    const response = await request(app)
+      .get('/api/v1/screener/requirements?participationType=Intrams')
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.map((student) => student.department)).toEqual(['Engineering']);
+  });
+
+  it('denies Screener review of a same-department requirement', async () => {
+    const submission = {
+      _id: 'own-submission',
+      studentId: 'student-own',
+      save: jest.fn()
+    };
+    StudentRequirement.findById.mockResolvedValue(submission);
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ department: 'CICS' })
+    });
+
+    const response = await request(app)
+      .put('/api/v1/screener/requirements/own-submission/review')
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS')
+      .send({ status: 'approved' });
+
+    expect(response.status).toBe(403);
+    expect(submission.save).not.toHaveBeenCalled();
+  });
+
   it('previews the stored submission bytes by MongoDB ID with the saved MIME type', async () => {
     const submissionId = '507f1f77bcf86cd799439011';
     const uploadedImage = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -108,6 +178,32 @@ describe('Screener routes', () => {
     expect(response.headers['content-type']).toBe('image/png');
     expect(response.headers['content-disposition']).toContain('inline');
     expect(Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body)).toEqual(uploadedImage);
+  });
+
+  it('denies Screener preview of a same-department requirement', async () => {
+    const submissionId = '507f1f77bcf86cd799439011';
+    StudentRequirement.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: submissionId,
+        studentId: 'student-own',
+        fileName: 'own.pdf',
+        fileType: 'application/pdf',
+        fileData: Buffer.from('private requirement')
+      })
+    });
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ department: 'CICS' })
+    });
+
+    const response = await request(app)
+      .get(`/api/v1/screener/requirements/${submissionId}/preview?participationType=Intrams`)
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(403);
+    expect(response.body.message).toContain('not authorized');
   });
 
   it.each([

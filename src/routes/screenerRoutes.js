@@ -66,6 +66,7 @@ const serveScreenerRequirementFile = async (req, res) => {
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
+    if (await denyOwnDepartmentAccess(req, res, submission)) return;
 
     const fileBuffer = toFileBuffer(submission.fileData);
     if (fileBuffer?.length) {
@@ -135,6 +136,52 @@ const deriveOverallStatus = (requirements) => {
     : 'Incomplete';
 };
 
+const findStudentForSubmission = async (studentId) => {
+  if (!studentId) return null;
+
+  let student;
+  try {
+    let query = User.findById(studentId);
+    if (query && typeof query.select === 'function') {
+      query = query.select('department');
+      if (typeof query.lean === 'function') query = query.lean();
+    }
+    student = await query;
+  } catch (error) {
+    if (!/Cast to ObjectId/i.test(error.message || '')) throw error;
+  }
+
+  if (!student) {
+    let query = User.findOne({ id: String(studentId) });
+    if (query && typeof query.select === 'function') {
+      query = query.select('department');
+      if (typeof query.lean === 'function') query = query.lean();
+    }
+    student = await query;
+  }
+
+  return student;
+};
+
+const denyOwnDepartmentAccess = async (req, res, submission) => {
+  if (String(req.user?.role || '').toLowerCase() !== 'screener') return false;
+
+  const screenerDepartment = String(req.user.department || '').trim();
+  if (!screenerDepartment) {
+    res.status(403).json({ success: false, message: 'Screener department is not configured.' });
+    return true;
+  }
+
+  const student = await findStudentForSubmission(submission.studentId);
+  const studentDepartment = String(student?.department || '').trim();
+  if (!studentDepartment || studentDepartment === screenerDepartment) {
+    res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
+    return true;
+  }
+
+  return false;
+};
+
 // @desc    Get all student requirement submissions for the screener portal
 // @route   GET /api/v1/screener/requirements
 // @access  Private/Screener
@@ -147,6 +194,12 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
   });
   
   try {
+    const isScreener = String(req.user?.role || '').toLowerCase() === 'screener';
+    const screenerDepartment = String(req.user?.department || '').trim();
+    if (isScreener && !screenerDepartment) {
+      return res.status(403).json({ success: false, message: 'Screener department is not configured.' });
+    }
+
     // Get all students
     const participationType = normalizeParticipationType(req.query.participationType);
     const studentsFromDb = participationType === 'STRASUC'
@@ -155,6 +208,10 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       .select('-password')
       .sort({ createdAt: -1 })
       .lean();
+    const visibleStudents = isScreener
+      ? studentsFromDb.filter((student) => String(student.department || '').trim()
+        && String(student.department).trim() !== screenerDepartment)
+      : studentsFromDb;
     
     console.log(`👥 Found ${studentsFromDb.length} students in database`);
 
@@ -175,7 +232,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     const studentsById = new Map();
 
     // Add all students from the users collection
-    studentsFromDb.forEach((student) => {
+    visibleStudents.forEach((student) => {
       const studentId = student._id.toString();
       studentsById.set(studentId, {
         id: studentId,
@@ -222,6 +279,9 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
           id: fallbackId
         };
       }
+
+      const studentDepartment = String(student.department || '').trim();
+      if (isScreener && (!studentDepartment || studentDepartment === screenerDepartment)) continue;
 
       const studentId = (student._id || student.id).toString();
       
@@ -307,6 +367,7 @@ router.put('/screener/requirements/:id/viewed', protect, authorize('screener', '
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Submission not found' });
     }
+    if (await denyOwnDepartmentAccess(req, res, submission)) return;
 
     submission.resubmitted = false;
     await submission.save();
@@ -349,6 +410,8 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
         message: 'Submission not found'
       });
     }
+
+    if (await denyOwnDepartmentAccess(req, res, submission)) return;
 
     if (studentId && String(submission.studentId) !== String(studentId)) {
       return res.status(403).json({
