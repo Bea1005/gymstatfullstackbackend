@@ -127,21 +127,12 @@ const normalizeRequirementStatus = (status) => {
 };
 
 const deriveOverallStatus = (requirements) => {
-  const entries = Object.entries(requirements || {})
-    .filter(([key]) => key !== 'documents')
-    .map(([, value]) => value);
-  if (entries.length === 0) return 'No Documents Attached';
+  const documents = Array.isArray(requirements?.documents) ? requirements.documents : [];
+  if (documents.length === 0) return 'No Documents Attached';
 
-  const hasRejected = entries.some((item) => item && item.status === 'rejected');
-  if (hasRejected) return 'Incomplete';
-
-  const allApproved = entries.every((item) => item && item.status === 'approved');
-  if (allApproved) return 'Completed';
-
-  const hasUploads = entries.some((item) => item && item.hasUpload);
-  if (hasUploads) return 'Pending';
-
-  return 'No Documents Attached';
+  return documents.every((document) => document?.status === 'approved')
+    ? 'Approved'
+    : 'Incomplete';
 };
 
 // @desc    Get all student requirement submissions for the screener portal

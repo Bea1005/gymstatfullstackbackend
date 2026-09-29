@@ -2,6 +2,7 @@ const httpMocks = require('node-mocks-http');
 const express = require('express');
 const request = require('supertest');
 const StudentRequirement = require('../../src/models/StudentRequirement');
+const User = require('../../src/models/User');
 const { protect, authorize } = require('../../src/middleware/auth');
 const screenerRoutes = require('../../src/routes/screenerRoutes');
 
@@ -107,5 +108,65 @@ describe('Screener routes', () => {
     expect(response.headers['content-type']).toBe('image/png');
     expect(response.headers['content-disposition']).toContain('inline');
     expect(Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body)).toEqual(uploadedImage);
+  });
+
+  it.each([
+    {
+      title: 'keeps an older rejected document incomplete even when the newest same-type document is approved',
+      documents: [
+        { _id: 'older-rejected', studentId: 'student-1', requirementType: 'cor', status: 'rejected', fileName: 'old.pdf', fileType: 'application/pdf', fileData: Buffer.from('old'), uploadDate: new Date('2026-01-01') },
+        { _id: 'newer-approved', studentId: 'student-1', requirementType: 'cor', status: 'approved', fileName: 'new.pdf', fileType: 'application/pdf', fileData: Buffer.from('new'), uploadDate: new Date('2026-01-02') },
+        { _id: 'other-approved', studentId: 'student-1', requirementType: 'psa', status: 'approved', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-03') },
+      ],
+      expectedOverallStatus: 'Incomplete',
+    },
+    {
+      title: 'keeps a student incomplete when a new requirement is pending among approved requirements',
+      documents: [
+        { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', fileName: 'cor.pdf', fileType: 'application/pdf', fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
+        { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-02') },
+        { _id: 'pending-consent', studentId: 'student-1', requirementType: 'consent', status: 'pending', fileName: 'consent.pdf', fileType: 'application/pdf', fileData: Buffer.from('consent'), uploadDate: new Date('2026-01-03') },
+      ],
+      expectedOverallStatus: 'Incomplete',
+    },
+    {
+      title: 'marks the student approved only when every submitted requirement is approved',
+      documents: [
+        { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', fileName: 'cor.pdf', fileType: 'application/pdf', fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
+        { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-02') },
+      ],
+      expectedOverallStatus: 'Approved',
+    },
+  ])('$title', async ({ documents, expectedOverallStatus }) => {
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([{
+        _id: 'student-1',
+        fullname: 'Test Student',
+        department: 'CICS',
+        sport: 'Basketball',
+      }]),
+    });
+    StudentRequirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(documents.map((document) => ({
+        ...document,
+        studentId: {
+          _id: 'student-1',
+          fullname: 'Test Student',
+          department: 'CICS',
+          sport: 'Basketball',
+        },
+      }))),
+    });
+
+    const response = await request(app).get('/api/v1/screener/requirements?participationType=Intrams');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data[0].overallStatus).toBe(expectedOverallStatus);
+    expect(response.body.data[0].requirements.documents).toHaveLength(documents.length);
   });
 });

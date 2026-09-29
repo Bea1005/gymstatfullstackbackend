@@ -14,7 +14,7 @@ const KNOWN_FIELDS = new Set([
   'totalStock', 'onLoan', 'equipmentType', 'notifications', 'contactNumber', 'dateOfBirth', 'dob', 'branchCampus',
   'graduationYear', 'athleteStatus', 'profilePhoto', 'sportParticipation', 'coachPosition', 'staffMembers',
   'studentId', 'course', 'location', 'photo', 'requirementType', 'participationType', 'requirementId',
-  'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',
+  'replacementSubmissionId', 'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',
   'targetStudents', 'file', 'filename', 'originalname', 'mimetype', 'size', 'path', 'data', 'remarks', 'feedback',
   'grade', 'ids', 'createdBy', 'reviewedAt', 'reviewedBy'
 ]);

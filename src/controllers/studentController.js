@@ -141,10 +141,18 @@ exports.uploadRequirement = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const { requirementType, sport, participationType, requirementId, customRequirementLabel } = req.body;
+    const {
+      requirementType,
+      sport,
+      participationType,
+      requirementId,
+      customRequirementLabel,
+      replacementSubmissionId,
+    } = req.body;
     const normalizedRequirementType = String(requirementType || '').trim().toLowerCase();
     const normalizedParticipationType = normalizeParticipationType(participationType);
     const customRequirementKey = requirementId ? String(requirementId).trim() : '';
+    const replacementId = replacementSubmissionId ? String(replacementSubmissionId).trim() : '';
 
     if (!normalizedRequirementType) {
       if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
@@ -177,18 +185,55 @@ exports.uploadRequirement = async (req, res) => {
     }
 
     const RequirementModel = getStudentRequirementModel(normalizedParticipationType);
-    const replacementTarget = await RequirementModel.findOne({
-      ...replacementQuery,
-      $and: [
-        ...replacementQuery.$and,
-        {
-          $or: [
-            { status: 'rejected' },
-            { status: 'approved', requirementStatus: 'reusable' }
-          ]
+    let replacementTarget = null;
+    let psaDuplicateQuery = null;
+
+    if (normalizedRequirementType === 'psa') {
+      psaDuplicateQuery = { ...replacementQuery };
+
+      let requestedPsaRecord = null;
+      if (replacementId) {
+        requestedPsaRecord = await RequirementModel.findOne({
+          ...psaDuplicateQuery,
+          _id: replacementId,
+        });
+        if (!requestedPsaRecord) {
+          return res.status(404).json({ success: false, message: 'PSA requirement to replace was not found' });
         }
-      ]
-    }).sort({ uploadDate: -1 });
+
+        if (requestedPsaRecord.sourceRequirementId) {
+          replacementTarget = await RequirementModel.findOne({
+            ...psaDuplicateQuery,
+            _id: requestedPsaRecord.sourceRequirementId,
+          });
+        }
+      }
+
+      if (!replacementTarget) {
+        replacementTarget = await RequirementModel.findOne({
+          ...psaDuplicateQuery,
+          sourceRequirementId: { $in: [null] },
+        }).sort({ createdAt: 1, uploadDate: 1 });
+      }
+
+      if (!replacementTarget) {
+        replacementTarget = requestedPsaRecord || await RequirementModel.findOne(psaDuplicateQuery)
+          .sort({ createdAt: 1, uploadDate: 1 });
+      }
+    } else {
+      replacementTarget = await RequirementModel.findOne({
+        ...replacementQuery,
+        $and: [
+          ...replacementQuery.$and,
+          {
+            $or: [
+              { status: 'rejected' },
+              { status: 'approved', requirementStatus: 'reusable' }
+            ]
+          }
+        ]
+      }).sort({ uploadDate: -1 });
+    }
 
     if (replacementTarget) {
       const previousFilePath = resolveStoredFilePath(replacementTarget.filePath);
@@ -219,8 +264,39 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.customRequirementLabel = normalizedRequirementType === 'other' ? (customRequirementLabel || replacementTarget.customRequirementLabel || '') : '';
       await replacementTarget.save();
 
-      if (previousFilePath && normalizedFilePath && previousFilePath !== normalizedFilePath && fs.existsSync(previousFilePath)) {
-        fs.unlinkSync(previousFilePath);
+      if (previousFilePath
+        && previousFilePath !== normalizedFilePath
+        && (normalizedRequirementType === 'psa' || normalizedFilePath)
+        && fs.existsSync(previousFilePath)) {
+        try {
+          fs.unlinkSync(previousFilePath);
+        } catch (error) {
+          console.warn('Unable to remove replaced requirement file:', error.message);
+        }
+      }
+
+      if (psaDuplicateQuery) {
+        const duplicateQuery = {
+          ...psaDuplicateQuery,
+          _id: { $ne: replacementTarget._id },
+        };
+        const duplicateRecords = await RequirementModel.find(duplicateQuery)
+          .select('_id filePath')
+          .lean();
+
+        if (duplicateRecords.length > 0) {
+          await RequirementModel.deleteMany(duplicateQuery);
+          duplicateRecords.forEach((duplicate) => {
+            const duplicateFilePath = resolveStoredFilePath(duplicate.filePath);
+            if (duplicateFilePath && duplicateFilePath !== normalizedFilePath && fs.existsSync(duplicateFilePath)) {
+              try {
+                fs.unlinkSync(duplicateFilePath);
+              } catch (error) {
+                console.warn('Unable to remove duplicate PSA upload file:', error.message);
+              }
+            }
+          });
+        }
       }
 
       return res.status(200).json({

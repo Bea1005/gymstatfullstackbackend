@@ -43,4 +43,23 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(res.statusCode).toBe(400);
     expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
   });
+
+  it('accepts the existing PSA document identifier for an authenticated replacement upload', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/student/requirements',
+      body: {
+        requirementType: 'psa',
+        participationType: 'Intrams',
+        replacementSubmissionId: '507f1f77bcf86cd799439011',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.replacementSubmissionId).toBe('507f1f77bcf86cd799439011');
+  });
 });
