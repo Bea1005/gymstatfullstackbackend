@@ -6,6 +6,7 @@ const { scheduleRequestUpload } = require('../config/multer');
 const { validateScheduleRequest } = require('../middleware/scheduleRequestValidation');
 const {
   createScheduleRequest,
+  getPublicCalendarScheduleRequests,
   getScheduleRequests,
   getScheduleRequestById,
   downloadScheduleRequestFile,
@@ -26,6 +27,8 @@ router.post(
   validateScheduleRequest,
   createScheduleRequest
 );
+
+router.get('/public-calendar', getPublicCalendarScheduleRequests);
 
 // Diagnostic route requires authentication.
 router.get('/debug/test', protect, (req, res) => {

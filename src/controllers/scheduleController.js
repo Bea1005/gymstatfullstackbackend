@@ -2,6 +2,12 @@ const Schedule = require('../models/Schedule');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
 
+const isValidCalendarDate = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+
 // Create a new schedule
 exports.createSchedule = async (req, res) => {
   let releaseLock;
@@ -210,26 +216,53 @@ exports.getSchedulesByDateRange = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
-    if (!startDate || !endDate) {
+    if (!isValidCalendarDate(startDate) || !isValidCalendarDate(endDate) || startDate > endDate) {
       return res.status(400).json({
         success: false,
-        message: 'Start date and end date are required'
+        message: 'A valid start date and end date are required'
       });
     }
-    
+
+    const rangeStart = new Date(`${startDate}T00:00:00.000Z`);
+    const rangeEnd = new Date(`${endDate}T00:00:00.000Z`);
     const schedules = await Schedule.find({
+      status: 'active',
       $or: [
-        { startDate: { $gte: startDate, $lte: endDate } },
-        { endDate: { $gte: startDate, $lte: endDate } },
-        { startDate: { $lte: startDate }, endDate: { $gte: endDate } }
-      ],
-      status: 'active'
-    }).sort({ startDate: 1, startTime: 1 });
+        { startDate: { $lte: endDate }, endDate: { $gte: startDate } },
+        {
+          startDate: { $gt: endDate },
+          prepDays: { $gt: 0 },
+          $expr: {
+            $lte: [
+              {
+                $subtract: [
+                  { $dateFromString: { dateString: '$startDate', onError: null, onNull: null } },
+                  { $multiply: [{ $ifNull: ['$prepDays', 0] }, 86400000] }
+                ]
+              },
+              { $dateFromString: { dateString: endDate } }
+            ]
+          }
+        }
+      ]
+    })
+      .select('_id event startDate endDate startTime endTime prepDays status fromRequest')
+      .sort({ startDate: 1, startTime: 1 })
+      .lean();
+
+    const calendarSchedules = schedules.filter((schedule) => {
+      const scheduleStart = new Date(`${schedule.startDate}T00:00:00.000Z`);
+      const scheduleEnd = new Date(`${schedule.endDate}T00:00:00.000Z`);
+      if (Number.isNaN(scheduleStart.getTime()) || Number.isNaN(scheduleEnd.getTime())) return false;
+      const prepStart = new Date(scheduleStart);
+      prepStart.setUTCDate(prepStart.getUTCDate() - (Number(schedule.prepDays) || 0));
+      return scheduleEnd >= rangeStart && prepStart <= rangeEnd;
+    });
     
     res.status(200).json({
       success: true,
-      count: schedules.length,
-      data: schedules
+      count: calendarSchedules.length,
+      data: calendarSchedules
     });
   } catch (error) {
     console.error('Error fetching schedules by date range:', error);

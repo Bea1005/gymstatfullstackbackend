@@ -10,6 +10,70 @@ const {
   removeLegacyPathFromResponse,
 } = require('../config/uploadedFileStorage');
 
+const isValidCalendarDate = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+
+exports.getPublicCalendarScheduleRequests = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!isValidCalendarDate(startDate) || !isValidCalendarDate(endDate) || startDate > endDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid start date and end date are required'
+      });
+    }
+
+    const rangeStart = new Date(`${startDate}T00:00:00.000Z`);
+    const rangeEnd = new Date(`${endDate}T00:00:00.000Z`);
+    const latestStart = new Date(rangeEnd);
+    latestStart.setUTCDate(latestStart.getUTCDate() + 30);
+    const latestStartDate = latestStart.toISOString().slice(0, 10);
+    const requests = await ScheduleRequest.find({
+      status: 'pending',
+      startDate: { $lte: latestStartDate },
+      endDate: { $gte: startDate }
+    })
+      .select('_id eventName startDate endDate startTime endTime prepDays status')
+      .sort({ startDate: 1, startTime: 1 })
+      .lean();
+
+    const calendarRequests = requests
+      .filter((request) => {
+        const requestStart = new Date(`${request.startDate}T00:00:00.000Z`);
+        const requestEnd = new Date(`${request.endDate}T00:00:00.000Z`);
+        if (Number.isNaN(requestStart.getTime()) || Number.isNaN(requestEnd.getTime())) return false;
+        const prepStart = new Date(requestStart);
+        prepStart.setUTCDate(prepStart.getUTCDate() - (Number(request.prepDays) || 0));
+        return requestEnd >= rangeStart && prepStart <= rangeEnd;
+      })
+      .map((request) => ({
+        _id: request._id,
+        eventName: request.eventName,
+        startDate: request.startDate,
+        endDate: request.endDate,
+        startTime: request.startTime,
+        endTime: request.endTime,
+        prepDays: Number(request.prepDays) || 0,
+        status: 'pending'
+      }));
+
+    return res.status(200).json({
+      success: true,
+      count: calendarRequests.length,
+      data: calendarRequests
+    });
+  } catch (error) {
+    console.error('Error fetching public calendar requests:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'An unexpected server error occurred. Please try again.'
+    });
+  }
+};
+
 const isValidScheduleRequestFile = (file) => {
   if (!Buffer.isBuffer(file?.buffer)) return false;
   const fileHeader = file.buffer.subarray(0, 4);
