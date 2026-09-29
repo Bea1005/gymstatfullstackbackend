@@ -130,30 +130,68 @@ exports.publishRequirement = async (req, res) => {
         message: 'Requirement not found'
       });
     }
-    
-    // Mark as published
-    await requirement.publish(req.user ? req.user._id : null);
-    
-    console.log(`✅ Requirement ${id} published to MongoDB`);
-    
-    // Create announcement for notification (linked to requirement)
-    try {
-      const announcement = new Announcement({
+
+    const existingAnnouncement = await Announcement.findOne({ relatedRequirementId: requirement._id });
+    const wasPublished = requirement.status === 'published';
+    const previousPublication = {
+      status: requirement.status,
+      publishedAt: requirement.publishedAt,
+      publishedBy: requirement.publishedBy,
+    };
+
+    if (!wasPublished) {
+      await requirement.publish(req.user ? req.user._id : null);
+      console.log(`✅ Requirement ${id} published to MongoDB`);
+    }
+
+    if (!existingAnnouncement) {
+      const requirementType = requirement.type || 'requirement';
+      const dueDate = requirement.dueDate
+        ? new Date(requirement.dueDate).toISOString().slice(0, 10)
+        : '';
+      const targetScope = requirement.targetStudents === 'sport-specific'
+        ? `Students in ${requirement.sport || 'the specified sport'}`
+        : 'All students';
+      const announcementDescription = [
+        requirement.description?.trim(),
+        requirement.instructions?.trim() ? `Instructions: ${requirement.instructions.trim()}` : '',
+        `Requirement type: ${requirementType}`,
+        dueDate ? `Due date: ${dueDate}` : '',
+        `Target: ${targetScope}`,
+      ].filter(Boolean).join('\n\n');
+
+      try {
+        const announcement = new Announcement({
         title: `New Requirement: ${requirement.title}`,
-        description: requirement.description || `A new ${requirement.type} requirement has been published.`,
+        description: announcementDescription,
         type: 'requirement',
         sport: requirement.sport,
         createdBy: req.user ? req.user._id : null,
         date: new Date(),
         isActive: true,
         relatedRequirementId: requirement._id
-      });
-      
-      await announcement.save();
-      console.log(`✅ Announcement created for requirement ${id}`);
-    } catch (announcementError) {
-      console.error('⚠️  Failed to create announcement:', announcementError);
-      // Don't fail the whole operation if announcement fails
+        });
+
+        await announcement.save();
+        console.log(`✅ Announcement created for requirement ${id}`);
+      } catch (announcementError) {
+        console.error('⚠️  Failed to create announcement:', announcementError);
+        if (!wasPublished) {
+          try {
+            requirement.status = previousPublication.status;
+            requirement.publishedAt = previousPublication.publishedAt;
+            requirement.publishedBy = previousPublication.publishedBy;
+            await requirement.save();
+          } catch (rollbackError) {
+            console.error('❌ Failed to roll back requirement publication:', rollbackError);
+          }
+        }
+
+        return res.status(500).json({
+          success: false,
+          message: 'Requirement publishing could not complete because its announcement could not be saved. Please retry.'
+        });
+      }
     }
     
     res.status(200).json({

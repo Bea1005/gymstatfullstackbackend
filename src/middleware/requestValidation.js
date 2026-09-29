@@ -7,7 +7,7 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/;
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
   'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
-  'event', 'eventName', 'requesterName', 'requesterEmail', 'requesterPhone', 'organization', 'purpose', 'details',
+  'event', 'eventName', 'requesterName', 'requesterEmail', 'requesterPhone', 'organization', 'purpose', 'details', 'description',
   'startDate', 'startTime', 'endDate', 'endTime', 'prepDays', 'status', 'rejectionReason', 'fromRequest',
   'Name', 'contactNo', 'facebookAccount', 'equipment', 'quantity', 'qty', 'referenceIds', 'referenceConditions',
   'borrowTimestamp', 'returnedTimestamp', 'returnedAt', 'condition', 'name', 'type', 'referenceId', 'category',
