@@ -471,4 +471,61 @@ describe('Coach athlete routes', () => {
     expect(response.headers['content-disposition']).toBe('inline');
     expect(streamProfilePhoto).toHaveBeenCalledWith('507f1f77bcf86cd799439012', expect.anything());
   });
+
+  it('saves a faculty member without a submitted Faculty Member ID', async () => {
+    StrasucFacultyMember.exists.mockResolvedValue(false);
+    StrasucFacultyMember.create.mockImplementation(async (faculty) => ({
+      ...faculty,
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-10-01T00:00:00.000Z'),
+    }));
+
+    const response = await request(app)
+      .post('/api/v1/coach/faculty-members')
+      .send({
+        role: 'COACH',
+        name: 'Bea Coach',
+        age: '30',
+        contactNumber: '09170000000',
+        email: 'coach@example.com',
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.facultyId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(StrasucFacultyMember.create).toHaveBeenCalledWith(expect.objectContaining({
+      coachId: 'coach-id',
+      role: 'COACH',
+      name: 'Bea Coach',
+      age: '30',
+      contactNumber: '09170000000',
+      email: 'coach@example.com',
+    }));
+    expect(StrasucFacultyMember.create.mock.calls[0][0].facultyId).toBe(response.body.facultyId);
+  });
+
+  it('loads persisted faculty details again for the authenticated Coach', async () => {
+    StrasucFacultyMember.find.mockReturnValue({
+      sort: jest.fn().mockResolvedValue([{
+        facultyId: 'persisted-faculty-id',
+        coachId: 'coach-id',
+        role: 'COACH',
+        name: 'Bea Coach',
+        age: '30',
+        contactNumber: '09170000000',
+        email: 'coach@example.com',
+      }]),
+    });
+
+    const response = await request(app).get('/api/v1/coach/faculty-members');
+
+    expect(response.status).toBe(200);
+    expect(StrasucFacultyMember.find).toHaveBeenCalledWith({ coachId: 'coach-id' });
+    expect(response.body).toEqual([expect.objectContaining({
+      facultyId: 'persisted-faculty-id',
+      fullname: 'Bea Coach',
+      role: 'COACH',
+      phone: '09170000000',
+      email: 'coach@example.com',
+    })]);
+  });
 });
