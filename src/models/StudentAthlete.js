@@ -44,6 +44,10 @@ const StudentAthleteSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  sports: {
+    type: [String],
+    default: []
+  },
   branchCampus: {
     type: String,
     enum: ['', 'Boac Main', 'Santa Cruz', 'Gasan', 'Torrijos'],

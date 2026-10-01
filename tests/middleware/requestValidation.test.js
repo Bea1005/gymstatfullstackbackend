@@ -62,4 +62,22 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.body.replacementSubmissionId).toBe('507f1f77bcf86cd799439011');
   });
+
+  it('accepts the Student Profile sports array field', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/profile',
+      body: {
+        sport: 'Basketball Women',
+        sports: '["Basketball Women","Volleyball Women"]',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.sports).toBe('["Basketball Women","Volleyball Women"]');
+  });
 });

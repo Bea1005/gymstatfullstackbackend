@@ -206,15 +206,23 @@ describe('Screener routes', () => {
     expect(response.body.message).toContain('not authorized');
   });
 
+  const approvedRequiredDocuments = () => [
+    { _id: 'approved-med', studentId: 'student-1', requirementType: 'medical', status: 'approved', fileName: 'medical.pdf', fileType: 'application/pdf', fileData: Buffer.from('medical') },
+    { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa') },
+    { _id: 'approved-insurance', studentId: 'student-1', requirementType: 'insurance', status: 'approved', fileName: 'insurance.pdf', fileType: 'application/pdf', fileData: Buffer.from('insurance') },
+    { _id: 'approved-profile', studentId: 'student-1', requirementType: 'profile', status: 'approved', fileName: 'profile.pdf', fileType: 'application/pdf', fileData: Buffer.from('profile') },
+    { _id: 'approved-consent', studentId: 'student-1', requirementType: 'consent', status: 'approved', fileName: 'consent.pdf', fileType: 'application/pdf', fileData: Buffer.from('consent') },
+  ];
+
   it.each([
     {
-      title: 'keeps an older rejected document incomplete even when the newest same-type document is approved',
+      title: 'ignores rejected COR history when all required documents are approved',
       documents: [
         { _id: 'older-rejected', studentId: 'student-1', requirementType: 'cor', status: 'rejected', fileName: 'old.pdf', fileType: 'application/pdf', fileData: Buffer.from('old'), uploadDate: new Date('2026-01-01') },
         { _id: 'newer-approved', studentId: 'student-1', requirementType: 'cor', status: 'approved', fileName: 'new.pdf', fileType: 'application/pdf', fileData: Buffer.from('new'), uploadDate: new Date('2026-01-02') },
-        { _id: 'other-approved', studentId: 'student-1', requirementType: 'psa', status: 'approved', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-03') },
+        ...approvedRequiredDocuments(),
       ],
-      expectedOverallStatus: 'Incomplete',
+      expectedOverallStatus: 'Completed',
     },
     {
       title: 'keeps a student incomplete when a new requirement is pending among approved requirements',
@@ -226,12 +234,29 @@ describe('Screener routes', () => {
       expectedOverallStatus: 'Incomplete',
     },
     {
-      title: 'marks the student approved only when every submitted requirement is approved',
+      title: 'marks the student completed when all required documents and COR are approved',
       documents: [
         { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', fileName: 'cor.pdf', fileType: 'application/pdf', fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
-        { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-02') },
+        ...approvedRequiredDocuments(),
       ],
-      expectedOverallStatus: 'Approved',
+      expectedOverallStatus: 'Completed',
+    },
+    {
+      title: 'marks the student completed when every required document is approved and no COR exists',
+      documents: approvedRequiredDocuments(),
+      expectedOverallStatus: 'Completed',
+    },
+    {
+      title: 'marks the student incomplete when a required Medical Certificate is missing but COR is also absent',
+      documents: approvedRequiredDocuments().filter((document) => document.requirementType !== 'medical'),
+      expectedOverallStatus: 'Incomplete',
+    },
+    {
+      title: 'marks the student incomplete when a required Insurance document is rejected even if COR is absent',
+      documents: approvedRequiredDocuments().map((document) => document.requirementType === 'insurance'
+        ? { ...document, status: 'rejected' }
+        : document),
+      expectedOverallStatus: 'Incomplete',
     },
   ])('$title', async ({ documents, expectedOverallStatus }) => {
     User.find.mockReturnValue({

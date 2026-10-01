@@ -57,6 +57,10 @@ const baseUserSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  sports: {
+    type: [String],
+    default: []
+  },
   branchCampus: {
     type: String,
     enum: ['', 'Boac Main', 'Santa Cruz', 'Gasan', 'Torrijos'],
@@ -230,6 +234,9 @@ const buildRoleDocument = (user) => {
     roleDocPayload.dateOfBirth = source.dateOfBirth || source.dob || '';
     roleDocPayload.yearLevel = source.yearLevel || '';
     roleDocPayload.sport = source.sport || '';
+    roleDocPayload.sports = Array.isArray(source.sports) && source.sports.length
+      ? source.sports
+      : (source.sport ? [source.sport] : []);
     roleDocPayload.branchCampus = source.branchCampus || '';
     roleDocPayload.adminLevel = source.adminLevel || '';
     roleDocPayload.permissions = Array.isArray(source.permissions) ? source.permissions : [];

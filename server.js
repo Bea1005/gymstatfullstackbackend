@@ -236,7 +236,7 @@ const handleProfileGet = async (req, res) => {
 
 const handleProfileUpdate = async (req, res) => {
   try {
-    const { email, fullname, contactNumber, dateOfBirth, dob, department, yearLevel, sport, branchCampus, graduationYear, athleteStatus, currentPassword, newPassword, notifications } = req.body;
+    const { email, fullname, contactNumber, dateOfBirth, dob, department, yearLevel, sport, sports, branchCampus, graduationYear, athleteStatus, currentPassword, newPassword, notifications } = req.body;
     const user = await User.findById(req.user?._id);
 
     if (!user) {
@@ -285,13 +285,41 @@ const handleProfileUpdate = async (req, res) => {
     }
 
     if (User.normalizeRole(user.role) === 'student') {
+      if (sports !== undefined || sport !== undefined) {
+        let requestedSports = sports;
+        if (typeof requestedSports === 'string') {
+          try {
+            requestedSports = JSON.parse(requestedSports);
+          } catch {
+            requestedSports = [requestedSports];
+          }
+        }
+        if (requestedSports === undefined) requestedSports = [sport];
+        if (!Array.isArray(requestedSports)) {
+          return res.status(400).json({ success: false, message: 'Please select valid sports.' });
+        }
+
+        const normalizedSports = [...new Set(requestedSports
+          .filter((value) => typeof value === 'string')
+          .map((value) => value.trim())
+          .filter(Boolean))];
+        if (!normalizedSports.length) {
+          return res.status(400).json({ success: false, message: 'At least one sport is required.' });
+        }
+        if (normalizedSports.length > 34 || normalizedSports.some((value) => value.length > 100)) {
+          return res.status(400).json({ success: false, message: 'Please select valid sports.' });
+        }
+
+        user.sports = normalizedSports;
+        user.sport = normalizedSports[0];
+      }
+
       const textFields = {
         fullname,
         contactNumber,
         dateOfBirth: dateOfBirth !== undefined ? dateOfBirth : dob,
         department,
         yearLevel,
-        sport,
         branchCampus,
         graduationYear,
         athleteStatus
@@ -402,7 +430,9 @@ const handleProfileUpdate = async (req, res) => {
     if (User.normalizeRole(savedUser.role) === 'student'
       && (savedUser.dateOfBirth !== user.dateOfBirth
         || savedUser.yearLevel !== user.yearLevel
-        || savedUser.branchCampus !== user.branchCampus)) {
+        || savedUser.branchCampus !== user.branchCampus
+        || JSON.stringify(savedUser.sports || (savedUser.sport ? [savedUser.sport] : []))
+          !== JSON.stringify(user.sports || (user.sport ? [user.sport] : [])))) {
       return res.status(500).json({
         success: false,
         message: 'Profile update could not be confirmed in the database.'

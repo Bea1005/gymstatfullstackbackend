@@ -195,6 +195,43 @@ describe('Coach athlete routes', () => {
     expect(StudentProfile.find).not.toHaveBeenCalled();
   });
 
+  it('finds a student under every saved sport, not only the legacy primary sport', async () => {
+    const student = {
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: 'Basketball Women',
+      sports: ['Basketball Women', 'Volleyball Women'],
+    };
+    const makeFindResult = (documents) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(documents),
+    });
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id', role: 'coach' }),
+    });
+    User.find
+      .mockReturnValueOnce(makeFindResult([student]))
+      .mockReturnValueOnce(makeFindResult([student]));
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?q=23B1510&sport=Volleyball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(User.find.mock.calls[0][0].$and[0].$or).toContainEqual({
+      sports: { $regex: '^Volleyball Women$', $options: 'i' },
+    });
+    expect(response.body).toEqual([{
+      _id: student._id,
+      id: student.id,
+      fullname: student.fullname,
+      sport: 'Volleyball Women',
+    }]);
+  });
+
   it('preloads all minimal search records for a sport without requiring a query', async () => {
     const student = {
       _id: 'student-user-id',
@@ -227,7 +264,7 @@ describe('Coach athlete routes', () => {
     expect(StudentProfile.find).not.toHaveBeenCalled();
   });
 
-  it('uses a linked StudentAthlete sport when the active User sport is empty', async () => {
+  it('matches a secondary sport from the linked StudentAthlete sports array when User sports are empty', async () => {
     const user = {
       _id: 'student-user-id',
       id: '23B1510',
@@ -240,7 +277,8 @@ describe('Coach athlete routes', () => {
       userId: user._id,
       id: user.id,
       fullname: user.fullname,
-      sport: 'Volleyball Women',
+      sport: 'Basketball Women',
+      sports: ['Basketball Women', 'Volleyball Women'],
     };
     const makeFindResult = (documents) => ({
       select: jest.fn().mockReturnThis(),

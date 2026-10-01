@@ -19,14 +19,15 @@ const getCoachAccess = async (coachId) => {
   return coach;
 };
 
-const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport assignedSports sportParticipation athleteStatus';
-const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport assignedSports sportParticipation athleteStatus';
-const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sportParticipation athleteStatus updatedAt';
+const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus';
+const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus';
+const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus updatedAt';
 
 const getStudentSportForCategory = (student, category) => {
   const normalizedCategory = String(category || '').trim().toLowerCase();
   const savedSports = [
     student.sport,
+    ...(Array.isArray(student.sports) ? student.sports : []),
     ...(Array.isArray(student.assignedSports) ? student.assignedSports : []),
     ...(Array.isArray(student.sportParticipation) ? student.sportParticipation.map((entry) => entry?.sport) : []),
   ];
@@ -45,6 +46,12 @@ const mergeStudentRecords = (user, studentAthlete = {}) => ({
   dateOfBirth: user.dateOfBirth || studentAthlete.dateOfBirth || '',
   dob: user.dob || studentAthlete.dob || '',
   sport: user.sport || studentAthlete.sport || '',
+  sports: [...new Set([
+    ...(Array.isArray(user.sports) ? user.sports : []),
+    ...(Array.isArray(studentAthlete.sports) ? studentAthlete.sports : []),
+    user.sport,
+    studentAthlete.sport,
+  ].map((sport) => String(sport || '').trim()).filter(Boolean))],
   assignedSports: [...new Set([
     ...(Array.isArray(user.assignedSports) ? user.assignedSports : []),
     ...(Array.isArray(studentAthlete.assignedSports) ? studentAthlete.assignedSports : []),
@@ -490,6 +497,7 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     const sportMatcher = { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' };
     const sportConditions = [
       { sport: sportMatcher },
+      { sports: sportMatcher },
       { assignedSports: sportMatcher },
       { 'sportParticipation.sport': sportMatcher },
     ];
@@ -500,7 +508,10 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     };
     const studentAthleteFilter = {
       role: 'student',
-      sport: sportMatcher,
+      $or: [
+        { sport: sportMatcher },
+        { sports: sportMatcher },
+      ],
     };
     if (query) {
       const textConditions = [
@@ -509,7 +520,7 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
         { fullname: queryMatcher },
       ];
       userFilter.$and.push({ $or: textConditions });
-      studentAthleteFilter.$or = textConditions;
+      studentAthleteFilter.$and = [{ $or: textConditions }];
     }
 
     const [userCandidates, studentAthleteCandidates] = await Promise.all([

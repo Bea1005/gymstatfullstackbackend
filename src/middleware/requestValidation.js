@@ -15,7 +15,7 @@ const KNOWN_FIELDS = new Set([
   'graduationYear', 'athleteStatus', 'profilePhoto', 'sportParticipation', 'coachPosition', 'staffMembers',
   'studentId', 'course', 'location', 'photo', 'requirementType', 'participationType', 'requirementId',
   'replacementSubmissionId', 'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',
-  'targetStudents', 'file', 'filename', 'originalname', 'mimetype', 'size', 'path', 'data', 'remarks', 'feedback',
+  'targetStudents', 'sports', 'file', 'filename', 'originalname', 'mimetype', 'size', 'path', 'data', 'remarks', 'feedback',
   'grade', 'ids', 'createdBy', 'reviewedAt', 'reviewedBy'
 ]);
 

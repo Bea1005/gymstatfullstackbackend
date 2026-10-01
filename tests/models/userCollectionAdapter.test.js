@@ -1,5 +1,6 @@
 const User = require('../../src/models/User');
 const Coach = require('../../src/models/Coach');
+const StudentAthlete = require('../../src/models/StudentAthlete');
 
 describe('User collection adapter', () => {
   it('maps each supported role to the correct collection model', () => {
@@ -36,5 +37,40 @@ describe('User collection adapter', () => {
       }),
       expect.objectContaining({ upsert: true })
     );
+  });
+
+  it('syncs multiple saved sports to the existing StudentAthlete role record', async () => {
+    const roleModels = [
+      User.getRoleModel('admin'),
+      User.getRoleModel('coach'),
+      User.getRoleModel('screener'),
+    ];
+    const deleteSpies = roleModels.map((model) => jest.spyOn(model, 'deleteOne').mockResolvedValue({ deletedCount: 0 }));
+    const syncSpy = jest.spyOn(StudentAthlete, 'findOneAndUpdate').mockResolvedValue({});
+
+    try {
+      await User.syncRoleDocument({
+        _id: 'student-user-id',
+        id: '23B1510',
+        fullname: 'Student Athlete',
+        role: 'student',
+        sport: 'Basketball Women',
+        sports: ['Basketball Women', 'Volleyball Women'],
+      });
+
+      expect(syncSpy).toHaveBeenCalledWith(
+        { userId: 'student-user-id' },
+        expect.objectContaining({
+          $set: expect.objectContaining({
+            sport: 'Basketball Women',
+            sports: ['Basketball Women', 'Volleyball Women'],
+          }),
+        }),
+        expect.objectContaining({ upsert: true })
+      );
+    } finally {
+      syncSpy.mockRestore();
+      deleteSpies.forEach((spy) => spy.mockRestore());
+    }
   });
 });

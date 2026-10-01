@@ -129,10 +129,14 @@ const normalizeRequirementStatus = (status) => {
 
 const deriveOverallStatus = (requirements) => {
   const documents = Array.isArray(requirements?.documents) ? requirements.documents : [];
-  if (documents.length === 0) return 'No Documents Attached';
+  const requiredKeys = ['med', 'psa', 'insurance', 'profile', 'consent'];
+  const requiredCategoriesApproved = requiredKeys.every((key) => requirements?.[key]?.status === 'approved');
+  const otherRequiredDocumentsApproved = documents
+    .filter((document) => String(document?.requirementType || '').toLowerCase() !== 'cor')
+    .every((document) => document?.status === 'approved');
 
-  return documents.every((document) => document?.status === 'approved')
-    ? 'Approved'
+  return requiredCategoriesApproved && otherRequiredDocumentsApproved
+    ? 'Completed'
     : 'Incomplete';
 };
 
