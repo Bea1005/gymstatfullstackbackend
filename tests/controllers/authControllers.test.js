@@ -147,6 +147,44 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().user.role).toBe('student');
   });
 
+  it.each(['2019-0219', '2024-1234', '1998-0001', '2026-9876'])(
+    'assigns the coach role for Coach-format ID %s regardless of the submitted role',
+    async (coachId) => {
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Coach User',
+        email: 'coach@example.com',
+        password: 'Password1!',
+        role: 'student',
+        id: coachId
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue(null);
+    bcrypt.genSalt.mockResolvedValue('salt');
+    bcrypt.hash.mockResolvedValue('hashed-password');
+    User.create.mockResolvedValue({
+      _id: 'user123',
+      fullname: 'Coach User',
+      email: 'coach@example.com',
+      role: 'coach',
+      department: '',
+      sport: '',
+      id: coachId
+    });
+
+    await register(req, res);
+
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      id: coachId,
+      role: 'coach'
+    }));
+    expect(res.statusCode).toBe(201);
+    expect(res._getJSONData().user.role).toBe('coach');
+    }
+  );
+
   it('returns the saved role from the database during login', async () => {
     const req = httpMocks.createRequest({
       body: {
@@ -183,6 +221,33 @@ describe('Auth Controllers', () => {
       expect.any(String),
       expect.any(Object)
     );
+  });
+
+  it('looks up a hyphenated Coach ID without changing its string value', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        id: '2019-0219',
+        password: 'Password1!'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue({
+      _id: 'user123',
+      id: '2019-0219',
+      fullname: 'Coach User',
+      password: 'hashed-password',
+      role: 'coach',
+      save: jest.fn().mockResolvedValue(true)
+    });
+    bcrypt.compare.mockResolvedValue(true);
+    jwt.sign.mockReturnValue('jwt-token');
+
+    await login(req, res);
+
+    expect(User.findOne).toHaveBeenCalledWith({ id: '2019-0219' });
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData().user.role).toBe('coach');
   });
 
   it('uses the persisted user role during login without re-inferring from the ID format', async () => {

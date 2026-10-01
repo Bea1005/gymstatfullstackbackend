@@ -266,7 +266,9 @@ const syncRoleDocument = async (user) => {
   const updatePayload = { $set: roleDocPayload };
   const query = normalizedRole === 'admin'
     ? { id: roleDocPayload.id || source.id || '' }
-    : { userId: user._id };
+    : normalizedRole === 'coach'
+      ? { id: roleDocPayload.id }
+      : { userId: user._id };
 
   if (normalizedRole === 'admin') {
     updatePayload.$unset = { department: '', sport: '' };

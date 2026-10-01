@@ -312,7 +312,7 @@ exports.register = async (req, res) => {
       fullname,
       email: email || '',
       password: hashedPassword,
-      role: 'student',
+      role: /^\d{4}-\d{4}$/.test(trimmedId) ? 'coach' : 'student',
       id: trimmedId
     };
 

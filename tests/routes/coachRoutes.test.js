@@ -1,17 +1,19 @@
 const express = require('express');
 const request = require('supertest');
 const User = require('../../src/models/User');
+const StudentAthlete = require('../../src/models/StudentAthlete');
 const StudentProfile = require('../../src/models/StudentProfile');
 const StrasucFacultyMember = require('../../src/models/StrasucFacultyMember');
 const coachRoutes = require('../../src/routes/coachRoutes');
 const { streamProfilePhoto } = require('../../src/config/profilePhotoStorage');
 
 jest.mock('../../src/models/User');
+jest.mock('../../src/models/StudentAthlete');
 jest.mock('../../src/models/StudentProfile');
 jest.mock('../../src/models/StrasucFacultyMember');
 jest.mock('../../src/middleware/auth', () => ({
   protect: jest.fn((req, res, next) => {
-    req.user = { _id: 'coach-id', role: 'coach' };
+    req.user = { _id: req.headers['x-test-coach-id'] || 'coach-id', role: 'coach' };
     next();
   }),
   authorize: jest.fn(() => (req, res, next) => next()),
@@ -33,6 +35,12 @@ describe('Coach athlete routes', () => {
     User.schema = {
       path: jest.fn(() => ({ enumValues: ['', 'Boac Main', 'Santa Cruz', 'Gasan', 'Torrijos'] })),
     };
+    StudentAthlete.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    });
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -40,14 +48,12 @@ describe('Coach athlete routes', () => {
     console.error.mockRestore();
   });
 
-  it('returns assignedSports athletes with persisted profile fields for the selected category', async () => {
+  it('returns only the Coach selected students and filters by sport after profile reconciliation', async () => {
     const athlete = {
       _id: 'student-id',
       id: 'STUDENT01',
       fullname: 'Student Name',
-      email: 'student@example.com',
-      sport: 'Volleyball Women',
-      assignedSports: ['Basketball Women'],
+      sport: 'Basketball Women',
       athleteStatus: 'completed',
       department: 'Engineering',
       yearLevel: 'II',
@@ -70,14 +76,318 @@ describe('Coach athlete routes', () => {
       .get('/api/v1/coach/athletes?sport=Basketball%20Women');
 
     expect(response.status).toBe(200);
-    expect(User.find.mock.calls[0][0].$and[0].$or).toEqual(expect.arrayContaining([
-      { assignedSports: { $regex: '^Basketball Women$', $options: 'i' } },
-    ]));
+    expect(User.find.mock.calls[0][0]).toEqual({
+      role: 'student',
+      _id: { $in: [athlete._id] },
+    });
     expect(response.body[0]).toEqual(expect.objectContaining({
-      email: 'student@example.com',
+      id: 'STUDENT01',
+      fullname: 'Student Name',
+      sport: 'Basketball Women',
+      department: 'Engineering',
+      yearLevel: 'II',
+      branchCampus: 'Boac Main',
+    }));
+    expect(response.body[0]).not.toHaveProperty('email');
+    expect(response.body[0].athleteStatus).toBe('completed');
+  });
+
+  it('keeps a selected gallery student whose sport exists only in StudentAthlete', async () => {
+    const student = {
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: '',
+      role: 'student',
+    };
+    const studentAthlete = {
+      userId: student._id,
+      id: student.id,
+      fullname: student.fullname,
+      sport: 'Volleyball Women',
+    };
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ strasucStudentIds: [student._id] }),
+    });
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([student]),
+    });
+    StudentAthlete.find.mockReturnValueOnce({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([studentAthlete]),
+    });
+    StudentProfile.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/athletes?sport=Volleyball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([expect.objectContaining({
+      id: student.id,
+      fullname: student.fullname,
+      sport: 'Volleyball Women',
+    })]);
+    expect(User.find.mock.calls[0][0]._id).toEqual({ $in: [student._id] });
+  });
+
+  it('searches shared students by registered ID and selected sport for coaches without sport assignments', async () => {
+    const student = {
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
       sport: 'Volleyball Women',
       assignedSports: ['Basketball Women'],
-      athleteStatus: 'completed',
+      department: 'BSIT',
+      yearLevel: 'III',
+      dateOfBirth: '2005-09-10',
+      branchCampus: 'Boac Main',
+      email: 'private@example.com',
+    };
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id', sport: '', assignedSports: [] }),
+    });
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([student]),
+    });
+    StudentProfile.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([{
+        studentId: student._id,
+        imageFileId: '507f1f77bcf86cd799439011',
+      }]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?q=23B1510&sport=Basketball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(User.find.mock.calls[0][0]).toEqual(expect.objectContaining({
+      role: 'student',
+      $and: expect.arrayContaining([
+        { $or: expect.arrayContaining([
+          { assignedSports: { $regex: '^Basketball Women$', $options: 'i' } },
+        ]) },
+        { $or: expect.arrayContaining([
+          { id: { $regex: '23B1510', $options: 'i' } },
+        ]) },
+      ]),
+    }));
+    expect(User.find.mock.calls[0][0]).not.toHaveProperty('_id');
+    expect(response.body[0]).toEqual(expect.objectContaining({
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: 'Basketball Women',
+    }));
+    expect(Object.keys(response.body[0]).sort()).toEqual(['_id', 'fullname', 'id', 'sport']);
+    expect(response.body[0]).not.toHaveProperty('email');
+    expect(response.body[0]).not.toHaveProperty('password');
+    expect(response.body[0]).not.toHaveProperty('athleteStatus');
+    expect(StudentProfile.find).not.toHaveBeenCalled();
+  });
+
+  it('preloads all minimal search records for a sport without requiring a query', async () => {
+    const student = {
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: 'Basketball Women',
+    };
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+    });
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([student]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?sport=Basketball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(User.find.mock.calls[0][0]).not.toHaveProperty('$or');
+    expect(response.body).toEqual([{
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: 'Basketball Women',
+    }]);
+    expect(StudentProfile.find).not.toHaveBeenCalled();
+  });
+
+  it('uses a linked StudentAthlete sport when the active User sport is empty', async () => {
+    const user = {
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: '',
+      accountStatus: 'active',
+      role: 'student',
+    };
+    const studentAthlete = {
+      userId: user._id,
+      id: user.id,
+      fullname: user.fullname,
+      sport: 'Volleyball Women',
+    };
+    const makeFindResult = (documents) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(documents),
+    });
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+    });
+    User.find
+      .mockReturnValueOnce(makeFindResult([]))
+      .mockReturnValueOnce(makeFindResult([user]));
+    StudentAthlete.find
+      .mockReturnValueOnce(makeFindResult([studentAthlete]))
+      .mockReturnValueOnce(makeFindResult([studentAthlete]));
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?q=Bea&sport=Volleyball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([{
+      _id: user._id,
+      id: user.id,
+      fullname: user.fullname,
+      sport: 'Volleyball Women',
+    }]);
+    expect(User.find.mock.calls[1][0].$or).toContainEqual({ _id: { $in: [user._id] } });
+  });
+
+  it('does not return an orphaned StudentAthlete record without an active User match', async () => {
+    const orphan = {
+      userId: 'missing-user-id',
+      id: 'ORPHAN01',
+      sport: 'Volleyball Women',
+    };
+    const makeFindResult = (documents) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(documents),
+    });
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+    });
+    User.find
+      .mockReturnValueOnce(makeFindResult([]))
+      .mockReturnValueOnce(makeFindResult([]));
+    StudentAthlete.find.mockReturnValueOnce(makeFindResult([orphan]));
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?q=ORPHAN01&sport=Volleyball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([]);
+    expect(User.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['coach-a-id', 'coach-b-id'])(
+    'adds a matching student to only the authenticated gallery for %s',
+    async (coachId) => {
+      const student = {
+        _id: 'student-user-id',
+        id: '23B1510',
+        fullname: 'Bea Dolor Soleta',
+        sport: 'Basketball Women',
+        department: 'BSIT',
+        yearLevel: 'III',
+      };
+      User.findOne
+        .mockReturnValueOnce({
+          select: jest.fn().mockReturnThis(),
+          lean: jest.fn().mockResolvedValue({ _id: coachId, sport: '', assignedSports: [] }),
+        })
+        .mockReturnValueOnce({
+          select: jest.fn().mockReturnThis(),
+          lean: jest.fn().mockResolvedValue(student),
+        });
+      User.updateOne.mockResolvedValue({ matchedCount: 1 });
+      StudentProfile.findOne.mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(null),
+      });
+
+      const response = await request(app)
+        .post('/api/v1/coach/athletes')
+        .set('x-test-coach-id', coachId)
+        .send({ studentId: student._id, sport: 'Basketball Women' });
+
+      expect(response.status).toBe(200);
+      expect(User.updateOne).toHaveBeenCalledWith(
+        { _id: coachId },
+        { $addToSet: { strasucStudentIds: student._id } }
+      );
+      expect(response.body.data).toEqual(expect.objectContaining({
+        id: '23B1510',
+        fullname: 'Bea Dolor Soleta',
+        sport: 'Basketball Women',
+      }));
+    }
+  );
+
+  it('adds a student whose selected sport exists only in the linked StudentAthlete record', async () => {
+    const student = {
+      _id: 'student-user-id',
+      id: '23B1510',
+      fullname: 'Bea Dolor Soleta',
+      sport: '',
+      role: 'student',
+    };
+    User.findOne
+      .mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+      })
+      .mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(student),
+      });
+    StudentAthlete.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        userId: student._id,
+        id: student.id,
+        sport: 'Volleyball Women',
+      }),
+    });
+    User.updateOne.mockResolvedValue({ matchedCount: 1 });
+    StudentProfile.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(null),
+    });
+
+    const response = await request(app)
+      .post('/api/v1/coach/athletes')
+      .send({ studentId: student._id, sport: 'Volleyball Women' });
+
+    expect(response.status).toBe(200);
+    expect(User.updateOne).toHaveBeenCalledWith(
+      { _id: 'coach-id' },
+      { $addToSet: { strasucStudentIds: student._id } }
+    );
+    expect(response.body.data).toEqual(expect.objectContaining({
+      id: student.id,
+      sport: 'Volleyball Women',
     }));
   });
 

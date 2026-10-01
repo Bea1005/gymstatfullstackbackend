@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const router = express.Router();
 const User = require('../models/User');
+const StudentAthlete = require('../models/StudentAthlete');
 const StudentProfile = require('../models/StudentProfile');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
@@ -13,34 +14,100 @@ const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$
 
 const getCoachAccess = async (coachId) => {
   const coach = await User.findOne({ _id: coachId, role: 'coach' })
-    .select('sport assignedSports strasucStudentIds')
+    .select('_id')
     .lean();
-  if (!coach) return null;
-
-  const allowedSports = [...new Set([
-    coach.sport,
-    ...(Array.isArray(coach.assignedSports) ? coach.assignedSports : []),
-  ].map((sport) => String(sport || '').trim()).filter(Boolean))];
-
-  return { coach, allowedSports };
+  return coach;
 };
 
-const studentProjection = '_id id fullname email department yearLevel branchCampus dateOfBirth dob sport assignedSports athleteStatus';
+const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport assignedSports sportParticipation athleteStatus';
+const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport assignedSports sportParticipation athleteStatus';
+const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sportParticipation athleteStatus updatedAt';
 
-const toStudentResponse = (student, profile) => ({
+const getStudentSportForCategory = (student, category) => {
+  const normalizedCategory = String(category || '').trim().toLowerCase();
+  const savedSports = [
+    student.sport,
+    ...(Array.isArray(student.assignedSports) ? student.assignedSports : []),
+    ...(Array.isArray(student.sportParticipation) ? student.sportParticipation.map((entry) => entry?.sport) : []),
+  ];
+  return savedSports.find((sport) => String(sport || '').trim().toLowerCase() === normalizedCategory) || '';
+};
+
+const mergeStudentRecords = (user, studentAthlete = {}) => ({
+  ...studentAthlete,
+  ...user,
+  _id: user._id,
+  id: user.id || studentAthlete.id || String(user._id),
+  fullname: user.fullname || studentAthlete.fullname || '',
+  department: user.department || studentAthlete.department || '',
+  yearLevel: user.yearLevel || studentAthlete.yearLevel || '',
+  branchCampus: user.branchCampus || studentAthlete.branchCampus || '',
+  dateOfBirth: user.dateOfBirth || studentAthlete.dateOfBirth || '',
+  dob: user.dob || studentAthlete.dob || '',
+  sport: user.sport || studentAthlete.sport || '',
+  assignedSports: [...new Set([
+    ...(Array.isArray(user.assignedSports) ? user.assignedSports : []),
+    ...(Array.isArray(studentAthlete.assignedSports) ? studentAthlete.assignedSports : []),
+  ])],
+  sportParticipation: user.sportParticipation?.length
+    ? user.sportParticipation
+    : (studentAthlete.sportParticipation || []),
+  athleteStatus: user.athleteStatus || studentAthlete.athleteStatus || '',
+});
+
+const findStudentAthleteRecords = async (students) => {
+  const userIds = students.map((student) => student._id).filter(Boolean);
+  const registeredIds = students.map((student) => student.id).filter(Boolean);
+  const studentNumbers = students.map((student) => student.studentNumber).filter(Boolean);
+  if (!userIds.length && !registeredIds.length && !studentNumbers.length) return [];
+
+  const links = [];
+  if (userIds.length) links.push({ userId: { $in: userIds } });
+  if (registeredIds.length) links.push({ id: { $in: registeredIds } });
+  if (studentNumbers.length) links.push({ studentNumber: { $in: studentNumbers } });
+
+  return StudentAthlete.find({ $or: links })
+    .select(studentAthleteSearchProjection)
+    .sort({ updatedAt: -1 })
+    .lean();
+};
+
+const linkStudentAthletesToUsers = (users, studentAthletes) => {
+  const usersById = new Map(users.map((user) => [String(user._id), user]));
+  const usersByRegisteredId = new Map(users.filter((user) => user.id).map((user) => [String(user.id), user]));
+  const usersByStudentNumber = new Map(users.filter((user) => user.studentNumber).map((user) => [String(user.studentNumber), user]));
+  const profilesByUserId = new Map();
+
+  for (const studentAthlete of studentAthletes) {
+    const user = usersById.get(String(studentAthlete.userId || ''))
+      || usersByRegisteredId.get(String(studentAthlete.id || ''))
+      || usersByStudentNumber.get(String(studentAthlete.studentNumber || ''));
+    if (user && !profilesByUserId.has(String(user._id))) {
+      profilesByUserId.set(String(user._id), studentAthlete);
+    }
+  }
+
+  return users.map((user) => mergeStudentRecords(user, profilesByUserId.get(String(user._id))));
+};
+
+const getStudentSearchIdentifiers = (student) => [
+  student.id,
+  student.studentNumber,
+  student.studentAthleteId,
+].map((value) => String(value || '').toLowerCase()).filter(Boolean);
+
+const toStudentResponse = (student, profile, selectedSport) => ({
   _id: student._id,
   id: student.id || String(student._id),
   studentId: String(student._id),
   fullname: student.fullname || '',
-  email: student.email || '',
   department: student.department || '',
   yearLevel: student.yearLevel || '',
   dateOfBirth: student.dateOfBirth || student.dob || '',
   dob: student.dob || student.dateOfBirth || '',
-  sport: student.sport || '',
-  assignedSports: Array.isArray(student.assignedSports) ? student.assignedSports : [],
-  athleteStatus: student.athleteStatus || '',
+  sport: getStudentSportForCategory(student, selectedSport) || student.sport || '',
   branchCampus: student.branchCampus || '',
+  athleteStatus: student.athleteStatus || '',
   profilePhotoUrl: profile?.imageFileId ? `/coach/students/${student._id}/profile-photo` : '',
 });
 
@@ -238,7 +305,7 @@ router.get('/coach/profile', protect, authorize('coach'), async (req, res) => {
     return res.json({
       fullname: user.fullname,
       email: user.email,
-      mainSport: user.sport || 'Basketball',
+      mainSport: user.sport || '',
       position: user.coachPosition || 'Coach',
       sportParticipation: user.sportParticipation || [],
       staffMembers: user.staffMembers || []
@@ -284,25 +351,23 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
       .lean();
     const selectedStudentIds = Array.isArray(coach?.strasucStudentIds) ? coach.strasucStudentIds : [];
     const filter = { role: 'student', _id: { $in: selectedStudentIds } };
-    if (selectedSport) {
-      const sportMatcher = { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' };
-      filter.$and = [{ $or: [
-        { sport: sportMatcher },
-        { assignedSports: sportMatcher },
-        { 'sportParticipation.sport': sportMatcher },
-      ] }];
-    }
 
     const athletes = await User.find(filter).select(studentProjection).lean();
-    const studentIds = athletes.map((athlete) => athlete._id);
+    const athletesNeedingRoleProfile = athletes.filter((athlete) => !getStudentSportForCategory(athlete, selectedSport));
+    const roleProfiles = await findStudentAthleteRecords(athletesNeedingRoleProfile);
+    const normalizedAthletes = linkStudentAthletesToUsers(athletes, roleProfiles);
+    const sportMatchedAthletes = normalizedAthletes.filter((athlete) => (
+      !selectedSport || getStudentSportForCategory(athlete, selectedSport)
+    ));
+    const studentIds = sportMatchedAthletes.map((athlete) => athlete._id);
     const profiles = studentIds.length > 0
       ? await StudentProfile.find({ studentId: { $in: studentIds } }).select('studentId imageFileId').lean()
       : [];
     const profilesByStudentId = new Map(profiles.map((profile) => [String(profile.studentId), profile]));
 
-    return res.json(athletes.map((athlete) => {
+    return res.json(sportMatchedAthletes.map((athlete) => {
       const studentProfile = profilesByStudentId.get(String(athlete._id));
-      return toStudentResponse(athlete, studentProfile);
+      return toStudentResponse(athlete, studentProfile, selectedSport);
     }));
   } catch (error) {
     console.error('Coach athletes error:', error);
@@ -314,32 +379,42 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
 router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   try {
     const { studentId } = req.body;
-    if (!studentId) {
-      return res.status(400).json({ message: 'An existing student must be selected' });
+    const selectedSport = String(req.body?.sport || '').trim();
+    if (!studentId || !selectedSport) {
+      return res.status(400).json({ message: 'An existing student and sport category must be selected' });
     }
 
     const access = await getCoachAccess(req.user._id || req.user.id);
     if (!access) return res.status(403).json({ message: 'Coach access could not be verified' });
 
-    const studentFilter = { _id: studentId, role: 'student' };
-    if (access.allowedSports.length === 0) {
-      return res.status(403).json({ message: 'You are not authorized to add this student' });
-    }
-    studentFilter.$or = access.allowedSports.map((sport) => ({
-      $or: [
-        { sport: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
-        { assignedSports: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
-      ],
-    }));
+    const userStudent = await User.findOne({
+      _id: studentId,
+      role: 'student',
+      accountStatus: { $ne: 'archived' },
+    }).select(studentSearchProjection).lean();
+    if (!userStudent) return res.status(404).json({ message: 'Student not found' });
 
-    const student = await User.findOne(studentFilter).select(studentProjection).lean();
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    let student = userStudent;
+    if (!getStudentSportForCategory(userStudent, selectedSport)) {
+      const profile = await StudentAthlete.findOne({
+        $or: [
+          { userId: userStudent._id },
+          { id: userStudent.id },
+          ...(userStudent.studentNumber ? [{ studentNumber: userStudent.studentNumber }] : []),
+        ],
+      }).select(studentAthleteSearchProjection).lean();
+      if (profile) student = mergeStudentRecords(userStudent, profile);
+    }
+    if (!getStudentSportForCategory(student, selectedSport)) {
+      return res.status(404).json({ message: 'Student not found for the selected sport' });
+    }
 
     await User.updateOne(
       { _id: req.user._id || req.user.id },
       { $addToSet: { strasucStudentIds: student._id } }
     );
-    return res.status(200).json({ success: true, data: toStudentResponse(student) });
+    const profile = await StudentProfile.findOne({ studentId: student._id }).select('imageFileId').lean();
+    return res.status(200).json({ success: true, data: toStudentResponse(student, profile, selectedSport) });
   } catch (error) {
     console.error('Coach athlete create error:', error);
     return res.status(500).json({ message: 'Server error while creating student profile' });
@@ -406,59 +481,98 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
   try {
     const query = String(req.query.q || '').trim();
     const selectedSport = String(req.query.sport || '').trim();
-    if (!query) return res.json([]);
+    if (!selectedSport) return res.json([]);
 
     const access = await getCoachAccess(req.user._id || req.user.id);
-    if (!access || access.allowedSports.length === 0) return res.json([]);
-    if (selectedSport && !access.allowedSports.some((sport) => sport.toLowerCase() === selectedSport.toLowerCase())) {
-      return res.status(403).json({ message: 'You are not authorized to search this sport' });
-    }
+    if (!access) return res.status(403).json({ message: 'Coach access could not be verified' });
 
-    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const queryMatcher = { $regex: escapedQuery, $options: 'i' };
-    const authorizedSportMatcher = access.allowedSports.map((sport) => ({
-      $or: [
-        { sport: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
-        { assignedSports: { $regex: `^${escapeRegex(sport)}$`, $options: 'i' } },
-      ],
-    }));
-    const baseFilter = {
+    const queryMatcher = { $regex: escapeRegex(query), $options: 'i' };
+    const sportMatcher = { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' };
+    const sportConditions = [
+      { sport: sportMatcher },
+      { assignedSports: sportMatcher },
+      { 'sportParticipation.sport': sportMatcher },
+    ];
+    const userFilter = {
       role: 'student',
       accountStatus: { $ne: 'archived' },
-      $or: [
-        { id: queryMatcher },
-        { fullname: queryMatcher },
-      ],
-      $and: [{ $or: authorizedSportMatcher }],
+      $and: [{ $or: sportConditions }],
     };
-    if (selectedSport) {
-      const sportMatcher = { $regex: selectedSport.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-      baseFilter.$and.push(
-        {
-          $or: [
-            { sport: sportMatcher },
-            { assignedSports: sportMatcher },
-            { 'sportParticipation.sport': sportMatcher },
-          ],
-        }
-      );
+    const studentAthleteFilter = {
+      role: 'student',
+      sport: sportMatcher,
+    };
+    if (query) {
+      const textConditions = [
+        { id: queryMatcher },
+        { studentNumber: queryMatcher },
+        { fullname: queryMatcher },
+      ];
+      userFilter.$and.push({ $or: textConditions });
+      studentAthleteFilter.$or = textConditions;
     }
 
-    const students = await User.find(baseFilter)
-      .select(studentProjection)
-      .sort({ fullname: 1 })
-      .limit(30)
-      .lean();
+    const [userCandidates, studentAthleteCandidates] = await Promise.all([
+      User.find(userFilter)
+        .select(studentSearchProjection)
+        .sort({ fullname: 1 })
+        .limit(200)
+        .lean(),
+      StudentAthlete.find(studentAthleteFilter)
+        .select(studentAthleteSearchProjection)
+        .sort({ fullname: 1 })
+        .limit(200)
+        .lean(),
+    ]);
 
-    return res.json(students.map((student) => ({
+    const linkClauses = [];
+    const linkedUserIds = studentAthleteCandidates.map((student) => student.userId).filter(Boolean);
+    const linkedRegisteredIds = studentAthleteCandidates.map((student) => student.id).filter(Boolean);
+    const linkedStudentNumbers = studentAthleteCandidates.map((student) => student.studentNumber).filter(Boolean);
+    if (linkedUserIds.length) linkClauses.push({ _id: { $in: linkedUserIds } });
+    if (linkedRegisteredIds.length) linkClauses.push({ id: { $in: linkedRegisteredIds } });
+    if (linkedStudentNumbers.length) {
+      linkClauses.push({ studentNumber: { $in: linkedStudentNumbers } });
+      linkClauses.push({ id: { $in: linkedStudentNumbers } });
+    }
+
+    const linkedUsers = linkClauses.length
+      ? await User.find({
+          role: 'student',
+          accountStatus: { $ne: 'archived' },
+          $or: linkClauses,
+        })
+          .select(studentSearchProjection)
+          .lean()
+      : [];
+    const candidatesByUserId = new Map(
+      [...userCandidates, ...linkedUsers].map((student) => [String(student._id), student])
+    );
+    const reconciledProfiles = await findStudentAthleteRecords([...candidatesByUserId.values()]);
+    const students = linkStudentAthletesToUsers(
+      [...candidatesByUserId.values()],
+      [...studentAthleteCandidates, ...reconciledProfiles]
+    );
+    const normalizedQuery = query.toLowerCase();
+    const matchingStudents = students
+      .filter((student) => getStudentSportForCategory(student, selectedSport))
+      .filter((student) => !normalizedQuery
+        || getStudentSearchIdentifiers({
+          ...student,
+          studentAthleteId: reconciledProfiles.find((profile) => (
+            String(profile.userId || '') === String(student._id)
+            || String(profile.id || '') === String(student.id || '')
+          ))?.id,
+        }).some((identifier) => identifier.includes(normalizedQuery))
+        || String(student.fullname || '').toLowerCase().includes(normalizedQuery))
+      .sort((left, right) => String(left.fullname || '').localeCompare(String(right.fullname || '')))
+      .slice(0, 100);
+
+    return res.json(matchingStudents.map((student) => ({
       _id: student._id,
       id: student.id || String(student._id),
       fullname: student.fullname || '',
-      department: student.department || '',
-      yearLevel: student.yearLevel || '',
-      dateOfBirth: student.dateOfBirth || student.dob || '',
-      dob: student.dob || student.dateOfBirth || '',
-      branchCampus: student.branchCampus || '',
+      sport: getStudentSportForCategory(student, selectedSport) || student.sport || '',
     })));
   } catch (err) {
     console.error('Coach student search error:', err);
