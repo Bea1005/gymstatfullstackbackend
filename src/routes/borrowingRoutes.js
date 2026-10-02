@@ -54,6 +54,7 @@ const buildBorrowingResponse = (borrowing) => {
     referenceConditions: borrowing.referenceConditions || [],
     qty: borrowing.quantity || borrowing.qty || 1,
     borrowTimestamp: borrowing.borrowTimestamp || formatBorrowTimestamp(borrowDate),
+    returnDate: borrowing.returnDate || null,
     endTime: borrowing.endTime || '',
     returnedTimestamp: borrowing.returnedTimestamp || (returnedAt ? formatBorrowTimestamp(returnedAt) : null),
     status: borrowing.status === 'Completed' ? 'Returned' : (borrowing.status === 'Out Now' ? 'Out' : borrowing.status || 'Out'),
