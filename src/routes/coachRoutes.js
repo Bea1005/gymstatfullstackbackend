@@ -515,29 +515,37 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       return res.status(403).json({ message: 'You are not authorized to update this student' });
     }
 
-    if (typeof fullname === 'string') student.fullname = fullname;
-    if (typeof email === 'string') student.email = email;
-    if (typeof department === 'string') student.department = department;
+    const updates = {};
+    if (typeof fullname === 'string') updates.fullname = fullname;
+    if (typeof email === 'string') updates.email = email;
+    if (typeof department === 'string') updates.department = department;
     if (typeof course === 'string') {
       const courseParts = course.trim().match(/^(.*?)(?:\s+-\s+([IVX]+))?$/);
-      student.department = courseParts?.[1] || '';
-      if (courseParts?.[2] && ['I', 'II', 'III', 'IV'].includes(courseParts[2])) student.yearLevel = courseParts[2];
+      updates.department = courseParts?.[1] || '';
+      if (courseParts?.[2] && ['I', 'II', 'III', 'IV'].includes(courseParts[2])) updates.yearLevel = courseParts[2];
     }
-    if (typeof yearLevel === 'string') student.yearLevel = yearLevel;
-    if (typeof dateOfBirth === 'string' || typeof dob === 'string') student.dateOfBirth = dateOfBirth || dob;
+    if (typeof yearLevel === 'string') updates.yearLevel = yearLevel;
+    if (typeof dateOfBirth === 'string' || typeof dob === 'string') updates.dateOfBirth = dateOfBirth || dob;
     const requestedCampus = branchCampus ?? location;
     if (typeof requestedCampus === 'string' && requestedCampus !== student.branchCampus) {
       const allowedCampuses = User.schema.path('branchCampus')?.enumValues || [];
       if (!allowedCampuses.includes(requestedCampus)) {
         return res.status(400).json({ message: 'Please select a supported school campus' });
       }
-      student.branchCampus = requestedCampus;
+      updates.branchCampus = requestedCampus;
     }
-    if (typeof profilePhoto === 'string' || typeof photo === 'string') student.profilePhoto = profilePhoto || photo;
-    if (typeof sport === 'string') student.sport = sport;
-    if (typeof athleteStatus === 'string' || typeof status === 'string') student.athleteStatus = athleteStatus || status;
+    if (typeof profilePhoto === 'string' || typeof photo === 'string') updates.profilePhoto = profilePhoto || photo;
+    if (typeof sport === 'string') updates.sport = sport;
+    if (typeof athleteStatus === 'string' || typeof status === 'string') updates.athleteStatus = athleteStatus || status;
 
-    await student.save();
+    const updatedStudent = await User.findOneAndUpdate(
+      { _id: student._id, role: 'student' },
+      { $set: updates },
+      { new: true, runValidators: true }
+    );
+    if (!updatedStudent) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
 
     return res.json({ success: true, message: 'Student profile updated successfully' });
   } catch (error) {

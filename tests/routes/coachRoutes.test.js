@@ -518,7 +518,6 @@ describe('Coach athlete routes', () => {
     const student = {
       _id: 'student-id',
       branchCampus: 'Boac Main',
-      save: jest.fn().mockResolvedValue(true),
     };
     User.findOne
       .mockResolvedValueOnce(student)
@@ -526,18 +525,47 @@ describe('Coach athlete routes', () => {
         select: jest.fn().mockReturnThis(),
         lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
       });
+    User.findOneAndUpdate.mockResolvedValue({
+      ...student,
+      fullname: 'Updated Student',
+      branchCampus: 'Gasan',
+      athleteStatus: 'completed',
+    });
 
     const response = await request(app)
       .put('/api/v1/coach/athletes/student-id')
       .send({ fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'completed' });
 
     expect(response.status).toBe(200);
-    expect(student).toEqual(expect.objectContaining({
-      fullname: 'Updated Student',
-      branchCampus: 'Gasan',
-      athleteStatus: 'completed',
-    }));
-    expect(student.save).toHaveBeenCalledTimes(1);
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: 'student-id', role: 'student' },
+      { $set: { fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'completed' } },
+      { new: true, runValidators: true }
+    );
+  });
+
+  it('updates only the athlete status when saving a Coach Portal badge change', async () => {
+    User.findOne
+      .mockResolvedValueOnce({ _id: 'student-id', branchCampus: 'Boac Main' })
+      .mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+      });
+    User.findOneAndUpdate.mockResolvedValue({
+      _id: 'student-id',
+      athleteStatus: 'disqualified',
+    });
+
+    const response = await request(app)
+      .put('/api/v1/coach/athletes/student-id')
+      .send({ athleteStatus: 'disqualified' });
+
+    expect(response.status).toBe(200);
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: 'student-id', role: 'student' },
+      { $set: { athleteStatus: 'disqualified' } },
+      { new: true, runValidators: true }
+    );
   });
 
   it('serves the assigned student profile image from the stored profile reference and MIME type', async () => {

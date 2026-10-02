@@ -28,6 +28,7 @@ const allowedValues = {
   priority: new Set(['low', 'medium', 'high']),
   targetStudents: new Set(['all', 'student', 'student-athlete'])
 };
+const coachAthleteStatuses = new Set(['completed', 'incomplete', 'disqualified', 'no-documents']);
 
 const invalid = (message) => {
   const error = new Error(message);
@@ -35,7 +36,7 @@ const invalid = (message) => {
   return error;
 };
 
-const normalizeKeyValue = (key, value, depth = 0, parentKey = '') => {
+const normalizeKeyValue = (key, value, depth = 0, parentKey = '', statusValues) => {
   if (depth > 4) {
     throw invalid('Request body is too deeply nested.');
   }
@@ -67,7 +68,9 @@ const normalizeKeyValue = (key, value, depth = 0, parentKey = '') => {
       throw invalid('Please provide a valid date.');
     }
 
-    const values = allowedValues[key];
+    const values = key === 'status' && parentKey === 'body' && statusValues
+      ? statusValues
+      : allowedValues[key];
     if (values && !values.has(normalizedEmail) && !values.has(normalizedEmail.toLowerCase())) {
       throw invalid(`Invalid value for ${key}.`);
     }
@@ -101,7 +104,7 @@ const normalizeKeyValue = (key, value, depth = 0, parentKey = '') => {
 
       return [
       childKey,
-      normalizeKeyValue(childKey, value[childKey], depth + 1, key)
+      normalizeKeyValue(childKey, value[childKey], depth + 1, key, statusValues)
       ];
     }));
   }
@@ -126,7 +129,15 @@ const validateRequestBody = (req, res, next) => {
   }
 
   try {
-    req.body = normalizeKeyValue('body', req.body);
+    const isCoachAthleteStatusUpdate = req.method === 'PUT'
+      && /(?:^|\/)coach\/athletes\/[^/]+\/?$/.test(req.path);
+    req.body = normalizeKeyValue(
+      'body',
+      req.body,
+      0,
+      '',
+      isCoachAthleteStatusUpdate ? coachAthleteStatuses : undefined
+    );
     const isRegistration = /\/register$/.test(req.path);
     const passwordValue = isRegistration ? req.body.password : req.body.newPassword;
     if (passwordValue !== undefined && !isPasswordValid(passwordValue)) {

@@ -80,4 +80,35 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.body.sports).toBe('["Basketball Women","Volleyball Women"]');
   });
+
+  it('accepts Coach Portal athlete badge statuses only on coach athlete updates', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/coach/athletes/student-id',
+      body: { status: 'disqualified', athleteStatus: 'disqualified' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.status).toBe('disqualified');
+  });
+
+  it('continues rejecting Coach Portal badge statuses on other endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/profile',
+      body: { status: 'disqualified' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Invalid value for status.');
+  });
 });
