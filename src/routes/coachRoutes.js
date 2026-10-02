@@ -6,6 +6,10 @@ const User = require('../models/User');
 const StudentAthlete = require('../models/StudentAthlete');
 const StudentProfile = require('../models/StudentProfile');
 const StudentRequirement = require('../models/StudentRequirement');
+const CoachFormHeader = require('../models/CoachFormHeader');
+const CoachEligibilityRequirements = require('../models/CoachEligibilityRequirements');
+const CoachSportsDirector = require('../models/CoachSportsDirector');
+const { initializeCoachRecordContent } = require('../config/coachRecordContent');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
@@ -24,6 +28,7 @@ const studentProjection = '_id id fullname department yearLevel branchCampus dat
 const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle';
 const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle updatedAt';
 const coachAthleteStatuses = new Set(['complete', 'incomplete', 'disqualified', 'no-documents']);
+const coachRecordConfigurationId = 'global';
 const requiredStrasucDocuments = [
   ['medical', 'MEDICAL CERTIFICATE'],
   ['psa', 'PSA'],
@@ -75,6 +80,40 @@ const getStudentSportForCategory = (student, category) => {
     ...(Array.isArray(student.sportParticipation) ? student.sportParticipation.map((entry) => entry?.sport) : []),
   ];
   return savedSports.find((sport) => String(sport || '').trim().toLowerCase() === normalizedCategory) || '';
+};
+
+const updateCoachRecordContent = (Model, fields, body) => {
+  const keys = Object.keys(body || {});
+  if (keys.length !== fields.length
+    || keys.some((key) => !fields.includes(key))
+    || fields.some((field) => typeof body[field] !== 'string'
+      || !body[field].trim()
+      || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(body[field])
+      || body[field].length > 5000)) {
+    const error = new Error('Please provide valid Coach Record text without unsupported control characters.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const values = Object.fromEntries(fields.map((field) => [field, body[field]]));
+  return Model.findOneAndUpdate(
+    { _id: coachRecordConfigurationId },
+    { $set: values },
+    { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+  ).lean();
+};
+
+const getCoachRecordContentErrorResponse = (res, error, message) => {
+  console.error('Coach Record content update error:', error);
+  if (error.statusCode === 400 || error.name === 'ValidationError') {
+    return res.status(400).json({ message: error.statusCode === 400
+      ? error.message
+      : 'Please provide valid Coach Record content.' });
+  }
+  if (error.code === 11000) {
+    return res.status(409).json({ message: 'Coach Record content changed concurrently. Reload and try again.' });
+  }
+  return res.status(500).json({ message });
 };
 
 const mergeStudentRecords = (user, studentAthlete = {}) => ({
@@ -399,6 +438,82 @@ router.put('/coach/profile', protect, authorize('coach'), async (req, res) => {
   } catch (error) {
     console.error('Coach profile update error:', error);
     return res.status(500).json({ message: 'Server error while updating coach profile' });
+  }
+});
+
+router.get('/coach/record-content', protect, authorize('coach'), async (_req, res) => {
+  try {
+    const [formHeader, eligibility, director] = await initializeCoachRecordContent();
+
+    return res.json({
+      formHeader: {
+        olympicsTitle: formHeader.olympicsTitle,
+        scheduleLocationLine: formHeader.scheduleLocationLine,
+        institution: formHeader.institution,
+      },
+      eligibility: {
+        requirementsNotes: eligibility.requirementsNotes,
+      },
+      director: {
+        eventLabel: director.eventLabel,
+        directorName: director.directorName,
+        directorTitle: director.directorTitle,
+      },
+    });
+  } catch (error) {
+    console.error('Coach Record content load error:', error);
+    return res.status(500).json({ message: 'Unable to load Coach Record content.' });
+  }
+});
+
+router.put('/coach/record-content/form-header', protect, authorize('coach'), async (req, res) => {
+  try {
+    const formHeader = await updateCoachRecordContent(
+      CoachFormHeader,
+      ['olympicsTitle', 'scheduleLocationLine', 'institution'],
+      req.body
+    );
+    return res.json({
+      formHeader: {
+        olympicsTitle: formHeader.olympicsTitle,
+        scheduleLocationLine: formHeader.scheduleLocationLine,
+        institution: formHeader.institution,
+      },
+    });
+  } catch (error) {
+    return getCoachRecordContentErrorResponse(res, error, 'Unable to save Coach Record headers.');
+  }
+});
+
+router.put('/coach/record-content/eligibility', protect, authorize('coach'), async (req, res) => {
+  try {
+    const eligibility = await updateCoachRecordContent(
+      CoachEligibilityRequirements,
+      ['requirementsNotes'],
+      req.body
+    );
+    return res.json({ eligibility: { requirementsNotes: eligibility.requirementsNotes } });
+  } catch (error) {
+    return getCoachRecordContentErrorResponse(res, error, 'Unable to save eligibility requirements.');
+  }
+});
+
+router.put('/coach/record-content/director', protect, authorize('coach'), async (req, res) => {
+  try {
+    const director = await updateCoachRecordContent(
+      CoachSportsDirector,
+      ['eventLabel', 'directorName', 'directorTitle'],
+      req.body
+    );
+    return res.json({
+      director: {
+        eventLabel: director.eventLabel,
+        directorName: director.directorName,
+        directorTitle: director.directorTitle,
+      },
+    });
+  } catch (error) {
+    return getCoachRecordContentErrorResponse(res, error, 'Unable to save sports director information.');
   }
 });
 

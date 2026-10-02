@@ -12,7 +12,7 @@ const { corsOptions } = require('./src/config/cors');
 const { getJWTSecret } = require('./src/config/security');
 const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('./src/config/passwords');
 const { getEmailConfigurationStatus } = require('./src/config/email');
-const { apiRateLimiter } = require('./src/config/rateLimit');
+const { apiRateLimiter, coachApiRateLimiter } = require('./src/config/rateLimit');
 const User = require('./src/models/User');
 const StudentProfile = require('./src/models/StudentProfile');
 const { deleteProfilePhoto, uploadProfilePhoto, streamProfilePhoto } = require('./src/config/profilePhotoStorage');
@@ -518,7 +518,7 @@ app.use(BASE_URI, protect, apiRateLimiter, screenerRoutes);
 app.use(BASE_URI, protect, apiRateLimiter, adminRoutes);
 app.use(BASE_URI, protect, apiRateLimiter, borrowingRoutes);
 app.use(BASE_URI, protect, apiRateLimiter, equipmentRoutes);
-app.use(BASE_URI, protect, apiRateLimiter, coachRoutes);
+app.use(BASE_URI, protect, coachApiRateLimiter, coachRoutes);
 app.use(BASE_URI + '/users', protect, apiRateLimiter, userRoutes);
 
 // ============================================================

@@ -4,14 +4,21 @@ const User = require('../../src/models/User');
 const StudentAthlete = require('../../src/models/StudentAthlete');
 const StudentProfile = require('../../src/models/StudentProfile');
 const StudentRequirement = require('../../src/models/StudentRequirement');
+const CoachFormHeader = require('../../src/models/CoachFormHeader');
+const CoachEligibilityRequirements = require('../../src/models/CoachEligibilityRequirements');
+const CoachSportsDirector = require('../../src/models/CoachSportsDirector');
 const StrasucFacultyMember = require('../../src/models/StrasucFacultyMember');
 const coachRoutes = require('../../src/routes/coachRoutes');
+const coachRecordDefaults = require('../../src/config/coachRecordDefaults');
 const { streamProfilePhoto } = require('../../src/config/profilePhotoStorage');
 
 jest.mock('../../src/models/User');
 jest.mock('../../src/models/StudentAthlete');
 jest.mock('../../src/models/StudentProfile');
 jest.mock('../../src/models/StudentRequirement');
+jest.mock('../../src/models/CoachFormHeader');
+jest.mock('../../src/models/CoachEligibilityRequirements');
+jest.mock('../../src/models/CoachSportsDirector');
 jest.mock('../../src/models/StrasucFacultyMember');
 jest.mock('../../src/middleware/auth', () => ({
   protect: jest.fn((req, res, next) => {
@@ -92,6 +99,115 @@ describe('Coach athlete routes', () => {
     }));
     expect(response.body[0]).not.toHaveProperty('email');
     expect(response.body[0].athleteStatus).toBe('completed');
+  });
+
+  it('initializes and returns the singleton Coach Record content defaults', async () => {
+    CoachFormHeader.findOneAndUpdate.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: 'global', ...coachRecordDefaults.formHeader }),
+    });
+    CoachEligibilityRequirements.findOneAndUpdate.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: 'global', ...coachRecordDefaults.eligibility }),
+    });
+    CoachSportsDirector.findOneAndUpdate.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: 'global', ...coachRecordDefaults.director }),
+    });
+
+    const response = await request(app).get('/api/v1/coach/record-content');
+
+    expect(response.status).toBe(200);
+    expect(coachRecordDefaults).toEqual({
+      formHeader: {
+        olympicsTitle: 'STRASUC OLYMPICS 2025',
+        scheduleLocationLine: 'November 22-29, 2025 - MARSU, Boac, Marinduque',
+        institution: 'MARINDUQUE STATE UNIVERSITY',
+      },
+      eligibility: {
+        requirementsNotes:
+          '1.) Official Transcript of Records (TOR) with:\n' +
+          'a.) complete scholastic record of athlete.\n' +
+          'b.) subjects and grades of 2nd Sem SY 2024-2025.\n' +
+          'c.) subjects enrolled for 1st Sem, SY 2025-2026.\n' +
+          'd.) scanned Picture of student.\n' +
+          'e.) School Dry Seal\n\n' +
+          '2.) SCUAA Games Form Numbers: 1, 2, 3.\n' +
+          '3.) PSA Birth Certificate\n' +
+          '4.) CMO. 63-Certificate of Compliance from HEI.',
+      },
+      director: {
+        eventLabel: 'STRASUC Olympics 2025',
+        directorName: 'GERALD M. PAJANUSTAN, PhD',
+        directorTitle: 'SPORTS DIRECTOR',
+      },
+    });
+    expect(response.body).toEqual(coachRecordDefaults);
+    expect(CoachFormHeader.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: 'global' },
+      { $setOnInsert: coachRecordDefaults.formHeader },
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+    expect(CoachEligibilityRequirements.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: 'global' },
+      { $setOnInsert: coachRecordDefaults.eligibility },
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+    expect(CoachSportsDirector.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: 'global' },
+      { $setOnInsert: coachRecordDefaults.director },
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+  });
+
+  it.each([
+    [
+      '/api/v1/coach/record-content/form-header',
+      CoachFormHeader,
+      { olympicsTitle: 'Updated title', scheduleLocationLine: 'Updated schedule', institution: 'Updated school' },
+      'formHeader',
+    ],
+    [
+      '/api/v1/coach/record-content/eligibility',
+      CoachEligibilityRequirements,
+      { requirementsNotes: 'Updated\nrequirements' },
+      'eligibility',
+    ],
+    [
+      '/api/v1/coach/record-content/director',
+      CoachSportsDirector,
+      { eventLabel: 'Updated event', directorName: 'Updated director', directorTitle: 'Updated title' },
+      'director',
+    ],
+  ])('updates the existing singleton Coach Record section at %s', async (path, Model, payload, responseKey) => {
+    Model.findOneAndUpdate.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ _id: 'global', ...payload }),
+    });
+
+    const response = await request(app).put(path).send(payload);
+
+    expect(response.status).toBe(200);
+    expect(response.body[responseKey]).toEqual(payload);
+    expect(Model.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: 'global' },
+      { $set: payload },
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+  });
+
+  it('rejects empty Coach Record content without overwriting the saved value', async () => {
+    const response = await request(app)
+      .put('/api/v1/coach/record-content/eligibility')
+      .send({ requirementsNotes: '   ' });
+
+    expect(response.status).toBe(400);
+    expect(CoachEligibilityRequirements.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported control characters in Coach Record content', async () => {
+    const response = await request(app)
+      .put('/api/v1/coach/record-content/eligibility')
+      .send({ requirementsNotes: 'Requirement\u0000text' });
+
+    expect(response.status).toBe(400);
+    expect(CoachEligibilityRequirements.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
   it('returns missing Screener requirements by student ID and ignores COR', async () => {
@@ -562,11 +678,11 @@ describe('Coach athlete routes', () => {
         .send({ athleteStatus });
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({
+      expect(response.body).toEqual(expect.objectContaining({
         success: true,
         message: 'Student profile updated successfully',
         athleteStatus,
-      });
+      }));
       expect(User.findOne).toHaveBeenCalledWith({
         _id: student._id,
         role: 'student',

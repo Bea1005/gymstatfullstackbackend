@@ -4,6 +4,16 @@ const MAX_STRING_LENGTH = 5000;
 const MAX_FILE_DATA_LENGTH = 14 * 1024 * 1024;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/;
+const COACH_RECORD_CONTENT_FIELDS = new Set([
+  'olympicsTitle',
+  'scheduleLocationLine',
+  'institution',
+  'requirementsNotes',
+  'eventLabel',
+  'directorName',
+  'directorTitle',
+]);
+const FORMATTED_TEXT_FIELDS = COACH_RECORD_CONTENT_FIELDS;
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
   'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
@@ -36,7 +46,7 @@ const invalid = (message) => {
   return error;
 };
 
-const normalizeKeyValue = (key, value, depth = 0, parentKey = '', statusValues) => {
+const normalizeKeyValue = (key, value, depth = 0, parentKey = '', statusValues, routeAllowedFields) => {
   if (depth > 4) {
     throw invalid('Request body is too deeply nested.');
   }
@@ -53,7 +63,9 @@ const normalizeKeyValue = (key, value, depth = 0, parentKey = '', statusValues) 
       throw invalid('Request field is too long.');
     }
 
-    const normalized = key.toLowerCase().includes('password') || key.toLowerCase().includes('base64')
+    const normalized = key.toLowerCase().includes('password')
+      || key.toLowerCase().includes('base64')
+      || FORMATTED_TEXT_FIELDS.has(key)
       ? value
       : value.trim();
     const normalizedEmail = key.toLowerCase().includes('email')
@@ -98,13 +110,13 @@ const normalizeKeyValue = (key, value, depth = 0, parentKey = '', statusValues) 
       throw invalid('Request body contains too many fields.');
     }
     return Object.fromEntries(keys.map((childKey) => {
-      if (key === 'body' && !KNOWN_FIELDS.has(childKey)) {
+      if (key === 'body' && !KNOWN_FIELDS.has(childKey) && !routeAllowedFields?.has(childKey)) {
         throw invalid('Request body contains an unexpected field.');
       }
 
       return [
       childKey,
-      normalizeKeyValue(childKey, value[childKey], depth + 1, key, statusValues)
+      normalizeKeyValue(childKey, value[childKey], depth + 1, key, statusValues, routeAllowedFields)
       ];
     }));
   }
@@ -131,12 +143,15 @@ const validateRequestBody = (req, res, next) => {
   try {
     const isCoachAthleteStatusUpdate = req.method === 'PUT'
       && /(?:^|\/)coach\/athletes\/[^/]+\/?$/.test(req.path);
+    const isCoachRecordContentUpdate = req.method === 'PUT'
+      && /(?:^|\/)coach\/record-content\/(?:form-header|eligibility|director)\/?$/.test(req.path);
     req.body = normalizeKeyValue(
       'body',
       req.body,
       0,
       '',
-      isCoachAthleteStatusUpdate ? coachAthleteStatuses : undefined
+      isCoachAthleteStatusUpdate ? coachAthleteStatuses : undefined,
+      isCoachRecordContentUpdate ? COACH_RECORD_CONTENT_FIELDS : undefined
     );
     const isRegistration = /\/register$/.test(req.path);
     const passwordValue = isRegistration ? req.body.password : req.body.newPassword;

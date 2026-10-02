@@ -96,6 +96,38 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(req.body.status).toBe('disqualified');
   });
 
+  it('accepts Coach Record content fields and preserves multiline eligibility formatting', () => {
+    const requirementsNotes = '\nFirst requirement:\n  indented detail.\n\nThird item.\n';
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/coach/record-content/eligibility',
+      body: { requirementsNotes },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.requirementsNotes).toBe(requirementsNotes);
+  });
+
+  it('does not allow Coach Record content fields on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/profile',
+      body: { institution: 'Not allowed here' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
   it('continues rejecting Coach Portal badge statuses on other endpoints', () => {
     const req = httpMocks.createRequest({
       method: 'PUT',

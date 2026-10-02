@@ -15,6 +15,7 @@ const apiWindowMs = parsePositiveInteger(
   60 * 1000
 );
 const apiMax = parsePositiveInteger(process.env.API_RATE_LIMIT_MAX, 120);
+const coachApiMax = parsePositiveInteger(process.env.COACH_API_RATE_LIMIT_MAX, 300);
 const scheduleRequestWindowMs = parsePositiveInteger(
   process.env.SCHEDULE_REQUEST_RATE_LIMIT_WINDOW_MS,
   15 * 60 * 1000
@@ -37,13 +38,26 @@ const keyGenerator = (req) => {
   return userId ? `user:${String(userId)}` : ipKeyGenerator(req.ip);
 };
 
-const limiterOptions = (windowMs, limit) => ({
+const getCoachApiRateLimitKey = (req) => {
+  const userId = req.user?._id || req.user?.id;
+  const routeGroup = String(req.path || '/')
+    .split('?')[0]
+    .split('/')
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(':') || 'root';
+  const identity = userId ? `user:${String(userId)}` : `ip:${ipKeyGenerator(req.ip)}`;
+  return `coach:${identity}:${String(req.method || 'GET').toUpperCase()}:${routeGroup}`;
+};
+
+const limiterOptions = (windowMs, limit, generateKey = keyGenerator) => ({
   windowMs,
   limit,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  keyGenerator,
+  keyGenerator: generateKey,
   handler: (_req, res) => {
+    res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
     res.status(429).json({
       success: false,
       message: 'Too many requests. Please try again later.'
@@ -68,6 +82,7 @@ const publicIpLimiterOptions = (windowMs, limit) => ({
 
 const loginRateLimiter = rateLimit(limiterOptions(loginWindowMs, loginMax));
 const apiRateLimiter = rateLimit(limiterOptions(apiWindowMs, apiMax));
+const coachApiRateLimiter = rateLimit(limiterOptions(apiWindowMs, coachApiMax, getCoachApiRateLimitKey));
 const passwordResetRateLimiter = rateLimit(limiterOptions(
   parsePositiveInteger(process.env.PASSWORD_RESET_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
   parsePositiveInteger(process.env.PASSWORD_RESET_RATE_LIMIT_MAX, 5)
@@ -83,8 +98,10 @@ const refreshRateLimiter = rateLimit(publicIpLimiterOptions(
 
 module.exports = {
   apiRateLimiter,
+  coachApiRateLimiter,
   loginRateLimiter,
   passwordResetRateLimiter,
   scheduleRequestRateLimiter,
   refreshRateLimiter,
+  getCoachApiRateLimitKey,
 };

@@ -4,6 +4,7 @@ const path = require('path');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const { getAllStudentRequirementModels } = require('../models/studentRequirementCollections');
+const { initializeCoachRecordContent } = require('./coachRecordContent');
 
 const backfillRequirementFiles = async () => {
   const backendRoot = path.resolve(__dirname, '../..');
@@ -77,6 +78,8 @@ const connectDB = async () => {
     await backfillRequirementFiles();
 
     await User.initializeCollections();
+    await initializeCoachRecordContent();
+    console.log('✅ Coach Record configuration collections initialized');
     
     return conn;
     
