@@ -5,6 +5,7 @@ const router = express.Router();
 const User = require('../models/User');
 const StudentAthlete = require('../models/StudentAthlete');
 const StudentProfile = require('../models/StudentProfile');
+const StudentRequirementStrasuc = require('../models/StudentRequirementStrasuc');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
@@ -22,6 +23,47 @@ const getCoachAccess = async (coachId) => {
 const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus';
 const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus';
 const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus updatedAt';
+const requiredStrasucDocuments = [
+  ['medical', 'MEDICAL CERTIFICATE'],
+  ['psa', 'PSA'],
+  ['insurance', 'INSURANCE'],
+  ['profile', 'PROFILE'],
+  ['consent', 'PARENT CONSENT'],
+];
+
+const getMissingStrasucDocuments = (submissions) => {
+  const missing = new Set();
+  const requiredTypes = new Set(requiredStrasucDocuments.map(([type]) => type));
+  const submittedTypes = new Set();
+
+  for (const submission of submissions) {
+    const type = String(submission.requirementType || '').trim().toLowerCase();
+    if (type === 'cor') continue;
+
+    const status = String(submission.status || '').trim().toLowerCase();
+    if (type === 'medical' || type === 'med') {
+      submittedTypes.add('medical');
+      if (status !== 'approved' && status !== 'completed') missing.add('MEDICAL CERTIFICATE');
+    } else if (requiredTypes.has(type)) {
+      submittedTypes.add(type);
+      if (status !== 'approved' && status !== 'completed') {
+        missing.add(requiredStrasucDocuments.find(([requiredType]) => requiredType === type)[1]);
+      }
+    } else if (status !== 'approved' && status !== 'completed') {
+      const label = String(submission.customRequirementLabel || type || 'OTHER REQUIREMENT').trim();
+      missing.add(label.toUpperCase());
+    }
+  }
+
+  for (const [type, label] of requiredStrasucDocuments) {
+    if (!submittedTypes.has(type)) missing.add(label);
+  }
+
+  return [
+    ...requiredStrasucDocuments.map(([, label]) => label).filter((label) => missing.has(label)),
+    ...Array.from(missing).filter((label) => !requiredStrasucDocuments.some(([, requiredLabel]) => requiredLabel === label)),
+  ];
+};
 
 const getStudentSportForCategory = (student, category) => {
   const normalizedCategory = String(category || '').trim().toLowerCase();
@@ -379,6 +421,27 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   } catch (error) {
     console.error('Coach athletes error:', error);
     return res.status(500).json({ message: 'Server error while fetching coach athletes' });
+  }
+});
+
+router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'), async (req, res) => {
+  try {
+    const coach = await User.findOne({
+      _id: req.user._id || req.user.id,
+      role: 'coach',
+      strasucStudentIds: req.params.studentId,
+    }).select('_id').lean();
+    if (!coach) return res.status(403).json({ message: 'You are not authorized to view this student' });
+
+    const submissions = await StudentRequirementStrasuc.find({
+      studentId: req.params.studentId,
+      participationType: 'STRASUC',
+    }).select('requirementType customRequirementLabel status uploadDate').sort({ uploadDate: 1, _id: 1 }).lean();
+
+    return res.json({ missingDocuments: getMissingStrasucDocuments(submissions) });
+  } catch (error) {
+    console.error('Coach student requirements error:', error);
+    return res.status(500).json({ message: 'Unable to load student requirements' });
   }
 });
 

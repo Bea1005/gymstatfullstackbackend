@@ -3,6 +3,7 @@ const request = require('supertest');
 const User = require('../../src/models/User');
 const StudentAthlete = require('../../src/models/StudentAthlete');
 const StudentProfile = require('../../src/models/StudentProfile');
+const StudentRequirementStrasuc = require('../../src/models/StudentRequirementStrasuc');
 const StrasucFacultyMember = require('../../src/models/StrasucFacultyMember');
 const coachRoutes = require('../../src/routes/coachRoutes');
 const { streamProfilePhoto } = require('../../src/config/profilePhotoStorage');
@@ -10,6 +11,7 @@ const { streamProfilePhoto } = require('../../src/config/profilePhotoStorage');
 jest.mock('../../src/models/User');
 jest.mock('../../src/models/StudentAthlete');
 jest.mock('../../src/models/StudentProfile');
+jest.mock('../../src/models/StudentRequirementStrasuc');
 jest.mock('../../src/models/StrasucFacultyMember');
 jest.mock('../../src/middleware/auth', () => ({
   protect: jest.fn((req, res, next) => {
@@ -90,6 +92,79 @@ describe('Coach athlete routes', () => {
     }));
     expect(response.body[0]).not.toHaveProperty('email');
     expect(response.body[0].athleteStatus).toBe('completed');
+  });
+
+  it('returns missing STRASUC requirements by student ID and ignores COR', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+    });
+    StudentRequirementStrasuc.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        { requirementType: 'medical', status: 'approved' },
+        { requirementType: 'psa', status: 'pending' },
+        { requirementType: 'insurance', status: 'approved' },
+        { requirementType: 'profile', status: 'approved' },
+        { requirementType: 'consent', status: 'approved' },
+        { requirementType: 'cor', status: 'rejected' },
+        { requirementType: 'other', customRequirementLabel: 'Athlete Waiver', status: 'rejected' },
+      ]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/athletes/student-id/requirements');
+
+    expect(response.status).toBe(200);
+    expect(response.body.missingDocuments).toEqual(['PSA', 'ATHLETE WAIVER']);
+    expect(User.findOne.mock.calls[0][0]).toEqual({
+      _id: 'coach-id',
+      role: 'coach',
+      strasucStudentIds: 'student-id',
+    });
+    expect(StudentRequirementStrasuc.find.mock.calls[0][0]).toEqual({
+      studentId: 'student-id',
+      participationType: 'STRASUC',
+    });
+  });
+
+  it('returns no missing requirements when all required documents are approved despite rejected COR', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+    });
+    StudentRequirementStrasuc.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        { requirementType: 'medical', status: 'approved' },
+        { requirementType: 'psa', status: 'approved' },
+        { requirementType: 'insurance', status: 'approved' },
+        { requirementType: 'profile', status: 'approved' },
+        { requirementType: 'consent', status: 'approved' },
+        { requirementType: 'cor', status: 'rejected' },
+      ]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/athletes/student-id/requirements');
+
+    expect(response.status).toBe(200);
+    expect(response.body.missingDocuments).toEqual([]);
+  });
+
+  it('denies requirement reads for students outside the Coach gallery', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(null),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/athletes/other-student/requirements');
+
+    expect(response.status).toBe(403);
+    expect(StudentRequirementStrasuc.find).not.toHaveBeenCalled();
   });
 
   it('keeps a selected gallery student whose sport exists only in StudentAthlete', async () => {
