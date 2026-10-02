@@ -5,7 +5,7 @@ const router = express.Router();
 const User = require('../models/User');
 const StudentAthlete = require('../models/StudentAthlete');
 const StudentProfile = require('../models/StudentProfile');
-const StudentRequirementStrasuc = require('../models/StudentRequirementStrasuc');
+const StudentRequirement = require('../models/StudentRequirement');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
@@ -31,7 +31,7 @@ const requiredStrasucDocuments = [
   ['consent', 'PARENT CONSENT'],
 ];
 
-const getMissingStrasucDocuments = (submissions) => {
+const getMissingStudentDocuments = (submissions) => {
   const missing = new Set();
   const requiredTypes = new Set(requiredStrasucDocuments.map(([type]) => type));
   const submittedTypes = new Set();
@@ -433,12 +433,15 @@ router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'
     }).select('_id').lean();
     if (!coach) return res.status(403).json({ message: 'You are not authorized to view this student' });
 
-    const submissions = await StudentRequirementStrasuc.find({
+    const submissions = await StudentRequirement.find({
       studentId: req.params.studentId,
-      participationType: 'STRASUC',
+      $or: [
+        { participationType: 'Intrams' },
+        { participationType: { $exists: false } },
+      ],
     }).select('requirementType customRequirementLabel status uploadDate').sort({ uploadDate: 1, _id: 1 }).lean();
 
-    return res.json({ missingDocuments: getMissingStrasucDocuments(submissions) });
+    return res.json({ missingDocuments: getMissingStudentDocuments(submissions) });
   } catch (error) {
     console.error('Coach student requirements error:', error);
     return res.status(500).json({ message: 'Unable to load student requirements' });
