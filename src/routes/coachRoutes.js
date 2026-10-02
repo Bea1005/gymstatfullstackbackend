@@ -20,9 +20,10 @@ const getCoachAccess = async (coachId) => {
   return coach;
 };
 
-const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus';
-const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus';
-const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus updatedAt';
+const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle';
+const studentSearchProjection = '_id id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle';
+const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle updatedAt';
+const coachAthleteStatuses = new Set(['complete', 'incomplete', 'disqualified', 'no-documents']);
 const requiredStrasucDocuments = [
   ['medical', 'MEDICAL CERTIFICATE'],
   ['psa', 'PSA'],
@@ -102,6 +103,11 @@ const mergeStudentRecords = (user, studentAthlete = {}) => ({
     ? user.sportParticipation
     : (studentAthlete.sportParticipation || []),
   athleteStatus: user.athleteStatus || studentAthlete.athleteStatus || '',
+  formHeaderCenter: user.formHeaderCenter || studentAthlete.formHeaderCenter || '',
+  eligibilityNotes: user.eligibilityNotes || studentAthlete.eligibilityNotes || '',
+  directorEventLabel: user.directorEventLabel || studentAthlete.directorEventLabel || '',
+  directorName: user.directorName || studentAthlete.directorName || '',
+  directorTitle: user.directorTitle || studentAthlete.directorTitle || '',
 });
 
 const findStudentAthleteRecords = async (students) => {
@@ -157,6 +163,11 @@ const toStudentResponse = (student, profile, selectedSport) => ({
   sport: getStudentSportForCategory(student, selectedSport) || student.sport || '',
   branchCampus: student.branchCampus || '',
   athleteStatus: student.athleteStatus || '',
+  formHeaderCenter: student.formHeaderCenter || '',
+  eligibilityNotes: student.eligibilityNotes || '',
+  directorEventLabel: student.directorEventLabel || '',
+  directorName: student.directorName || '',
+  directorTitle: student.directorTitle || '',
   profilePhotoUrl: profile?.imageFileId ? `/coach/students/${student._id}/profile-photo` : '',
 });
 
@@ -497,7 +508,28 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
 // Update an assigned student profile
 router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req, res) => {
   try {
-    const { fullname, email, department, course, yearLevel, dateOfBirth, dob, branchCampus, location, profilePhoto, photo, sport, status, athleteStatus } = req.body;
+    const {
+      fullname,
+      email,
+      department,
+      course,
+      yearLevel,
+      dateOfBirth,
+      dob,
+      branchCampus,
+      location,
+      profilePhoto,
+      photo,
+      sport,
+      status,
+      athleteStatus,
+      formHeaderCenter,
+      eligibilityRequirements,
+      directorInfo,
+      directorEventLabel,
+      directorName,
+      directorTitle,
+    } = req.body;
     const student = await User.findOne({ _id: req.params.studentId, role: 'student' });
 
     if (!student) {
@@ -536,7 +568,37 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
     }
     if (typeof profilePhoto === 'string' || typeof photo === 'string') updates.profilePhoto = profilePhoto || photo;
     if (typeof sport === 'string') updates.sport = sport;
-    if (typeof athleteStatus === 'string' || typeof status === 'string') updates.athleteStatus = athleteStatus || status;
+    if (typeof athleteStatus === 'string' || typeof status === 'string') {
+      const requestedStatus = String(athleteStatus || status).trim().toLowerCase();
+      const statusAliases = {
+        completed: 'complete',
+        approved: 'complete',
+        rejected: 'incomplete',
+        incompleted: 'incomplete',
+      };
+      const normalizedStatus = statusAliases[requestedStatus] || requestedStatus;
+      if (!coachAthleteStatuses.has(normalizedStatus)) {
+        return res.status(400).json({ message: 'Please select a valid student status badge' });
+      }
+      updates.athleteStatus = normalizedStatus;
+    }
+    if (typeof formHeaderCenter === 'string') {
+      updates.formHeaderCenter = formHeaderCenter;
+    }
+    if (typeof eligibilityRequirements === 'string') {
+      updates.eligibilityNotes = eligibilityRequirements;
+    } else if (eligibilityRequirements && typeof eligibilityRequirements === 'object') {
+      updates.eligibilityNotes = typeof eligibilityRequirements.notes === 'string'
+        ? eligibilityRequirements.notes
+        : '';
+    }
+    const directorPayload = directorInfo && typeof directorInfo === 'object' ? directorInfo : {};
+    const resolvedDirectorEventLabel = typeof directorEventLabel === 'string' ? directorEventLabel : directorPayload.eventLabel;
+    const resolvedDirectorName = typeof directorName === 'string' ? directorName : directorPayload.name;
+    const resolvedDirectorTitle = typeof directorTitle === 'string' ? directorTitle : directorPayload.title;
+    if (typeof resolvedDirectorEventLabel === 'string') updates.directorEventLabel = resolvedDirectorEventLabel;
+    if (typeof resolvedDirectorName === 'string') updates.directorName = resolvedDirectorName;
+    if (typeof resolvedDirectorTitle === 'string') updates.directorTitle = resolvedDirectorTitle;
 
     const updatedStudent = await User.findOneAndUpdate(
       { _id: student._id, role: 'student' },
@@ -547,7 +609,16 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    return res.json({ success: true, message: 'Student profile updated successfully' });
+    return res.json({
+      success: true,
+      message: 'Student profile updated successfully',
+      athleteStatus: updatedStudent.athleteStatus || updates.athleteStatus || '',
+      formHeaderCenter: updatedStudent.formHeaderCenter ?? updates.formHeaderCenter ?? '',
+      eligibilityNotes: updatedStudent.eligibilityNotes ?? updates.eligibilityNotes ?? '',
+      directorEventLabel: updatedStudent.directorEventLabel ?? updates.directorEventLabel ?? '',
+      directorName: updatedStudent.directorName ?? updates.directorName ?? '',
+      directorTitle: updatedStudent.directorTitle ?? updates.directorTitle ?? '',
+    });
   } catch (error) {
     console.error('Coach athlete update error:', error);
     if (error.name === 'ValidationError') {

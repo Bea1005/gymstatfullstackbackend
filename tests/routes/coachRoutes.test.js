@@ -529,43 +529,70 @@ describe('Coach athlete routes', () => {
       ...student,
       fullname: 'Updated Student',
       branchCampus: 'Gasan',
-      athleteStatus: 'completed',
+      athleteStatus: 'complete',
     });
 
     const response = await request(app)
       .put('/api/v1/coach/athletes/student-id')
-      .send({ fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'completed' });
+      .send({ fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'complete' });
 
     expect(response.status).toBe(200);
+    expect(response.body.athleteStatus).toBe('complete');
     expect(User.findOneAndUpdate).toHaveBeenCalledWith(
       { _id: 'student-id', role: 'student' },
-      { $set: { fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'completed' } },
+      { $set: { fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'complete' } },
       { new: true, runValidators: true }
     );
   });
 
-  it('updates only the athlete status when saving a Coach Portal badge change', async () => {
+  it.each(['complete', 'incomplete', 'disqualified', 'no-documents'])(
+    'lets an assigned coach set the %s status badge',
+    async (athleteStatus) => {
+      const student = { _id: '6abfd0a30650e44ccd090471', branchCampus: 'Boac Main' };
+      User.findOne
+        .mockResolvedValueOnce(student)
+        .mockReturnValueOnce({
+          select: jest.fn().mockReturnThis(),
+          lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+        });
+      User.findOneAndUpdate.mockResolvedValue({ ...student, athleteStatus });
+
+      const response = await request(app)
+        .put(`/api/v1/coach/athletes/${student._id}`)
+        .send({ athleteStatus });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        success: true,
+        message: 'Student profile updated successfully',
+        athleteStatus,
+      });
+      expect(User.findOne).toHaveBeenCalledWith({
+        _id: student._id,
+        role: 'student',
+      });
+      expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+        { _id: student._id, role: 'student' },
+        { $set: { athleteStatus } },
+        { new: true, runValidators: true }
+      );
+    }
+  );
+
+  it('rejects unsupported Coach Portal athlete status badge values', async () => {
     User.findOne
       .mockResolvedValueOnce({ _id: 'student-id', branchCampus: 'Boac Main' })
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
         lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
       });
-    User.findOneAndUpdate.mockResolvedValue({
-      _id: 'student-id',
-      athleteStatus: 'disqualified',
-    });
 
     const response = await request(app)
       .put('/api/v1/coach/athletes/student-id')
-      .send({ athleteStatus: 'disqualified' });
+      .send({ athleteStatus: 'not-a-status' });
 
-    expect(response.status).toBe(200);
-    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
-      { _id: 'student-id', role: 'student' },
-      { $set: { athleteStatus: 'disqualified' } },
-      { new: true, runValidators: true }
-    );
+    expect(response.status).toBe(400);
+    expect(User.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
   it('serves the assigned student profile image from the stored profile reference and MIME type', async () => {

@@ -81,6 +81,26 @@ const StudentAthleteSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  formHeaderCenter: {
+    type: String,
+    default: ''
+  },
+  eligibilityNotes: {
+    type: String,
+    default: ''
+  },
+  directorEventLabel: {
+    type: String,
+    default: ''
+  },
+  directorName: {
+    type: String,
+    default: ''
+  },
+  directorTitle: {
+    type: String,
+    default: ''
+  },
   sportParticipation: {
     type: [
       {

@@ -135,6 +135,26 @@ const baseUserSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  formHeaderCenter: {
+    type: String,
+    default: ''
+  },
+  eligibilityNotes: {
+    type: String,
+    default: ''
+  },
+  directorEventLabel: {
+    type: String,
+    default: ''
+  },
+  directorName: {
+    type: String,
+    default: ''
+  },
+  directorTitle: {
+    type: String,
+    default: ''
+  },
   passwordResetOtpHash: {
     type: String,
     default: null,
@@ -248,6 +268,11 @@ const buildRoleDocument = (user) => {
     roleDocPayload.studentNumber = source.studentNumber || '';
     roleDocPayload.graduationYear = source.graduationYear || '';
     roleDocPayload.athleteStatus = source.athleteStatus || '';
+    roleDocPayload.formHeaderCenter = source.formHeaderCenter || '';
+    roleDocPayload.eligibilityNotes = source.eligibilityNotes || '';
+    roleDocPayload.directorEventLabel = source.directorEventLabel || '';
+    roleDocPayload.directorName = source.directorName || '';
+    roleDocPayload.directorTitle = source.directorTitle || '';
     roleDocPayload.sportParticipation = Array.isArray(source.sportParticipation) ? source.sportParticipation : [];
   }
 
