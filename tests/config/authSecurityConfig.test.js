@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe('production authentication security configuration', () => {
-  it('uses Strict, HttpOnly, Secure cookies for same-site production', () => {
+  it('uses Lax, HttpOnly, Secure cookies for same-site production', () => {
     const { setAuthenticationCookies } = loadWithEnvironment(
       '../../src/config/authTokens',
       { NODE_ENV: 'production', AUTH_COOKIE_SITE_MODE: 'same-site' }
@@ -52,12 +52,36 @@ describe('production authentication security configuration', () => {
     expect(response.setHeader).toHaveBeenCalledWith('X-CSRF-Token', 'csrf');
     expect(response.cookie).toHaveBeenCalledTimes(3);
     response.cookie.mock.calls.forEach(([, , options]) => {
-      expect(options.sameSite).toBe('strict');
+      expect(options.sameSite).toBe('lax');
       expect(options.secure).toBe(true);
     });
     expect(response.cookie.mock.calls[0][2].httpOnly).toBe(true);
     expect(response.cookie.mock.calls[1][2].httpOnly).toBe(true);
     expect(response.cookie.mock.calls[2][2].httpOnly).toBe(false);
+  });
+
+  it('clears same-site production cookies with matching Lax and Secure attributes', () => {
+    const { clearAuthenticationCookies } = loadWithEnvironment(
+      '../../src/config/authTokens',
+      { NODE_ENV: 'production', AUTH_COOKIE_SITE_MODE: 'same-site' }
+    );
+    const response = { clearCookie: jest.fn() };
+
+    clearAuthenticationCookies(response, 'screener');
+
+    expect(response.clearCookie.mock.calls.map(([name]) => name)).toEqual([
+      'accessToken_screener', 'accessToken',
+      'refreshToken_screener', 'refreshToken',
+      'csrfToken_screener', 'csrfToken',
+    ]);
+    response.clearCookie.mock.calls.forEach(([name, options]) => {
+      expect(options).toEqual(expect.objectContaining({
+        secure: true,
+        sameSite: 'lax',
+        path: '/',
+      }));
+      expect(options.httpOnly).toBe(name.startsWith('accessToken') || name.startsWith('refreshToken'));
+    });
   });
 
   it('uses None only with explicitly Secure cross-site cookies', () => {

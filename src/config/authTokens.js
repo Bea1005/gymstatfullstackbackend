@@ -34,7 +34,7 @@ if (cookieSiteMode === 'cross-site' && process.env.AUTH_COOKIE_SECURE !== 'true'
 }
 
 const cookieSecure = isProduction || process.env.AUTH_COOKIE_SECURE === 'true';
-const sameSite = cookieSiteMode === 'cross-site' ? 'none' : 'strict';
+const sameSite = cookieSiteMode === 'cross-site' ? 'none' : 'lax';
 const IS_CROSS_SITE_COOKIE_MODE = cookieSiteMode === 'cross-site';
 
 const baseCookieOptions = {

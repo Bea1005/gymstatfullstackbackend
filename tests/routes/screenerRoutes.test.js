@@ -99,8 +99,9 @@ describe('Screener routes', () => {
       select: jest.fn().mockReturnThis(),
       sort: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue([
-        { _id: 'student-own', fullname: 'Own Department Student', department: 'CICS' },
-        { _id: 'student-other', fullname: 'Other Department Student', department: 'Engineering' }
+        { _id: 'student-own', fullname: 'Own Department Student', department: 'CICS', yearLevel: 'I' },
+        { _id: 'student-other', fullname: 'Other Department Student', department: 'Engineering', yearLevel: ' II ' },
+        { _id: 'student-without-year', fullname: 'Student Without Year Level', department: 'Engineering', yearLevel: '' }
       ])
     });
     StudentRequirement.find.mockReturnValue({
@@ -110,16 +111,18 @@ describe('Screener routes', () => {
       lean: jest.fn().mockResolvedValue([
         {
           _id: 'own-submission',
-          studentId: { _id: 'student-own', fullname: 'Own Department Student', department: 'CICS' },
+          studentId: { _id: 'student-own', fullname: 'Own Department Student', department: 'CICS', yearLevel: 'I' },
           requirementType: 'cor',
           fileName: 'own.pdf',
+          fileSize: 3,
           fileData: Buffer.from('own')
         },
         {
           _id: 'other-submission',
-          studentId: { _id: 'student-other', fullname: 'Other Department Student', department: 'Engineering' },
+          studentId: { _id: 'student-other', fullname: 'Other Department Student', department: 'Engineering', yearLevel: 'II' },
           requirementType: 'cor',
           fileName: 'other.pdf',
+          fileSize: 5,
           fileData: Buffer.from('other')
         }
       ])
@@ -131,7 +134,26 @@ describe('Screener routes', () => {
       .set('x-test-department', 'CICS');
 
     expect(response.status).toBe(200);
-    expect(response.body.data.map((student) => student.department)).toEqual(['Engineering']);
+    expect(response.body.data.map((student) => student.department)).toEqual(['Engineering', 'Engineering']);
+    expect(response.body.data.map((student) => student.yearLevel)).toEqual([' II ', '']);
+    expect(response.body.data[0].requirements.documents[0].hasUpload).toBe(true);
+    expect(StudentRequirement.find).toHaveBeenCalledWith({
+      $and: [
+        { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] },
+        { studentId: { $in: ['student-other', 'student-without-year'] } }
+      ]
+    });
+    expect(StudentRequirement.find().populate).not.toHaveBeenCalled();
+    expect(StudentRequirement.find().select).toHaveBeenCalledWith(
+      'studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks'
+    );
+    expect(User.find().select).toHaveBeenCalledWith(
+      'fullname username department sport yearLevel createdAt'
+    );
+    expect(User.find).toHaveBeenCalledWith({
+      role: 'student',
+      department: { $exists: true, $nin: ['', null, 'CICS'] }
+    });
   });
 
   it('denies Screener review of a same-department requirement', async () => {

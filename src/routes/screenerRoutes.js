@@ -206,10 +206,17 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
 
     // Get all students
     const participationType = normalizeParticipationType(req.query.participationType);
-    const studentsFromDb = participationType === 'STRASUC'
+    const studentQuery = { role: 'student' };
+    if (isScreener) {
+      studentQuery.department = {
+        $exists: true,
+        $nin: ['', null, screenerDepartment]
+      };
+    }
+    const studentsFromDb = participationType === 'STRASUC' && !isScreener
       ? []
-      : await User.find({ role: 'student' })
-      .select('-password')
+      : await User.find(studentQuery)
+      .select('fullname username department sport yearLevel createdAt')
       .sort({ createdAt: -1 })
       .lean();
     const visibleStudents = isScreener
@@ -224,25 +231,38 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     const participationFilter = participationType === 'Intrams'
       ? { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] }
       : { participationType: 'STRASUC' };
-    const submissions = await RequirementModel.find(participationFilter)
-      .select('+fileData')
-      .populate('studentId', 'fullname department sport id username')
-      .sort({ uploadDate: -1, _id: -1 })
-      .lean();
+    const submissionFilter = isScreener
+      ? {
+          $and: [
+            participationFilter,
+            { studentId: { $in: visibleStudents.map((student) => student._id) } }
+          ]
+        }
+      : participationFilter;
+    let submissionsQuery = RequirementModel.find(submissionFilter)
+      .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks')
+      .sort({ uploadDate: -1, _id: -1 });
+    if (!isScreener || participationType === 'STRASUC') {
+      submissionsQuery = submissionsQuery.populate('studentId', 'fullname department yearLevel sport id username');
+    }
+    const submissions = await submissionsQuery.lean();
 
     console.log(`📄 Found ${submissions.length} requirement submissions`);
 
     // Create a map of students
     const studentsById = new Map();
+    const studentRecordsById = new Map();
 
     // Add all students from the users collection
     visibleStudents.forEach((student) => {
       const studentId = student._id.toString();
+      studentRecordsById.set(studentId, student);
       studentsById.set(studentId, {
         id: studentId,
         name: student.fullname || student.username || 'Unknown Student',
         department: student.department || 'Not specified',
         sport: student.sport || 'Not specified',
+        yearLevel: student.yearLevel || '',
         requirements: {
             cor: null,
             med: null,
@@ -258,13 +278,18 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     // Keep every stored record once. The detail page renders one card per record.
     for (const submission of submissions) {
       let student = submission.studentId;
+      const lookupId = submission.studentId && submission.studentId.toString
+        ? submission.studentId.toString()
+        : submission.studentId;
+      if ((!student || !student.fullname) && studentRecordsById.has(String(lookupId))) {
+        student = studentRecordsById.get(String(lookupId));
+      }
 
       // If populate didn't work, try to find the student manually
       if (!student || !student.fullname) {
-        const lookupId = submission.studentId && submission.studentId.toString ? submission.studentId.toString() : submission.studentId;
         try {
           const found = await User.findOne({ $or: [{ _id: lookupId }, { id: lookupId }] })
-            .select('-password')
+            .select('fullname username department sport yearLevel id')
             .lean();
           if (found) student = found;
         } catch (err) {
@@ -280,6 +305,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
           fullname: submission.fileName ? (submission.fileName.split('_')[0] || 'Unknown Student') : 'Unknown Student',
           department: 'Not specified',
           sport: submission.sport || 'Not specified',
+          yearLevel: '',
           id: fallbackId
         };
       }
@@ -300,6 +326,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
           name: student.fullname || student.username || 'Unknown Student',
           department: student.department || 'Not specified',
           sport: student.sport || 'Not specified',
+          yearLevel: student.yearLevel || '',
           requirements: {
             cor: null,
             med: null,
@@ -315,7 +342,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       // Add the requirement to the student's requirements
       const studentEntry = studentsById.get(studentId);
       const storedFilePath = resolveStoredFilePath(submission.filePath);
-      const hasUpload = Boolean(toFileBuffer(submission.fileData)?.length || (storedFilePath && fs.existsSync(storedFilePath)));
+      const hasUpload = Number(submission.fileSize) > 0 || Boolean(storedFilePath && fs.existsSync(storedFilePath));
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
