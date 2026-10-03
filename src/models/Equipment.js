@@ -8,7 +8,8 @@ const EquipmentSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['Balls', 'Rackets', 'Net', 'General', 'Sports Equipment'],
+    required: true,
+    trim: true,
     default: 'Sports Equipment'
   },
   referenceId: {

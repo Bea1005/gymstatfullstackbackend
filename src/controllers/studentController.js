@@ -595,6 +595,67 @@ exports.getAnnouncements = async (req, res) => {
   }
 };
 
+// @desc Get announcements with the authenticated student's read state
+// @route GET /api/student/announcements/notifications
+// @access Private (Student only)
+exports.getStudentRequirementAnnouncements = async (req, res) => {
+  try {
+    const announcements = await Announcement.find({})
+      .sort({ date: -1 })
+      .lean();
+    const readAnnouncementIds = new Set(
+      (req.user.readAnnouncementIds || []).map((id) => String(id))
+    );
+    const data = announcements.map((announcement) => ({
+      ...announcement,
+      isRead: readAnnouncementIds.has(String(announcement._id))
+    }));
+
+    res.status(200).json({
+      success: true,
+      count: data.length,
+      unreadCount: data.filter((announcement) => !announcement.isRead).length,
+      data
+    });
+  } catch (error) {
+    console.error('Failed to fetch student requirement notifications:', error);
+    res.status(500).json({ success: false, message: 'Unable to load notifications. Please try again.' });
+  }
+};
+
+// @desc Mark an announcement as read for the authenticated student
+// @route PUT /api/student/announcements/:id/read
+// @access Private (Student only)
+exports.markStudentAnnouncementRead = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid announcement ID.' });
+    }
+
+    const announcement = await Announcement.findOne({
+      _id: req.params.id
+    }).select('_id');
+
+    if (!announcement) {
+      return res.status(404).json({ success: false, message: 'Announcement not found.' });
+    }
+
+    const result = await User.updateOne(
+      { _id: req.user._id },
+      { $addToSet: { readAnnouncementIds: announcement._id } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Student account not found.' });
+    }
+
+    res.status(200).json({ success: true, announcementId: String(announcement._id) });
+  } catch (error) {
+    console.error('Failed to mark student requirement notification as read:', error);
+    res.status(500).json({ success: false, message: 'Unable to update notification status. Please try again.' });
+  }
+};
+
 // @desc Get pending count for student dashboard
 // @route GET /api/student/stats
 // @access Private (Student only)

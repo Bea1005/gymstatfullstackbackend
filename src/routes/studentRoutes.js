@@ -11,6 +11,8 @@ const {
   downloadRequirement,
   deleteRequirement,
   getAnnouncements,
+  getStudentRequirementAnnouncements,
+  markStudentAnnouncementRead,
   getStudentStats
 } = require('../controllers/studentController');
 
@@ -28,6 +30,8 @@ router.post('/requirements', requirementUpload.single('file'), validateRequestBo
 router.post('/requirements/import-previous-year', importPreviousYearRequirements);
 router.get('/requirements', getStudentRequirements);
 router.put('/requirements/:id/notifications/read', markRequirementNotificationRead);
+router.get('/announcements/notifications', getStudentRequirementAnnouncements);
+router.put('/announcements/:id/read', markStudentAnnouncementRead);
 router.get('/requirements/:id/download', downloadRequirement);
 router.delete('/requirements/:id', deleteRequirement);
 router.get('/stats', getStudentStats);

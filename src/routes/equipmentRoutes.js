@@ -4,6 +4,7 @@ const { protect, authorize } = require('../middleware/auth');
 const {
   getEquipment,
   getEquipmentById,
+  getEquipmentReferenceIds,
   createEquipment,
   updateEquipment,
   deleteEquipment,
@@ -23,6 +24,7 @@ router.use('/admin', authorize('admin'));
 // Equipment management
 router.get('/admin/equipment', getEquipment);
 router.post('/admin/equipment', createEquipment);
+router.get('/admin/equipment/reference-ids', getEquipmentReferenceIds);
 router.get('/admin/equipment/options', getEquipmentOptions);
 router.get('/admin/equipment/stats', getEquipmentStats);
 router.get('/admin/equipment/low-stock', getLowStockEquipment);

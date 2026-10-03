@@ -35,6 +35,10 @@ const baseUserSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  readAnnouncementIds: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Announcement' }],
+    default: []
+  },
   password: {
     type: String,
     required: true

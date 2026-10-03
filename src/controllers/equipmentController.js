@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Equipment = require('../models/Equipment');
 
 // Predefined sports equipment options
@@ -48,9 +49,86 @@ const buildEquipmentPayload = (item) => ({
 
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
 
+const normalizeTypeCode = (type) => normalizeString(type)
+  .toUpperCase()
+  .replace(/[^A-Z0-9]/g, '');
+
+const EQUIPMENT_TYPE_CODES = new Map([
+  ['BASKETBALL', '1B'],
+  ['BASKETBALLS', '1B'],
+  ['BALLS', '1B']
+]);
+
+const normalizeEquipmentCode = (name, type) => {
+  const normalizedName = normalizeTypeCode(name);
+  const normalizedType = normalizeTypeCode(type);
+  return EQUIPMENT_TYPE_CODES.get(normalizedName)
+    || EQUIPMENT_TYPE_CODES.get(normalizedType)
+    || normalizedType;
+};
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const parseQuantity = (value) => {
+  if (!['number', 'string'].includes(typeof value)) return null;
+  if (typeof value === 'string' && !/^\d+$/.test(value)) return null;
+  const quantity = Number(value);
+  return Number.isSafeInteger(quantity) && quantity > 0 ? quantity : null;
+};
+
 const parseNonNegativeNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
+const getNextEquipmentReferenceIds = async (typeCode, quantity, session, registeredAt = new Date()) => {
+  const month = String(registeredAt.getMonth() + 1).padStart(2, '0');
+  const day = String(registeredAt.getDate()).padStart(2, '0');
+  const datePrefix = `${typeCode}${month}${day}`;
+  let query = Equipment.find({
+    referenceId: { $regex: `^${escapeRegex(datePrefix)}(\\d{3})$`, $options: 'i' }
+  }).select('referenceId');
+
+  if (session) query = query.session(session);
+  const existing = await query.lean();
+  const highestSequence = existing.reduce((highest, item) => {
+    const match = String(item.referenceId || '').match(/(\d{3})$/);
+    return match ? Math.max(highest, Number(match[1])) : highest;
+  }, 0);
+
+  if (highestSequence + quantity > 999) {
+    const sequenceError = new Error('The Reference ID sequence is exhausted for this equipment type and date.');
+    sequenceError.code = 'REFERENCE_ID_SEQUENCE_EXHAUSTED';
+    throw sequenceError;
+  }
+
+  return Array.from({ length: quantity }, (_, index) => (
+    `${datePrefix}${String(highestSequence + index + 1).padStart(3, '0')}`
+  ));
+};
+
+// @desc Preview equipment Reference IDs from persisted records
+// @route GET /api/v1/admin/equipment/reference-ids
+const getEquipmentReferenceIds = async (req, res) => {
+  try {
+    const typeCode = normalizeEquipmentCode(req.query.name, req.query.type);
+    const quantity = parseQuantity(req.query.quantity);
+    if (!typeCode) {
+      return res.status(400).json({ success: false, message: 'A valid equipment type is required.' });
+    }
+    if (quantity === null) {
+      return res.status(400).json({ success: false, message: 'Quantity must be a positive whole number.' });
+    }
+
+    const referenceIds = await getNextEquipmentReferenceIds(typeCode, quantity);
+    return res.status(200).json({ success: true, referenceIds });
+  } catch (error) {
+    if (error.code === 'REFERENCE_ID_SEQUENCE_EXHAUSTED') {
+      return res.status(409).json({ success: false, message: error.message });
+    }
+    console.error('Generate equipment Reference IDs error:', error);
+    return res.status(500).json({ success: false, message: 'Unable to generate Reference IDs.' });
+  }
 };
 
 // @desc    Get all equipment
@@ -113,7 +191,7 @@ const getEquipmentById = async (req, res) => {
 // @route   POST /api/v1/admin/equipment
 const createEquipment = async (req, res) => {
   try {
-    const { name, type, referenceId, condition, category, totalStock } = req.body;
+    const { name, type, referenceId, condition, category, totalStock, quantity, referenceIds: requestedReferenceIds } = req.body;
 
     const trimmedName = normalizeString(name);
     const trimmedReferenceId = normalizeString(referenceId);
@@ -122,7 +200,7 @@ const createEquipment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Equipment name is required' });
     }
 
-    if (!trimmedReferenceId) {
+    if (quantity === undefined && !trimmedReferenceId) {
       return res.status(400).json({ success: false, message: 'Reference ID is required' });
     }
 
@@ -142,6 +220,83 @@ const createEquipment = async (req, res) => {
       : (VALID_CATEGORIES.includes(category) ? category : (VALID_CATEGORIES.includes(selectedType) ? selectedType : 'Sports Equipment'));
     const parsedTotalStock = parseNonNegativeNumber(totalStock, 1);
     const parsedOnLoan = parseNonNegativeNumber(req.body.onLoan, 0);
+
+    if (quantity !== undefined) {
+      const parsedQuantity = parseQuantity(quantity);
+      if (parsedQuantity === null) {
+        return res.status(400).json({ success: false, message: 'Quantity must be a positive whole number.' });
+      }
+
+      if (parsedOnLoan !== 0) {
+        return res.status(400).json({ success: false, message: 'New equipment cannot have units on loan.' });
+      }
+
+      const prefix = normalizeEquipmentCode(name, type);
+      if (!prefix) {
+        return res.status(400).json({ success: false, message: 'A valid equipment type is required.' });
+      }
+      if (!Array.isArray(requestedReferenceIds)
+        || requestedReferenceIds.length !== parsedQuantity
+        || requestedReferenceIds.some((referenceId) => typeof referenceId !== 'string')) {
+        return res.status(400).json({ success: false, message: 'Select every generated Reference ID before registering.' });
+      }
+
+      let session;
+      let createdEquipment = [];
+      const registeredAt = new Date();
+      try {
+        session = await mongoose.startSession();
+        let attempts = 0;
+        while (attempts < 5) {
+          attempts += 1;
+          try {
+            await session.withTransaction(async () => {
+              const currentReferenceIds = await getNextEquipmentReferenceIds(
+                prefix,
+                parsedQuantity,
+                session,
+                registeredAt
+              );
+              if (requestedReferenceIds.some((referenceId, index) => referenceId !== currentReferenceIds[index])) {
+                const staleSequenceError = new Error('The generated Reference IDs are no longer current. Review and select the updated IDs.');
+                staleSequenceError.code = 'STALE_REFERENCE_IDS';
+                throw staleSequenceError;
+              }
+              const records = Array.from({ length: parsedQuantity }, (_, index) => ({
+                name: trimmedName,
+                type: prefix,
+                referenceId: currentReferenceIds[index],
+                category: normalizedCategory,
+                totalStock: 1,
+                onLoan: 0,
+                condition: normalizedCondition
+              }));
+              createdEquipment = await Equipment.create(records, { session });
+            });
+            break;
+          } catch (error) {
+            if (error.code !== 11000 || attempts >= 5) throw error;
+          }
+        }
+      } finally {
+        if (session) {
+          try {
+            await session.endSession();
+          } catch (error) {
+            console.error('Unable to close equipment registration transaction:', error);
+          }
+        }
+      }
+
+      const data = createdEquipment.map(buildEquipmentPayload);
+      const referenceIds = data.map((equipment) => equipment.referenceId);
+      return res.status(201).json({
+        success: true,
+        message: `Registered ${data.length} ${trimmedName} unit(s): ${referenceIds.join(', ')}`,
+        referenceIds,
+        data
+      });
+    }
 
     if (parsedOnLoan > parsedTotalStock) {
       return res.status(400).json({
@@ -174,6 +329,12 @@ const createEquipment = async (req, res) => {
       data: buildEquipmentPayload(newEquipment)
     });
   } catch (error) {
+    if (error.code === 'STALE_REFERENCE_IDS') {
+      return res.status(409).json({ success: false, message: error.message });
+    }
+    if (error.code === 'REFERENCE_ID_SEQUENCE_EXHAUSTED') {
+      return res.status(409).json({ success: false, message: error.message });
+    }
     console.error('Create equipment error:', error);
 
     if (error.code === 11000) {
@@ -503,6 +664,7 @@ const getEquipmentCategories = async (req, res) => {
 module.exports = {
   getEquipment,
   getEquipmentById,
+  getEquipmentReferenceIds,
   createEquipment,
   updateEquipment,
   deleteEquipment,

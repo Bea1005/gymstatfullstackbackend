@@ -1,6 +1,7 @@
 const { 
   getEquipment, 
   getEquipmentById,
+  getEquipmentReferenceIds,
   createEquipment, 
   updateEquipment, 
   deleteEquipment,
@@ -14,6 +15,7 @@ const {
 } = require('../../src/controllers/equipmentController');
 const Equipment = require('../../src/models/Equipment');
 const httpMocks = require('node-mocks-http');
+const mongoose = require('mongoose');
 
 jest.mock('../../src/models/Equipment');
 
@@ -30,6 +32,10 @@ describe('Equipment Controller Unit Tests', () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+    jest.useRealTimers();
+    if (jest.isMockFunction(mongoose.startSession)) {
+      mongoose.startSession.mockRestore();
+    }
   });
 
   describe('GET /admin/equipment (getEquipment)', () => {
@@ -116,6 +122,79 @@ describe('Equipment Controller Unit Tests', () => {
 
       expect(res.statusCode).toBe(404);
       expect(res._getJSONData().message).toBe('Equipment not found');
+    });
+  });
+
+  describe('GET /admin/equipment/reference-ids', () => {
+    it('generates the expected dated format with 3-digit IDs for multiple units', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      req.query = { name: 'Basketball', type: 'BALLS', quantity: '4' };
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      };
+      Equipment.find.mockReturnValue(query);
+
+      await getEquipmentReferenceIds(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res._getJSONData().referenceIds).toEqual([
+        '1B1004001',
+        '1B1004002',
+        '1B1004003',
+        '1B1004004'
+      ]);
+      expect(Equipment.find).toHaveBeenCalledWith({
+        referenceId: { $regex: '^1B1004(\\d{3})$', $options: 'i' }
+      });
+    });
+
+    it('returns individual IDs from the highest existing sequence without reserving them', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      req.query = { type: 'BASK', quantity: '3' };
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([
+          { referenceId: 'BASK1004002' },
+          { referenceId: 'BASK1004009' }
+        ])
+      };
+      Equipment.find.mockReturnValue(query);
+
+      await getEquipmentReferenceIds(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res._getJSONData().referenceIds).toEqual(['BASK1004010', 'BASK1004011', 'BASK1004012']);
+      expect(Equipment.find).toHaveBeenCalledWith({
+        referenceId: { $regex: '^BASK1004(\\d{3})$', $options: 'i' }
+      });
+      expect(Equipment.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request that would exceed the 3-digit sequence', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      req.query = { type: '1B', quantity: '2' };
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([{ referenceId: '1B1004999' }])
+      };
+      Equipment.find.mockReturnValue(query);
+
+      await getEquipmentReferenceIds(req, res);
+
+      expect(res.statusCode).toBe(409);
+      expect(res._getJSONData().success).toBe(false);
+      expect(Equipment.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid quantities without querying or creating records', async () => {
+      req.query = { type: 'BASK', quantity: '1.5' };
+
+      await getEquipmentReferenceIds(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(Equipment.find).not.toHaveBeenCalled();
+      expect(Equipment.create).not.toHaveBeenCalled();
     });
   });
 
@@ -222,6 +301,235 @@ describe('Equipment Controller Unit Tests', () => {
 
       expect(res.statusCode).toBe(400);
       expect(res._getJSONData().message).toBe('Reference ID already exists. Please use a unique ID.');
+    });
+
+    it('creates one individually referenced MongoDB record per requested unit', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      const records = ['1B1004001', '1B1004002', '1B1004003', '1B1004004'].map((referenceId) => ({
+        _id: referenceId,
+        name: 'Basketball',
+        type: '1B',
+        category: 'Balls',
+        referenceId,
+        totalStock: 1,
+        available: 1,
+        onLoan: 0,
+        condition: 'Good'
+      }));
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      };
+      const session = {
+        withTransaction: jest.fn(async (callback) => callback()),
+        endSession: jest.fn().mockResolvedValue(undefined)
+      };
+      req.body = {
+        name: 'Ball',
+        type: '1B',
+        category: 'Balls',
+        quantity: 4,
+        referenceIds: ['1B1004001', '1B1004002', '1B1004003', '1B1004004']
+      };
+      Equipment.find.mockReturnValue(query);
+      Equipment.create.mockResolvedValue(records);
+      jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(res._getJSONData().referenceIds).toEqual(['1B1004001', '1B1004002', '1B1004003', '1B1004004']);
+      expect(res._getJSONData().message).not.toContain(' to ');
+      expect(Equipment.create).toHaveBeenCalledWith(
+        expect.arrayContaining(records.map((record) => expect.objectContaining({
+          name: 'Ball',
+          referenceId: record.referenceId,
+          totalStock: 1,
+          condition: 'Good'
+        }))),
+        { session }
+      );
+      expect(session.endSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('continues from the highest existing ID and derives a prefix for other names', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([
+          { referenceId: '1B1004003' },
+          { referenceId: '1B1004011' }
+        ])
+      };
+      const session = {
+        withTransaction: jest.fn(async (callback) => callback()),
+        endSession: jest.fn().mockResolvedValue(undefined)
+      };
+      req.body = {
+        name: 'Basketball',
+        type: '1B',
+        category: 'Balls',
+        quantity: 2,
+        referenceIds: ['1B1004012', '1B1004013']
+      };
+      Equipment.find.mockReturnValue(query);
+      Equipment.create.mockResolvedValue([
+        { _id: 'a', name: 'Basketball', referenceId: '1B1004012', totalStock: 1, condition: 'Good' },
+        { _id: 'b', name: 'Basketball', referenceId: '1B1004013', totalStock: 1, condition: 'Good' }
+      ]);
+      jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(res._getJSONData().referenceIds).toEqual(['1B1004012', '1B1004013']);
+    });
+
+    it('requires every generated Reference ID to be submitted', async () => {
+      req.body = { name: 'Basketball', type: 'BASK', quantity: 2, referenceIds: ['BASK-01'] };
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(Equipment.create).not.toHaveBeenCalled();
+      expect(Equipment.find).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['Volleyball', 'VOL', 'VOL1004001'],
+      ['Badminton', 'BADM', 'BADM1004001'],
+      ['Spalding Ball', 'SPAL', 'SPAL1004001'],
+      ['Ball', 'BASK', 'BASK1004001']
+    ])('generates IDs from the selected equipment type for %s', async (name, typeCode, expectedReferenceId) => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      };
+      const session = {
+        withTransaction: jest.fn(async (callback) => callback()),
+        endSession: jest.fn().mockResolvedValue(undefined)
+      };
+      req.body = { name, type: typeCode, category: 'Balls', quantity: 1, referenceIds: [expectedReferenceId] };
+      Equipment.find.mockReturnValue(query);
+      Equipment.create.mockImplementation(async (records) => records.map((record) => ({
+        _id: record.referenceId,
+        ...record,
+        available: 1
+      })));
+      jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(res._getJSONData().referenceIds).toEqual([expectedReferenceId]);
+    });
+
+    it('uses the Basketball equipment code even when the entered type is an older alias', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      };
+      const session = {
+        withTransaction: jest.fn(async (callback) => callback()),
+        endSession: jest.fn().mockResolvedValue(undefined)
+      };
+      req.body = {
+        name: 'Basketball',
+        type: 'BASK',
+        quantity: 1,
+        referenceIds: ['1B1004001']
+      };
+      Equipment.find.mockReturnValue(query);
+      Equipment.create.mockImplementation(async (records) => records.map((record) => ({
+        _id: record.referenceId,
+        ...record,
+        available: 1
+      })));
+      jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(res._getJSONData().referenceIds).toEqual(['1B1004001']);
+      expect(Equipment.create).toHaveBeenCalledWith(
+        [expect.objectContaining({ type: '1B', referenceId: '1B1004001' })],
+        { session }
+      );
+    });
+
+    it.each([0, -1, 1.5, '', 'not-a-number', null, true])('rejects invalid quantity %p', async (quantity) => {
+      req.body = { name: 'Basketball', type: 'BASK', quantity, referenceIds: ['BASK-01'] };
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res._getJSONData().message).toBe('Quantity must be a positive whole number.');
+      expect(Equipment.create).not.toHaveBeenCalled();
+    });
+
+    it('blocks a stale ID selection after another registration wins a unique-ID race', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      const makeQuery = (existing) => ({
+        select: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue(existing)
+      });
+      const session = {
+        withTransaction: jest.fn(async (callback) => callback()),
+        endSession: jest.fn().mockResolvedValue(undefined)
+      };
+      req.body = { name: 'Basketball', type: 'BALLS', quantity: 1, referenceIds: ['1B1004001'] };
+      Equipment.find
+        .mockReturnValueOnce(makeQuery([]))
+        .mockReturnValueOnce(makeQuery([{ referenceId: '1B1004001' }]));
+      Equipment.create
+        .mockRejectedValueOnce({ code: 11000 })
+        .mockResolvedValueOnce([{
+          _id: 'b',
+          name: 'Basketball',
+          referenceId: '1B1004002',
+          totalStock: 1,
+          condition: 'Good'
+        }]);
+      jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(409);
+      expect(Equipment.create).toHaveBeenCalledTimes(1);
+      expect(session.withTransaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects registration when the selected IDs no longer match the database sequence', async () => {
+      jest.useFakeTimers().setSystemTime(new Date(2026, 9, 4, 12));
+      const query = {
+        select: jest.fn().mockReturnThis(),
+        session: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([{ referenceId: '1B1004001' }])
+      };
+      const session = {
+        withTransaction: jest.fn(async (callback) => callback()),
+        endSession: jest.fn().mockResolvedValue(undefined)
+      };
+      req.body = {
+        name: 'Basketball',
+        type: 'BASK',
+        quantity: 1,
+        referenceIds: ['1B1004001']
+      };
+      Equipment.find.mockReturnValue(query);
+      jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+
+      await createEquipment(req, res);
+
+      expect(res.statusCode).toBe(409);
+      expect(Equipment.create).not.toHaveBeenCalled();
     });
   });
 

@@ -1,7 +1,14 @@
 const httpMocks = require('node-mocks-http');
 const mongoose = require('mongoose');
-const { uploadRequirement, buildRequirementLifecycleState } = require('../../src/controllers/studentController');
+const {
+  uploadRequirement,
+  buildRequirementLifecycleState,
+  getStudentRequirementAnnouncements,
+  markStudentAnnouncementRead
+} = require('../../src/controllers/studentController');
 const StudentRequirement = require('../../src/models/StudentRequirement');
+const Announcement = require('../../src/models/Announcement');
+const User = require('../../src/models/User');
 
 const mockSave = jest.fn();
 const mockQuery = (value) => ({
@@ -148,5 +155,58 @@ describe('Student controller uploads', () => {
       requirementStatus: 'reusable',
       importedFromPreviousYear: true
     }, '2025-2026')).toBe('reusable');
+  });
+
+  it('returns announcement history with read state scoped to the authenticated student', async () => {
+    const readAnnouncementId = new mongoose.Types.ObjectId();
+    const unreadAnnouncementId = new mongoose.Types.ObjectId();
+    const announcements = [
+      { _id: readAnnouncementId, title: 'Read notice', type: 'requirement' },
+      { _id: unreadAnnouncementId, title: 'New notice', type: 'event' }
+    ];
+    const query = {
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(announcements)
+    };
+    jest.spyOn(Announcement, 'find').mockReturnValue(query);
+
+    const req = httpMocks.createRequest();
+    req.user = { _id: new mongoose.Types.ObjectId(), readAnnouncementIds: [readAnnouncementId] };
+    const res = httpMocks.createResponse();
+
+    await getStudentRequirementAnnouncements(req, res);
+
+    expect(Announcement.find).toHaveBeenCalledWith({});
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toMatchObject({
+      unreadCount: 1,
+      data: [
+        { title: 'Read notice', isRead: true },
+        { title: 'New notice', isRead: false }
+      ]
+    });
+  });
+
+  it('stores read state against the authenticated student without deleting the announcement', async () => {
+    const studentId = new mongoose.Types.ObjectId();
+    const announcementId = new mongoose.Types.ObjectId();
+    const announcementQuery = {
+      select: jest.fn().mockResolvedValue({ _id: announcementId })
+    };
+    jest.spyOn(Announcement, 'findOne').mockReturnValue(announcementQuery);
+    jest.spyOn(User, 'updateOne').mockResolvedValue({ matchedCount: 1 });
+
+    const req = httpMocks.createRequest({ params: { id: String(announcementId) } });
+    req.user = { _id: studentId };
+    const res = httpMocks.createResponse();
+
+    await markStudentAnnouncementRead(req, res);
+
+    expect(User.updateOne).toHaveBeenCalledWith(
+      { _id: studentId },
+      { $addToSet: { readAnnouncementIds: announcementId } }
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toMatchObject({ success: true, announcementId: String(announcementId) });
   });
 });
