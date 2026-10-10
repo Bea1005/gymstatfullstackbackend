@@ -127,6 +127,29 @@ const normalizeRequirementStatus = (status) => {
   return 'pending';
 };
 
+const getSavedSports = (...values) => {
+  const parseValue = (value) => {
+    if (Array.isArray(value)) return value.flatMap(parseValue);
+    if (typeof value !== 'string') return [];
+
+    const trimmedValue = value.trim();
+    if (!trimmedValue) return [];
+
+    if (trimmedValue.startsWith('[')) {
+      try {
+        const parsedValue = JSON.parse(trimmedValue);
+        if (Array.isArray(parsedValue)) return parsedValue.flatMap(parseValue);
+      } catch (error) {
+        // Legacy multi-value strings are parsed below.
+      }
+    }
+
+    return trimmedValue.split(/[,/|;]+/).map((sport) => sport.trim()).filter(Boolean);
+  };
+
+  return [...new Set(values.flatMap(parseValue))];
+};
+
 const deriveOverallStatus = (requirements) => {
   const documents = Array.isArray(requirements?.documents) ? requirements.documents : [];
   const requiredKeys = ['med', 'psa', 'insurance', 'profile', 'consent'];
@@ -216,7 +239,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     const studentsFromDb = participationType === 'STRASUC' && !isScreener
       ? []
       : await User.find(studentQuery)
-      .select('fullname username department sport yearLevel createdAt')
+      .select('fullname username department sport sports yearLevel createdAt')
       .sort({ createdAt: -1 })
       .lean();
     const visibleStudents = isScreener
@@ -243,7 +266,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks')
       .sort({ uploadDate: -1, _id: -1 });
     if (!isScreener || participationType === 'STRASUC') {
-      submissionsQuery = submissionsQuery.populate('studentId', 'fullname department yearLevel sport id username');
+      submissionsQuery = submissionsQuery.populate('studentId', 'fullname department yearLevel sport sports assignedSports id username');
     }
     const submissions = await submissionsQuery.lean();
 
@@ -256,12 +279,15 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     // Add all students from the users collection
     visibleStudents.forEach((student) => {
       const studentId = student._id.toString();
+      const studentSports = getSavedSports(student.sports, student.sport);
+
       studentRecordsById.set(studentId, student);
       studentsById.set(studentId, {
         id: studentId,
         name: student.fullname || student.username || 'Unknown Student',
         department: student.department || 'Not specified',
-        sport: student.sport || 'Not specified',
+        sport: studentSports[0] || student.sport || 'Not specified',
+        sports: [...new Set(studentSports)],
         yearLevel: student.yearLevel || '',
         requirements: {
             cor: null,
@@ -289,7 +315,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       if (!student || !student.fullname) {
         try {
           const found = await User.findOne({ $or: [{ _id: lookupId }, { id: lookupId }] })
-            .select('fullname username department sport yearLevel id')
+            .select('fullname username department sport sports yearLevel id')
             .lean();
           if (found) student = found;
         } catch (err) {
@@ -321,11 +347,14 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
 
       // Create a new student entry if it doesn't exist
       if (!studentsById.has(studentId)) {
+        const studentSports = getSavedSports(student.sports, student.sport);
+
         studentsById.set(studentId, {
           id: studentId,
           name: student.fullname || student.username || 'Unknown Student',
           department: student.department || 'Not specified',
-          sport: student.sport || 'Not specified',
+          sport: studentSports[0] || student.sport || 'Not specified',
+          sports: [...new Set(studentSports)],
           yearLevel: student.yearLevel || '',
           requirements: {
             cor: null,

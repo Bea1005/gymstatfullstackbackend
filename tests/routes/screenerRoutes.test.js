@@ -148,11 +148,72 @@ describe('Screener routes', () => {
       'studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks'
     );
     expect(User.find().select).toHaveBeenCalledWith(
-      'fullname username department sport yearLevel createdAt'
+      'fullname username department sport sports yearLevel createdAt'
     );
     expect(User.find).toHaveBeenCalledWith({
       role: 'student',
       department: { $exists: true, $nin: ['', null, 'CICS'] }
+    });
+  });
+
+  it('returns all saved profile sports and links submissions once by student ID', async () => {
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          _id: 'student-bea',
+          id: 'BEA-001',
+          fullname: 'Bea',
+          department: 'Engineering',
+          yearLevel: 'II',
+          sport: 'WOMEN BASKETBALL',
+          sports: '["WOMEN BASKETBALL", "SOFTBALL"]'
+        }
+      ])
+    });
+    StudentRequirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          _id: 'bea-cor-submission',
+          studentId: 'student-bea',
+          requirementType: 'cor',
+          fileName: 'bea-cor.pdf',
+          fileType: 'application/pdf',
+          fileSize: 128,
+          status: 'approved',
+          uploadDate: '2026-10-01T00:00:00.000Z'
+        }
+      ])
+    });
+
+    const response = await request(app)
+      .get('/api/v1/screener/requirements?participationType=Intrams')
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toHaveLength(1);
+    expect(response.body.data[0]).toEqual(expect.objectContaining({
+      id: 'student-bea',
+      name: 'Bea',
+      sports: ['WOMEN BASKETBALL', 'SOFTBALL']
+    }));
+    expect(response.body.data[0].requirements.documents).toHaveLength(1);
+    expect(response.body.data[0].requirements.documents[0]).toEqual(expect.objectContaining({
+      submissionId: 'bea-cor-submission',
+      fileName: 'bea-cor.pdf',
+      status: 'approved',
+      hasUpload: true
+    }));
+    expect(StudentRequirement.find).toHaveBeenCalledWith({
+      $and: [
+        { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] },
+        { studentId: { $in: ['student-bea'] } }
+      ]
     });
   });
 
