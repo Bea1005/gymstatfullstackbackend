@@ -3,11 +3,13 @@ const express = require('express');
 const request = require('supertest');
 const StudentRequirement = require('../../src/models/StudentRequirement');
 const User = require('../../src/models/User');
+const StudentAthlete = require('../../src/models/StudentAthlete');
 const { protect, authorize } = require('../../src/middleware/auth');
 const screenerRoutes = require('../../src/routes/screenerRoutes');
 
 jest.mock('../../src/models/StudentRequirement');
 jest.mock('../../src/models/User');
+jest.mock('../../src/models/StudentAthlete');
 jest.mock('../../src/middleware/auth', () => ({
   protect: jest.fn((req, res, next) => next()),
   authorize: jest.fn(() => (req, res, next) => next())
@@ -18,6 +20,10 @@ describe('Screener routes', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    StudentAthlete.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([])
+    });
     app = express();
     app.use(express.json());
     app.use((req, res, next) => {
@@ -104,6 +110,13 @@ describe('Screener routes', () => {
         { _id: 'student-without-year', fullname: 'Student Without Year Level', department: 'Engineering', yearLevel: '' }
       ])
     });
+    StudentAthlete.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        { userId: 'student-other', yearLevel: 'II', sports: ['SOFTBALL'] },
+        { userId: 'student-without-year', yearLevel: '', sports: [] }
+      ])
+    });
     StudentRequirement.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
       populate: jest.fn().mockReturnThis(),
@@ -135,7 +148,7 @@ describe('Screener routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.map((student) => student.department)).toEqual(['Engineering', 'Engineering']);
-    expect(response.body.data.map((student) => student.yearLevel)).toEqual([' II ', '']);
+    expect(response.body.data.map((student) => student.yearLevel)).toEqual(['II', '']);
     expect(response.body.data[0].requirements.documents[0].hasUpload).toBe(true);
     expect(StudentRequirement.find).toHaveBeenCalledWith({
       $and: [
@@ -148,8 +161,9 @@ describe('Screener routes', () => {
       'studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks'
     );
     expect(User.find().select).toHaveBeenCalledWith(
-      'fullname username department sport sports yearLevel createdAt'
+      'fullname username department createdAt'
     );
+    expect(StudentAthlete.find().select).toHaveBeenCalledWith('userId sports yearLevel');
     expect(User.find).toHaveBeenCalledWith({
       role: 'student',
       department: { $exists: true, $nin: ['', null, 'CICS'] }
@@ -166,9 +180,20 @@ describe('Screener routes', () => {
           id: 'BEA-001',
           fullname: 'Bea',
           department: 'Engineering',
-          yearLevel: 'II',
-          sport: 'WOMEN BASKETBALL',
-          sports: '["WOMEN BASKETBALL", "SOFTBALL"]'
+          yearLevel: 'IV',
+          sport: 'USER FIELD SPORT MUST NOT MATCH',
+          sports: ['USER FIELD SPORT MUST NOT MATCH']
+        }
+      ])
+    });
+    StudentAthlete.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          userId: 'student-bea',
+          yearLevel: '2nd Year',
+          sport: 'DIFFERENT ATHLETE SPORT FIELD',
+          sports: [' WOMEN BASKETBALL ', 'SOFTBALL', '', null, 'softball']
         }
       ])
     });
@@ -200,7 +225,9 @@ describe('Screener routes', () => {
     expect(response.body.data[0]).toEqual(expect.objectContaining({
       id: 'student-bea',
       name: 'Bea',
-      sports: ['WOMEN BASKETBALL', 'SOFTBALL']
+      sport: 'WOMEN BASKETBALL',
+      sports: ['WOMEN BASKETBALL', 'SOFTBALL', 'softball'],
+      yearLevel: '2nd Year'
     }));
     expect(response.body.data[0].requirements.documents).toHaveLength(1);
     expect(response.body.data[0].requirements.documents[0]).toEqual(expect.objectContaining({
@@ -215,6 +242,106 @@ describe('Screener routes', () => {
         { studentId: { $in: ['student-bea'] } }
       ]
     });
+    expect(StudentAthlete.find().select).toHaveBeenCalledWith('userId sports yearLevel');
+  });
+
+  it('uses only the linked Student Athlete sports array and year level', async () => {
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          _id: 'student-legacy',
+          id: 'LEGACY-001',
+          fullname: 'Legacy Student',
+          department: 'Engineering',
+          yearLevel: 'I',
+          sport: 'USER FIELD SPORT',
+          sports: ['USER FIELD SPORT']
+        }
+      ])
+    });
+    StudentAthlete.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          userId: 'student-legacy',
+          yearLevel: 'III',
+          sport: 'ATHLETE SINGLE SPORT FIELD',
+          sports: ['WOMEN BASKETBALL', 'SOFTBALL']
+        }
+      ])
+    });
+    StudentRequirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([])
+    });
+
+    const response = await request(app)
+      .get('/api/v1/screener/requirements?participationType=Intrams')
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([
+      expect.objectContaining({
+        id: 'student-legacy',
+        sport: 'WOMEN BASKETBALL',
+        sports: ['WOMEN BASKETBALL', 'SOFTBALL'],
+        yearLevel: 'III'
+      })
+    ]);
+    expect(StudentAthlete.find).toHaveBeenCalledWith({
+      userId: { $in: ['student-legacy'] }
+    });
+  });
+
+  it('does not fall back to the separate sport field when the sports array is empty', async () => {
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          _id: 'student-empty-sports',
+          fullname: 'Student With Empty Sports',
+          department: 'Engineering',
+          sport: 'USER SPORT MUST NOT MATCH',
+          sports: ['USER SPORT MUST NOT MATCH']
+        }
+      ])
+    });
+    StudentAthlete.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          userId: 'student-empty-sports',
+          sport: 'ATHLETE SPORT MUST NOT MATCH',
+          sports: [],
+          yearLevel: 'I'
+        }
+      ])
+    });
+    StudentRequirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([])
+    });
+
+    const response = await request(app)
+      .get('/api/v1/screener/requirements?participationType=Intrams')
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data[0]).toEqual(expect.objectContaining({
+      id: 'student-empty-sports',
+      sports: [],
+      sport: 'Not specified',
+      yearLevel: 'I'
+    }));
   });
 
   it('denies Screener review of a same-department requirement', async () => {

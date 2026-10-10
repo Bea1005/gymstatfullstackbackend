@@ -4,6 +4,7 @@ const fs = require('fs');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
+const StudentAthlete = require('../models/StudentAthlete');
 const {
   getStudentRequirementModel,
   getAllStudentRequirementModels,
@@ -127,28 +128,12 @@ const normalizeRequirementStatus = (status) => {
   return 'pending';
 };
 
-const getSavedSports = (...values) => {
-  const parseValue = (value) => {
-    if (Array.isArray(value)) return value.flatMap(parseValue);
-    if (typeof value !== 'string') return [];
-
-    const trimmedValue = value.trim();
-    if (!trimmedValue) return [];
-
-    if (trimmedValue.startsWith('[')) {
-      try {
-        const parsedValue = JSON.parse(trimmedValue);
-        if (Array.isArray(parsedValue)) return parsedValue.flatMap(parseValue);
-      } catch (error) {
-        // Legacy multi-value strings are parsed below.
-      }
-    }
-
-    return trimmedValue.split(/[,/|;]+/).map((sport) => sport.trim()).filter(Boolean);
-  };
-
-  return [...new Set(values.flatMap(parseValue))];
-};
+const getSavedSports = (sports) => Array.from(new Set(
+  (Array.isArray(sports) ? sports : [])
+    .filter((sport) => typeof sport === 'string')
+    .map((sport) => sport.trim())
+    .filter(Boolean)
+));
 
 const deriveOverallStatus = (requirements) => {
   const documents = Array.isArray(requirements?.documents) ? requirements.documents : [];
@@ -239,13 +224,22 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     const studentsFromDb = participationType === 'STRASUC' && !isScreener
       ? []
       : await User.find(studentQuery)
-      .select('fullname username department sport sports yearLevel createdAt')
+      .select('fullname username department createdAt')
       .sort({ createdAt: -1 })
       .lean();
     const visibleStudents = isScreener
       ? studentsFromDb.filter((student) => String(student.department || '').trim()
         && String(student.department).trim() !== screenerDepartment)
       : studentsFromDb;
+
+    const athleteProfiles = visibleStudents.length
+      ? await StudentAthlete.find({ userId: { $in: visibleStudents.map((student) => student._id) } })
+        .select('userId sports yearLevel')
+        .lean()
+      : [];
+    const athleteProfilesByUserId = new Map(
+      athleteProfiles.map((profile) => [String(profile.userId), profile])
+    );
     
     console.log(`👥 Found ${studentsFromDb.length} students in database`);
 
@@ -279,16 +273,17 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
     // Add all students from the users collection
     visibleStudents.forEach((student) => {
       const studentId = student._id.toString();
-      const studentSports = getSavedSports(student.sports, student.sport);
+      const athleteProfile = athleteProfilesByUserId.get(studentId);
+      const studentSports = getSavedSports(athleteProfile?.sports);
 
       studentRecordsById.set(studentId, student);
       studentsById.set(studentId, {
         id: studentId,
         name: student.fullname || student.username || 'Unknown Student',
         department: student.department || 'Not specified',
-        sport: studentSports[0] || student.sport || 'Not specified',
+        sport: studentSports[0] || 'Not specified',
         sports: [...new Set(studentSports)],
-        yearLevel: student.yearLevel || '',
+        yearLevel: athleteProfile?.yearLevel || '',
         requirements: {
             cor: null,
             med: null,
@@ -315,7 +310,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
       if (!student || !student.fullname) {
         try {
           const found = await User.findOne({ $or: [{ _id: lookupId }, { id: lookupId }] })
-            .select('fullname username department sport sports yearLevel id')
+            .select('fullname username department id')
             .lean();
           if (found) student = found;
         } catch (err) {
@@ -347,15 +342,16 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
 
       // Create a new student entry if it doesn't exist
       if (!studentsById.has(studentId)) {
-        const studentSports = getSavedSports(student.sports, student.sport);
+        const athleteProfile = athleteProfilesByUserId.get(studentId);
+        const studentSports = getSavedSports(athleteProfile?.sports);
 
         studentsById.set(studentId, {
           id: studentId,
           name: student.fullname || student.username || 'Unknown Student',
           department: student.department || 'Not specified',
-          sport: studentSports[0] || student.sport || 'Not specified',
+          sport: studentSports[0] || 'Not specified',
           sports: [...new Set(studentSports)],
-          yearLevel: student.yearLevel || '',
+          yearLevel: athleteProfile?.yearLevel || '',
           requirements: {
             cor: null,
             med: null,

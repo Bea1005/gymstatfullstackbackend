@@ -80,6 +80,9 @@ const buildUserResponse = (user, roleOverride) => {
     department: user.department || '',
     yearLevel: user.yearLevel || '',
     sport: user.sport || '',
+    sports: Array.isArray(user.sports) && user.sports.length
+      ? user.sports
+      : (user.sport ? [user.sport] : []),
     branchCampus: user.branchCampus || ''
   };
 };
@@ -256,7 +259,7 @@ exports.register = async (req, res) => {
   try {
     console.log('📝 Registration attempt:', { ...req.body, password: '***' });
     
-    const { fullname, email, password, department, yearLevel, sport, id } = req.body;
+    const { fullname, email, password, department, yearLevel, sport, sports, id } = req.body;
 
     if (!fullname || !password || !id) {
       console.log('❌ Registration failed: Missing required fields');
@@ -317,8 +320,33 @@ exports.register = async (req, res) => {
     };
 
     userPayload.department = department || '';
-    userPayload.yearLevel = yearLevel || '';
-    userPayload.sport = sport || '';
+    if (userPayload.role === 'student') {
+      const requestedSports = Array.isArray(sports)
+        ? sports
+        : (typeof sport === 'string' ? [sport] : []);
+      const normalizedSports = [...new Set(requestedSports
+        .filter((value) => typeof value === 'string')
+        .map((value) => value.trim())
+        .filter(Boolean))];
+      const normalizedYearLevel = String(yearLevel || '').trim();
+
+      if (normalizedYearLevel && !['I', 'II', 'III', 'IV'].includes(normalizedYearLevel)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid year level.'
+        });
+      }
+      if (normalizedSports.length > 34 || normalizedSports.some((value) => value.length > 100)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please select valid sports.'
+        });
+      }
+
+      userPayload.yearLevel = normalizedYearLevel;
+      userPayload.sports = normalizedSports;
+      userPayload.sport = normalizedSports[0] || '';
+    }
 
     const user = await User.create(userPayload);
 

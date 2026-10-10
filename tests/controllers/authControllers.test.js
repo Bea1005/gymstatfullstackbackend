@@ -74,6 +74,66 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().user.role).toBe('student');
   });
 
+  it('saves and returns student year level and all registered sports', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        department: 'CICS',
+        yearLevel: 'II',
+        sport: 'Basketball Women',
+        sports: ['Basketball Women', 'Softball Women'],
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue(null);
+    bcrypt.genSalt.mockResolvedValue('salt');
+    bcrypt.hash.mockResolvedValue('hashed-password');
+    User.create.mockImplementation(async (user) => ({ _id: 'user123', ...user }));
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(201);
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'student',
+      yearLevel: 'II',
+      sport: 'Basketball Women',
+      sports: ['Basketball Women', 'Softball Women']
+    }));
+    expect(res._getJSONData().user).toEqual(expect.objectContaining({
+      yearLevel: 'II',
+      sport: 'Basketball Women',
+      sports: ['Basketball Women', 'Softball Women']
+    }));
+  });
+
+  it('rejects unsupported student year levels during registration', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        yearLevel: 'V',
+        sport: 'Basketball Women',
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue(null);
+    bcrypt.genSalt.mockResolvedValue('salt');
+    bcrypt.hash.mockResolvedValue('hashed-password');
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toContain('year level');
+    expect(User.create).not.toHaveBeenCalled();
+  });
+
   it('rejects IDs that are shorter than 7 characters during registration', async () => {
     const req = httpMocks.createRequest({
       body: {
