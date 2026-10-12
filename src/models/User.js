@@ -375,6 +375,25 @@ baseUserSchema.post('findOneAndUpdate', async function(doc) {
 
 const User = mongoose.model('User', baseUserSchema, 'users');
 
+User.hasRegisteredId = async (id) => {
+  const normalizedId = String(id || '').trim();
+  if (!normalizedId) return false;
+
+  const canonicalUser = await User.collection.findOne(
+    { id: normalizedId },
+    { projection: { _id: 1 } }
+  );
+  if (canonicalUser) return true;
+
+  const roleRecords = await Promise.all(
+    Object.values(roleModelMap).map((model) => model.collection.findOne(
+      { id: normalizedId },
+      { projection: { _id: 1 } }
+    ))
+  );
+  return roleRecords.some(Boolean);
+};
+
 User.normalizeRole = normalizeRole;
 User.getRoleModel = getRoleModel;
 User.syncRoleDocument = syncRoleDocument;

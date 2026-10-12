@@ -30,6 +30,7 @@ const hashResetValue = (value) => crypto
 describe('Auth Controllers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    User.hasRegisteredId = jest.fn().mockResolvedValue(false);
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -166,12 +167,44 @@ describe('Auth Controllers', () => {
     });
     const res = httpMocks.createResponse();
 
-    User.findOne.mockResolvedValue({ id: '23B1509' });
+    User.hasRegisteredId.mockResolvedValue(true);
 
     await register(req, res);
 
-    expect(res.statusCode).toBe(400);
-    expect(res._getJSONData().message).toContain('already exists');
+    expect(res.statusCode).toBe(409);
+    expect(res._getJSONData()).toEqual({
+      success: false,
+      message: 'This ID is already registered. Please use a different ID.'
+    });
+  });
+
+  it('returns the duplicate ID message when the unique index rejects a concurrent registration', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue(null);
+    bcrypt.genSalt.mockResolvedValue('salt');
+    bcrypt.hash.mockResolvedValue('hashed-password');
+    User.create.mockRejectedValue({
+      code: 11000,
+      keyPattern: { id: 1 },
+      keyValue: { id: '23B1509' }
+    });
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res._getJSONData()).toEqual({
+      success: false,
+      message: 'This ID is already registered. Please use a different ID.'
+    });
   });
 
   it('keeps the default student role for a valid long ID during registration', async () => {
@@ -278,6 +311,39 @@ describe('Auth Controllers', () => {
     ]);
     expect(jwt.sign).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'coach' }),
+      expect.any(String),
+      expect.any(Object)
+    );
+  });
+
+  it('preserves the Mongoose user ID in the login access token', async () => {
+    const req = httpMocks.createRequest({
+      body: { id: 'admin-id', password: 'Password1!' }
+    });
+    const res = httpMocks.createResponse();
+    const user = {
+      id: 'admin-id',
+      fullname: 'Admin User',
+      email: 'admin@example.com',
+      password: 'hashed-password',
+      role: 'admin',
+      save: jest.fn().mockResolvedValue(true)
+    };
+    Object.defineProperty(user, '_id', { value: 'admin-user-id' });
+
+    User.findOne.mockResolvedValue(user);
+    bcrypt.compare.mockResolvedValue(true);
+    jwt.sign.mockReturnValue('jwt-token');
+
+    await login(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(jwt.sign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'admin-user-id',
+        userId: 'admin-user-id',
+        role: 'admin'
+      }),
       expect.any(String),
       expect.any(Object)
     );

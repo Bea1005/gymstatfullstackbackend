@@ -6,6 +6,7 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 
 const VALID_ROLES = ['student', 'coach', 'admin', 'screener'];
+const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
 
 const normalizeRole = (role) => {
   const normalized = String(role || '').trim().toLowerCase();
@@ -128,21 +129,18 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
 
     const fullname = rawFullname || rawId;
     // Check for existing user - check all unique fields
-    const existingUser = await User.findOne({
-      $or: [
-        { id: rawId },
-        { email: rawEmail }
-      ]
-    });
-
-    if (existingUser) {
-      let fieldName = '';
-      if (existingUser.id === rawId) fieldName = 'ID';
-      else if (existingUser.email === rawEmail) fieldName = 'Email';
-      
+    if (await User.hasRegisteredId(rawId)) {
       return res.status(409).json({
         success: false,
-        message: `A user with this ${fieldName} already exists. Please use a different ${fieldName.toLowerCase()}.`
+        message: DUPLICATE_ID_MESSAGE
+      });
+    }
+
+    const existingUserWithEmail = await User.findOne({ email: rawEmail });
+    if (existingUserWithEmail?.email === rawEmail) {
+      return res.status(409).json({
+        success: false,
+        message: 'A user with this Email already exists. Please use a different email.'
       });
     }
 
@@ -176,7 +174,14 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     console.error('Create user error:', error);
     
     if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
+      if (error.keyPattern?.id || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'id')) {
+        return res.status(409).json({
+          success: false,
+          message: DUPLICATE_ID_MESSAGE
+        });
+      }
+
+      const field = Object.keys(error.keyPattern || error.keyValue || {})[0] || 'Field';
       return res.status(409).json({
         success: false,
         message: `A user with this ${field} already exists. Please use a different ${field}.`

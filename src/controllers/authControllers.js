@@ -21,6 +21,7 @@ const RESET_OTP_COOLDOWN_MS = 60 * 1000;
 const RESET_OTP_MAX_ATTEMPTS = 5;
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
+const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -287,12 +288,17 @@ exports.register = async (req, res) => {
       });
     }
 
-    const duplicateQuery = [{ id: trimmedId }];
-    if (email) duplicateQuery.push({ email });
-    const existingUser = await User.findOne({ $or: duplicateQuery });
+    if (await User.hasRegisteredId(trimmedId)) {
+      console.log('❌ Registration failed: User ID already exists');
+      return res.status(409).json({
+        success: false,
+        message: DUPLICATE_ID_MESSAGE
+      });
+    }
 
-    if (existingUser) {
-      if (email && existingUser.email === email) {
+    if (email) {
+      const existingUserWithEmail = await User.findOne({ email });
+      if (existingUserWithEmail?.email === email) {
         console.log('❌ Registration failed: Email already exists');
         return res.status(400).json({ 
           success: false,
@@ -300,13 +306,6 @@ exports.register = async (req, res) => {
         });
       }
 
-      if (existingUser.id === trimmedId) {
-        console.log('❌ Registration failed: User ID already exists');
-        return res.status(400).json({ 
-          success: false,
-          message: 'User ID already exists' 
-        });
-      }
     }
 
     const hashedPassword = await hashPassword(password);
@@ -362,7 +361,14 @@ exports.register = async (req, res) => {
     console.error('❌ Registration error:', error);
 
     if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
+      if (error.keyPattern?.id || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'id')) {
+        return res.status(409).json({
+          success: false,
+          message: DUPLICATE_ID_MESSAGE
+        });
+      }
+
+      const field = Object.keys(error.keyPattern || error.keyValue || {})[0] || 'Field';
       return res.status(400).json({ 
         success: false,
         message: `${field} already exists` 
@@ -434,7 +440,11 @@ exports.login = async (req, res) => {
       await user.save();
     }
 
-    const accessToken = createAccessToken({ ...user, role: userRole });
+    const accessToken = createAccessToken({
+      _id: user._id,
+      role: userRole,
+      email: user.email || ''
+    });
     const { refreshToken } = await createRefreshSession(user._id);
     const csrfToken = crypto.randomBytes(32).toString('base64url');
     setAuthenticationCookies(res, accessToken, refreshToken, csrfToken, userRole);
