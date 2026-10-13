@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Borrowing = require('../models/Borrowing');
 const Equipment = require('../models/Equipment');
 const { protect, authorize } = require('../middleware/auth');
@@ -124,6 +125,34 @@ const ensureEquipmentExists = async (equipmentName) => {
     name: { $regex: `^${escapeRegExp(name)}$`, $options: 'i' }
   });
 };
+const adjustBorrowedEquipmentStock = async (equipmentName, referenceIds, quantity, adjustment) => {
+  const nameFilter = { name: { $regex: `^${escapeRegExp(normalizeText(equipmentName))}$`, $options: 'i' } };
+  const validReferenceIds = Array.isArray(referenceIds) ? referenceIds.filter(Boolean) : [];
+
+  if (validReferenceIds.length === 0) {
+    const equipmentItem = await Equipment.findOne(nameFilter);
+    if (equipmentItem) {
+      equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) + (quantity * adjustment));
+      await equipmentItem.save();
+    }
+    return;
+  }
+
+  const equipmentItems = await Equipment.find({
+    ...nameFilter,
+    referenceId: { $in: validReferenceIds }
+  });
+  if (equipmentItems.length !== validReferenceIds.length) {
+    throw new Error('One or more borrowed equipment reference IDs could not be found.');
+  }
+
+  const equipmentByReferenceId = new Map(equipmentItems.map((item) => [item.referenceId, item]));
+  for (const referenceId of validReferenceIds) {
+    const equipmentItem = equipmentByReferenceId.get(referenceId);
+    equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) + adjustment);
+    await equipmentItem.save();
+  }
+};
 
 // @desc    Get all borrowing records
 // @route   GET /api/v1/admin/borrowing
@@ -172,56 +201,74 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       });
     }
 
-    const referenceItems = await Promise.all(
-      selectedReferenceIds.map((referenceId) => Equipment.findOne({
-        referenceId,
-        name: { $regex: `^${escapeRegExp(equipmentName)}$`, $options: 'i' }
-      }))
-    );
-    if (referenceItems.some((item) => !item)) {
-      return res.status(400).json({ error: 'One or more reference IDs do not belong to the selected equipment' });
-    }
-
-    const available = Math.max(0, (equipmentItem.available ?? (equipmentItem.totalStock - (equipmentItem.onLoan || 0))));
-    if (available < selectedQuantity) {
-      return res.status(400).json({ error: `Insufficient stock. Only ${available} available.` });
-    }
-
-    equipmentItem.onLoan = (equipmentItem.onLoan || 0) + selectedQuantity;
-    await equipmentItem.save();
-
     const borrowDate = new Date();
     let borrowing;
+    const session = await mongoose.startSession();
     try {
-      borrowing = await Borrowing.create({
-      Name: borrowerName,
-      fullname: borrowerName,
-      contactNo: normalizeText(contactNo),
-      facebookAccount: normalizeText(facebookAccount),
-      equipment: equipmentName,
-      referenceIds: selectedReferenceIds,
-      referenceConditions: Array.isArray(referenceConditions) ? referenceConditions : [],
-      quantity: selectedQuantity,
-      qty: selectedQuantity,
-      borrowTimestamp: normalizedBorrowTimestamp.date || normalizedBorrowTimestamp.time
-        ? normalizedBorrowTimestamp
-        : formatBorrowTimestamp(borrowDate),
-      endTime: normalizeText(endTime),
-      returnedTimestamp: normalizedReturnedTimestamp,
-      status: status || 'Out Now',
-      condition: condition || null,
-      borrowDate,
-      borrowedBy: normalizeBorrowedBy(req.user?.id || req.user?._id)
+      await session.withTransaction(async () => {
+        const referenceItems = await Equipment.find({
+          referenceId: { $in: selectedReferenceIds },
+          name: { $regex: `^${escapeRegExp(equipmentName)}$`, $options: 'i' }
+        }).session(session);
+        const equipmentByReferenceId = new Map(referenceItems.map((item) => [item.referenceId, item]));
+        if (selectedReferenceIds.some((referenceId) => !equipmentByReferenceId.has(referenceId))) {
+          throw Object.assign(
+            new Error('One or more reference IDs do not belong to the selected equipment'),
+            { statusCode: 400 }
+          );
+        }
+
+        const availableCount = referenceItems.reduce((count, item) => {
+          const available = Math.max(
+            0,
+            Number(item.available ?? (item.totalStock - (item.onLoan || 0))) || 0
+          );
+          return count + (available > 0 ? 1 : 0);
+        }, 0);
+        if (availableCount < selectedQuantity) {
+          throw Object.assign(
+            new Error(`Insufficient stock. Only ${availableCount} of ${selectedQuantity} selected reference IDs are available.`),
+            { statusCode: 400 }
+          );
+        }
+
+        for (const referenceId of selectedReferenceIds) {
+          const referenceItem = equipmentByReferenceId.get(referenceId);
+          referenceItem.onLoan = (referenceItem.onLoan || 0) + 1;
+          await referenceItem.save({ session });
+        }
+
+        [borrowing] = await Borrowing.create([{
+          Name: borrowerName,
+          fullname: borrowerName,
+          contactNo: normalizeText(contactNo),
+          facebookAccount: normalizeText(facebookAccount),
+          equipment: equipmentName,
+          referenceIds: selectedReferenceIds,
+          referenceConditions: Array.isArray(referenceConditions) ? referenceConditions : [],
+          quantity: selectedQuantity,
+          qty: selectedQuantity,
+          borrowTimestamp: normalizedBorrowTimestamp.date || normalizedBorrowTimestamp.time
+            ? normalizedBorrowTimestamp
+            : formatBorrowTimestamp(borrowDate),
+          endTime: normalizeText(endTime),
+          returnedTimestamp: normalizedReturnedTimestamp,
+          status: status || 'Out Now',
+          condition: condition || null,
+          borrowDate,
+          borrowedBy: normalizeBorrowedBy(req.user?.id || req.user?._id)
+        }], { session });
       });
-    } catch (createError) {
-      equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - selectedQuantity);
-      await equipmentItem.save();
-      throw createError;
+    } finally {
+      await session.endSession();
     }
 
     await borrowing.populate('borrowedBy', 'fullname email');
     res.status(201).json(buildBorrowingResponse(borrowing));
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error('Create borrowing error:', error);
     res.status(500).json({ error: 'An unexpected server error occurred. Please try again.' });
   }
@@ -240,20 +287,22 @@ router.put('/admin/borrowing/:id', protect, authorize('admin'), async (req, res)
       return res.status(404).json({ error: 'Borrowing record not found' });
     }
 
-    if (updateData.status === 'Returned' && borrowing.status !== 'Returned') {
-      const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-      if (equipmentItem) {
-        equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - (borrowing.quantity || borrowing.qty || 1));
-        await equipmentItem.save();
-      }
+    if (updateData.status === 'Returned' && !['Returned', 'Completed'].includes(borrowing.status)) {
+      await adjustBorrowedEquipmentStock(
+        borrowing.equipment,
+        borrowing.referenceIds,
+        borrowing.quantity || borrowing.qty || 1,
+        -1
+      );
     }
 
-    if (updateData.status === 'Out' && borrowing.status === 'Returned') {
-      const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-      if (equipmentItem) {
-        equipmentItem.onLoan = (equipmentItem.onLoan || 0) + (borrowing.quantity || borrowing.qty || 1);
-        await equipmentItem.save();
-      }
+    if (updateData.status === 'Out' && ['Returned', 'Completed'].includes(borrowing.status)) {
+      await adjustBorrowedEquipmentStock(
+        borrowing.equipment,
+        borrowing.referenceIds,
+        borrowing.quantity || borrowing.qty || 1,
+        1
+      );
     }
 
     const updatedFields = {
@@ -335,12 +384,12 @@ router.put('/admin/borrowing/:id/return', protect, authorize('admin'), async (re
       await equipmentItem.save();
     }
 
-    const quantity = borrowing.quantity || borrowing.qty || 1;
-    const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-    if (equipmentItem) {
-      equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - quantity);
-      await equipmentItem.save();
-    }
+    await adjustBorrowedEquipmentStock(
+      borrowing.equipment,
+      borrowing.referenceIds,
+      borrowing.quantity || borrowing.qty || 1,
+      -1
+    );
 
     const returnedAt = req.body.returnedAt ? new Date(req.body.returnedAt) : new Date();
     borrowing.status = 'Completed';
@@ -371,11 +420,12 @@ router.delete('/admin/borrowing/:id', protect, authorize('admin'), async (req, r
     }
 
     if (borrowing.status === 'Out Now' || borrowing.status === 'Out') {
-      const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-      if (equipmentItem) {
-        equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - (borrowing.quantity || borrowing.qty || 1));
-        await equipmentItem.save();
-      }
+      await adjustBorrowedEquipmentStock(
+        borrowing.equipment,
+        borrowing.referenceIds,
+        borrowing.quantity || borrowing.qty || 1,
+        -1
+      );
     }
 
     await Borrowing.findByIdAndDelete(req.params.id);
