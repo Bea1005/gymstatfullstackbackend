@@ -319,14 +319,23 @@ exports.register = async (req, res) => {
     };
 
     userPayload.department = department || '';
+    const requestedSports = Array.isArray(sports)
+      ? sports
+      : (typeof sport === 'string' ? [sport] : []);
+    const normalizedSports = [...new Set(requestedSports
+      .filter((value) => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean))];
+    if (normalizedSports.length > 34 || normalizedSports.some((value) => value.length > 100)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select valid sports.'
+      });
+    }
+
+    userPayload.sports = normalizedSports;
+    userPayload.sport = normalizedSports[0] || '';
     if (userPayload.role === 'student') {
-      const requestedSports = Array.isArray(sports)
-        ? sports
-        : (typeof sport === 'string' ? [sport] : []);
-      const normalizedSports = [...new Set(requestedSports
-        .filter((value) => typeof value === 'string')
-        .map((value) => value.trim())
-        .filter(Boolean))];
       const normalizedYearLevel = String(yearLevel || '').trim();
 
       if (normalizedYearLevel && !['I', 'II', 'III', 'IV'].includes(normalizedYearLevel)) {
@@ -335,16 +344,7 @@ exports.register = async (req, res) => {
           message: 'Please provide a valid year level.'
         });
       }
-      if (normalizedSports.length > 34 || normalizedSports.some((value) => value.length > 100)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please select valid sports.'
-        });
-      }
-
       userPayload.yearLevel = normalizedYearLevel;
-      userPayload.sports = normalizedSports;
-      userPayload.sport = normalizedSports[0] || '';
     }
 
     const user = await User.create(userPayload);

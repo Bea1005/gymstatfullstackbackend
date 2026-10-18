@@ -278,6 +278,38 @@ describe('Auth Controllers', () => {
     }
   );
 
+  it('saves the selected sport for coach registrations using the shared sports fields', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Coach User',
+        email: 'coach@example.com',
+        password: 'Password1!',
+        sport: 'Basketball (Women)',
+        sports: ['Basketball (Women)'],
+        id: '2024-1234'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue(null);
+    bcrypt.genSalt.mockResolvedValue('salt');
+    bcrypt.hash.mockResolvedValue('hashed-password');
+    User.create.mockImplementation(async (user) => ({ _id: 'user123', ...user }));
+
+    await register(req, res);
+
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'coach',
+      sport: 'Basketball (Women)',
+      sports: ['Basketball (Women)']
+    }));
+    expect(res._getJSONData().user).toEqual(expect.objectContaining({
+      role: 'coach',
+      sport: 'Basketball (Women)',
+      sports: ['Basketball (Women)']
+    }));
+  });
+
   it('returns the saved role from the database during login', async () => {
     const req = httpMocks.createRequest({
       body: {
