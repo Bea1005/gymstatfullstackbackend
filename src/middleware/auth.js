@@ -68,6 +68,13 @@ exports.protect = async (req, res, next) => {
       });
     }
 
+    if (user.emailVerified === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'Email verification is required before accessing this account.'
+      });
+    }
+
     const passwordChangedAt = user.passwordChangedAt ? new Date(user.passwordChangedAt).getTime() : 0;
     if (passwordChangedAt && Number.isFinite(decoded.iat) && decoded.iat * 1000 < passwordChangedAt) {
       return res.status(401).json({

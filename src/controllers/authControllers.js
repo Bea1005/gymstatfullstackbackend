@@ -2,7 +2,11 @@ const User = require('../models/User');
 const crypto = require('crypto');
 const { getJWTSecret } = require('../config/security');
 const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
-const { sendPasswordResetOtp } = require('../config/email');
+const {
+  getRegistrationEmailFailure,
+  sendPasswordResetOtp,
+  sendRegistrationVerificationOtp
+} = require('../config/email');
 const RefreshSession = require('../models/RefreshSession');
 const {
   createAccessToken,
@@ -20,10 +24,52 @@ const RESET_OTP_TTL_MS = 10 * 60 * 1000;
 const RESET_OTP_COOLDOWN_MS = 60 * 1000;
 const RESET_OTP_MAX_ATTEMPTS = 5;
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
+const REGISTRATION_OTP_TTL_MS = 10 * 60 * 1000;
+const REGISTRATION_OTP_COOLDOWN_MS = 60 * 1000;
+const REGISTRATION_OTP_MAX_ATTEMPTS = 5;
+const REGISTRATION_OTP_MAX_RESENDS = 5;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
 const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
+const DUPLICATE_EMAIL_MESSAGE = 'This email is already registered. Please use a different email address.';
+const GENERIC_REGISTRATION_OTP_MESSAGE = 'If a pending registration is associated with that email, a verification code can be sent.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const respondWithPendingRegistration = (res, user) => {
+  const now = Date.now();
+  const retryAfterSeconds = user.registrationOtpLastSentAt
+    ? Math.max(0, Math.ceil(
+      (REGISTRATION_OTP_COOLDOWN_MS
+        - (now - user.registrationOtpLastSentAt.getTime())) / 1000
+    ))
+    : 0;
+  const emailSent = Boolean(
+    user.registrationOtpHash
+    && user.registrationOtpExpiresAt
+    && user.registrationOtpExpiresAt.getTime() > now
+  );
+
+  return res.status(202).json({
+    success: true,
+    verificationRequired: true,
+    emailSent,
+    retryAfterSeconds,
+    message: 'A registration for this email is awaiting verification. Enter your code or request a new one.'
+  });
+};
+
+const buildRegistrationEmailFailureResponse = (error, message) => {
+  const failure = getRegistrationEmailFailure(error);
+  const failureCode = error?.code || error?.name || 'unknown';
+  console.error(`Registration verification email delivery failed [${failureCode}]`);
+  return {
+    success: false,
+    safeError: 'registration-email-delivery',
+    verificationRequired: true,
+    deliveryIssue: failure.code,
+    message: message || failure.message
+  };
+};
 
 const hashResetValue = (value) => crypto
   .createHmac('sha256', getJWTSecret())
@@ -255,64 +301,283 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
+exports.verifyRegistrationOtp = async (req, res) => {
+  try {
+    const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    const otp = String(req.body?.otp || '').trim();
+    if (!EMAIL_PATTERN.test(normalizedEmail) || !/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid email and 6-digit verification code.' });
+    }
+
+    const userQuery = User.findOne({
+      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' },
+      emailVerified: false
+    });
+    const user = await (userQuery && typeof userQuery.select === 'function'
+      ? userQuery.select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts')
+      : userQuery);
+    const now = Date.now();
+    if (!user || !user.registrationOtpExpiresAt) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    if (user.registrationOtpExpiresAt.getTime() <= now) {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: user.registrationOtpHash },
+        { $set: { registrationOtpHash: null, registrationOtpAttempts: 0 } }
+      );
+      return res.status(400).json({ success: false, message: 'This verification code has expired. Request a new code.' });
+    }
+
+    if (!user.registrationOtpHash) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    if (user.registrationOtpAttempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: user.registrationOtpHash },
+        { $set: { registrationOtpHash: null, registrationOtpAttempts: 0 } }
+      );
+      return res.status(429).json({ success: false, message: 'Too many verification attempts. Request a new code.' });
+    }
+
+    const otpHash = hashResetValue(otp);
+    if (!resetValueMatches(otp, user.registrationOtpHash)) {
+      const attemptUpdate = await User.findOneAndUpdate(
+        {
+          _id: user._id,
+          emailVerified: false,
+          registrationOtpHash: user.registrationOtpHash,
+          registrationOtpExpiresAt: { $gt: new Date(now) },
+          registrationOtpAttempts: { $lt: REGISTRATION_OTP_MAX_ATTEMPTS }
+        },
+        { $inc: { registrationOtpAttempts: 1 } },
+        { new: true }
+      );
+
+      if (attemptUpdate?.registrationOtpAttempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
+        await User.updateOne(
+          { _id: user._id, registrationOtpHash: user.registrationOtpHash },
+          { $set: { registrationOtpHash: null, registrationOtpAttempts: 0 } }
+        );
+        return res.status(429).json({ success: false, message: 'Too many verification attempts. Request a new code.' });
+      }
+      return res.status(400).json({ success: false, message: 'Invalid verification code. Please try again.' });
+    }
+
+    const verifiedUser = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        emailVerified: false,
+        registrationOtpHash: otpHash,
+        registrationOtpExpiresAt: { $gt: new Date(now) },
+        registrationOtpAttempts: { $lt: REGISTRATION_OTP_MAX_ATTEMPTS }
+      },
+      {
+        $set: { emailVerified: true },
+        $unset: {
+          registrationOtpHash: 1,
+          registrationOtpExpiresAt: 1,
+          registrationOtpAttempts: 1,
+          registrationOtpLastSentAt: 1,
+          registrationOtpResendCount: 1
+        }
+      },
+      { new: true }
+    );
+
+    if (!verifiedUser) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    return res.json({ success: true, message: 'Email verified successfully.' });
+  } catch {
+    console.error('Registration email verification failed.');
+    return res.status(500).json({ success: false, message: 'Unable to verify your email. Please try again later.' });
+  }
+};
+
+exports.resendRegistrationOtp = async (req, res) => {
+  try {
+    const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    if (!EMAIL_PATTERN.test(normalizedEmail)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid email address.' });
+    }
+
+    const userQuery = User.findOne({
+      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' },
+      emailVerified: false
+    });
+    const user = await (userQuery && typeof userQuery.select === 'function'
+      ? userQuery.select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts +registrationOtpLastSentAt +registrationOtpResendCount')
+      : userQuery);
+
+    if (!user) {
+      return res.status(202).json({ success: true, message: GENERIC_REGISTRATION_OTP_MESSAGE });
+    }
+
+    const now = Date.now();
+    const codeExpired = Boolean(
+      user.registrationOtpExpiresAt
+      && user.registrationOtpExpiresAt.getTime() <= now
+    );
+    if (user.registrationOtpLastSentAt) {
+      const cooldownRemaining = REGISTRATION_OTP_COOLDOWN_MS
+        - (now - user.registrationOtpLastSentAt.getTime());
+      if (cooldownRemaining > 0) {
+        const retryAfterSeconds = Math.ceil(cooldownRemaining / 1000);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        return res.status(429).json({
+          success: false,
+          retryAfterSeconds,
+          message: 'Please wait before requesting another verification code.'
+        });
+      }
+    }
+
+    const resendCount = codeExpired ? 0 : Number(user.registrationOtpResendCount || 0);
+    if (resendCount >= REGISTRATION_OTP_MAX_RESENDS) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((user.registrationOtpExpiresAt.getTime() - now) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      return res.status(429).json({
+        success: false,
+        retryAfterSeconds,
+        message: 'Too many resend requests. Please wait for this code to expire before trying again.'
+      });
+    }
+
+    const otp = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const otpHash = hashResetValue(otp);
+    const expiresAt = new Date(now + REGISTRATION_OTP_TTL_MS);
+    const expectedLastSentAt = user.registrationOtpLastSentAt || null;
+    const expectedResendCount = Number(user.registrationOtpResendCount || 0);
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        emailVerified: false,
+        registrationOtpLastSentAt: expectedLastSentAt,
+        registrationOtpResendCount: expectedResendCount
+      },
+      {
+        $set: {
+          registrationOtpHash: otpHash,
+          registrationOtpExpiresAt: expiresAt,
+          registrationOtpAttempts: 0,
+          registrationOtpLastSentAt: new Date(now),
+          registrationOtpResendCount: codeExpired ? 1 : expectedResendCount + 1
+        }
+      },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(429).json({
+        success: false,
+        retryAfterSeconds: Math.ceil(REGISTRATION_OTP_COOLDOWN_MS / 1000),
+        message: 'Please wait before requesting another verification code.'
+      });
+    }
+
+    try {
+      await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
+    } catch (error) {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: otpHash },
+        {
+          $set: {
+            registrationOtpHash: null,
+            registrationOtpExpiresAt: null,
+            registrationOtpLastSentAt: null,
+            registrationOtpResendCount: 0
+          }
+        }
+      );
+      return res.status(503).json(buildRegistrationEmailFailureResponse(error));
+    }
+
+    return res.status(202).json({ success: true, message: GENERIC_REGISTRATION_OTP_MESSAGE });
+  } catch {
+    console.error('Registration verification resend failed.');
+    return res.status(500).json({ success: false, message: 'Unable to resend the verification code. Please try again later.' });
+  }
+};
+
 // Register Controller
 exports.register = async (req, res) => {
   try {
-    console.log('📝 Registration attempt:', { ...req.body, password: '***' });
-    
     const { fullname, email, password, department, yearLevel, sport, sports, id } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
 
-    if (!fullname || !password || !id) {
-      console.log('❌ Registration failed: Missing required fields');
-      return res.status(400).json({ 
+    if (!fullname || !password || !id || !normalizedEmail) {
+      return res.status(400).json({
         success: false,
-        message: 'Please provide all required fields: fullname, password, and ID' 
+        message: 'Please provide all required fields: fullname, email, password, and ID'
       });
+    }
+    if (!EMAIL_PATTERN.test(normalizedEmail)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid email address.' });
     }
 
     if (!isPasswordValid(password)) {
-      console.log('❌ Registration failed: Password does not meet policy');
-      return res.status(400).json({ 
-        success: false,
-        message: PASSWORD_POLICY_MESSAGE
-      });
+      return res.status(400).json({ success: false, message: PASSWORD_POLICY_MESSAGE });
     }
 
     const trimmedId = id?.trim();
-
     if (!isValidId(trimmedId)) {
-      console.log('❌ Registration failed: Invalid ID format');
       return res.status(400).json({
         success: false,
         message: 'ID must be at least 7 characters long and contain only letters, numbers, or common special characters.'
       });
     }
 
-    if (await User.hasRegisteredId(trimmedId)) {
-      console.log('❌ Registration failed: User ID already exists');
-      return res.status(409).json({
-        success: false,
-        message: DUPLICATE_ID_MESSAGE
-      });
+    await User.ensureEmailIndex();
+
+    const existingEmailQuery = User.findOne({
+      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' }
+    });
+    const existingEmailUser = await (existingEmailQuery && typeof existingEmailQuery.select === 'function'
+      ? existingEmailQuery.select('+registrationOtpLastSentAt +registrationOtpHash +registrationOtpExpiresAt')
+      : existingEmailQuery);
+    if (existingEmailUser) {
+      if (existingEmailUser.emailVerified === false) {
+        return respondWithPendingRegistration(res, existingEmailUser);
+      }
+      return res.status(409).json({ success: false, message: DUPLICATE_EMAIL_MESSAGE });
     }
 
-    if (email) {
-      const existingUserWithEmail = await User.findOne({ email });
-      if (existingUserWithEmail?.email === email) {
-        console.log('❌ Registration failed: Email already exists');
-        return res.status(400).json({ 
-          success: false,
-          message: 'Email already registered' 
-        });
+    if (await User.hasRegisteredId(trimmedId)) {
+      const pendingQuery = User.findOne({
+        id: trimmedId,
+        emailNormalized: normalizedEmail,
+        emailVerified: false
+      });
+      const pendingUser = await (pendingQuery && typeof pendingQuery.select === 'function'
+        ? pendingQuery.select('+registrationOtpLastSentAt +registrationOtpHash +registrationOtpExpiresAt')
+        : pendingQuery);
+      if (pendingUser) {
+        return respondWithPendingRegistration(res, pendingUser);
       }
+      return res.status(409).json({ success: false, message: DUPLICATE_ID_MESSAGE });
+    }
 
+    if (await User.hasRegisteredEmail(normalizedEmail)) {
+      return res.status(409).json({ success: false, message: DUPLICATE_EMAIL_MESSAGE });
     }
 
     const hashedPassword = await hashPassword(password);
-
+    const now = Date.now();
+    const otp = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const otpHash = hashResetValue(otp);
     const userPayload = {
       fullname,
-      email: email || '',
+      email: normalizedEmail,
+      emailNormalized: normalizedEmail,
+      emailVerified: false,
+      registrationOtpHash: otpHash,
+      registrationOtpExpiresAt: new Date(now + REGISTRATION_OTP_TTL_MS),
+      registrationOtpAttempts: 0,
+      registrationOtpLastSentAt: new Date(now),
+      registrationOtpResendCount: 0,
       password: hashedPassword,
       role: /^\d{4}-\d{4}$/.test(trimmedId) ? 'coach' : 'student',
       id: trimmedId
@@ -327,57 +592,91 @@ exports.register = async (req, res) => {
       .map((value) => value.trim())
       .filter(Boolean))];
     if (normalizedSports.length > 34 || normalizedSports.some((value) => value.length > 100)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please select valid sports.'
-      });
+      return res.status(400).json({ success: false, message: 'Please select valid sports.' });
     }
 
     userPayload.sports = normalizedSports;
     userPayload.sport = normalizedSports[0] || '';
     if (userPayload.role === 'student') {
       const normalizedYearLevel = String(yearLevel || '').trim();
-
       if (normalizedYearLevel && !['I', 'II', 'III', 'IV'].includes(normalizedYearLevel)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please provide a valid year level.'
-        });
+        return res.status(400).json({ success: false, message: 'Please provide a valid year level.' });
       }
       userPayload.yearLevel = normalizedYearLevel;
     }
 
     const user = await User.create(userPayload);
+    try {
+      await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
+    } catch (error) {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: otpHash },
+        {
+          $set: {
+            registrationOtpHash: null,
+            registrationOtpExpiresAt: null,
+            registrationOtpAttempts: 0,
+            registrationOtpLastSentAt: null,
+            registrationOtpResendCount: 0
+          }
+        }
+      );
+      return res.status(503).json(buildRegistrationEmailFailureResponse(
+        error,
+        'Your registration is saved, but the verification email could not be sent. Use Resend Code to try again.'
+      ));
+    }
 
-    console.log(`✅ User registered successfully: ${user.id} (${user.role})`);
-
-    res.status(201).json({
+    console.log(`Registration awaiting email verification: ${user.id} (${user.role})`);
+    return res.status(201).json({
       success: true,
-      message: `Registration successful as ${user.role}. Please login with your credentials.`,
+      verificationRequired: true,
+      emailSent: true,
+      message: 'Registration accepted. Enter the verification code sent to your email.',
       user: buildUserResponse(user, user.role)
     });
-
   } catch (error) {
-    console.error('❌ Registration error:', error);
+    console.error('Registration error:', error.name || 'Unexpected error');
 
     if (error.code === 11000) {
       if (error.keyPattern?.id || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'id')) {
-        return res.status(409).json({
-          success: false,
-          message: DUPLICATE_ID_MESSAGE
+        const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+        const id = String(req.body?.id || '').trim();
+        const pendingQuery = User.findOne({
+          id,
+          emailNormalized: normalizedEmail,
+          emailVerified: false
         });
+        const pendingUser = await (pendingQuery && typeof pendingQuery.select === 'function'
+          ? pendingQuery.select('+registrationOtpLastSentAt +registrationOtpHash +registrationOtpExpiresAt')
+          : pendingQuery);
+        if (pendingUser) {
+          return respondWithPendingRegistration(res, pendingUser);
+        }
+        return res.status(409).json({ success: false, message: DUPLICATE_ID_MESSAGE });
+      }
+      if (error.keyPattern?.emailNormalized
+        || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'emailNormalized')) {
+        const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+        const pendingQuery = User.findOne({
+          emailNormalized: normalizedEmail,
+          emailVerified: false
+        });
+        const pendingUser = await (pendingQuery && typeof pendingQuery.select === 'function'
+          ? pendingQuery.select('+registrationOtpLastSentAt +registrationOtpHash +registrationOtpExpiresAt')
+          : pendingQuery);
+        if (pendingUser) {
+          return respondWithPendingRegistration(res, pendingUser);
+        }
+        return res.status(409).json({ success: false, message: DUPLICATE_EMAIL_MESSAGE });
       }
 
-      const field = Object.keys(error.keyPattern || error.keyValue || {})[0] || 'Field';
-      return res.status(400).json({ 
-        success: false,
-        message: `${field} already exists` 
-      });
+      return res.status(409).json({ success: false, message: 'This account information is already registered.' });
     }
 
-    res.status(500).json({ 
+    return res.status(500).json({
       success: false,
-      message: 'Server error during registration. Please try again.' 
+      message: 'Server error during registration. Please try again.'
     });
   }
 };
@@ -419,6 +718,14 @@ exports.login = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: 'Incorrect password for this account.'
+      });
+    }
+
+    // Accounts predating email verification have no flag and remain compatible.
+    if (user.emailVerified === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email before logging in. Return to the Registration Page to enter or resend your verification code.'
       });
     }
 
@@ -506,6 +813,18 @@ exports.refreshSession = async (req, res) => {
     if (!user || user.accountStatus === 'archived') {
       await RefreshSession.updateMany({ userId: session.userId, revokedAt: null }, { $set: { revokedAt: new Date() } });
       return res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+
+    if (user.emailVerified === false) {
+      await RefreshSession.updateMany(
+        { userId: session.userId, revokedAt: null },
+        { $set: { revokedAt: new Date() } }
+      );
+      clearAuthenticationCookies(res, getPortalRole(req));
+      return res.status(403).json({
+        success: false,
+        message: 'Email verification is required before accessing this account.'
+      });
     }
 
     const portalRole = getPortalRole(req);

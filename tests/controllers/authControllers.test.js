@@ -6,7 +6,17 @@ const User = require('../../src/models/User');
 const RefreshSession = require('../../src/models/RefreshSession');
 const { getJWTSecret } = require('../../src/config/security');
 const { hashRefreshToken } = require('../../src/config/authTokens');
-const { register, login, requestPasswordReset, verifyPasswordResetOtp, resetPassword, refreshSession, logout } = require('../../src/controllers/authControllers');
+const {
+  register,
+  verifyRegistrationOtp,
+  resendRegistrationOtp,
+  login,
+  requestPasswordReset,
+  verifyPasswordResetOtp,
+  resetPassword,
+  refreshSession,
+  logout
+} = require('../../src/controllers/authControllers');
 
 jest.mock('../../src/models/User');
 jest.mock('../../src/models/RefreshSession', () => ({
@@ -19,8 +29,17 @@ jest.mock('../../src/models/RefreshSession', () => ({
 jest.mock('bcryptjs');
 jest.mock('jsonwebtoken');
 jest.mock('../../src/config/email', () => ({
-  sendPasswordResetOtp: jest.fn().mockResolvedValue(true)
+  getRegistrationEmailFailure: jest.fn((error) => ({
+    code: error?.code || 'delivery-failed',
+    message: 'Check email provider configuration.'
+  })),
+  sendPasswordResetOtp: jest.fn().mockResolvedValue(true),
+  sendRegistrationVerificationOtp: jest.fn().mockResolvedValue(true)
 }));
+const {
+  getRegistrationEmailFailure,
+  sendRegistrationVerificationOtp
+} = require('../../src/config/email');
 
 const hashResetValue = (value) => crypto
   .createHmac('sha256', getJWTSecret())
@@ -31,6 +50,8 @@ describe('Auth Controllers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     User.hasRegisteredId = jest.fn().mockResolvedValue(false);
+    User.hasRegisteredEmail = jest.fn().mockResolvedValue(false);
+    User.ensureEmailIndex = jest.fn().mockResolvedValue('emailNormalized_1');
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -72,7 +93,283 @@ describe('Auth Controllers', () => {
 
     expect(res.statusCode).toBe(201);
     expect(User.create).toHaveBeenCalledWith(expect.objectContaining({ role: 'student' }));
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      emailNormalized: 'jane@example.com',
+      emailVerified: false,
+      registrationOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      registrationOtpExpiresAt: expect.any(Date)
+    }));
+    expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith('jane@example.com', expect.stringMatching(/^\d{6}$/), 10);
     expect(res._getJSONData().user.role).toBe('student');
+    expect(res._getJSONData()).not.toHaveProperty('otp');
+    expect(res._getJSONData().user).not.toHaveProperty('registrationOtpHash');
+  });
+
+  it('keeps a pending account and provides a resend path when the verification email fails', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne.mockResolvedValue(null);
+    User.create.mockImplementation(async (user) => ({ _id: 'user123', ...user }));
+    sendRegistrationVerificationOtp.mockRejectedValueOnce(new Error('Brevo unavailable'));
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: false,
+      verificationRequired: true
+    }));
+    expect(User.create).toHaveBeenCalledTimes(1);
+    expect(User.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: 'user123', registrationOtpHash: expect.any(String) }),
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          registrationOtpHash: null,
+          registrationOtpExpiresAt: null
+        })
+      })
+    );
+    expect(getRegistrationEmailFailure).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('verifies the correct unexpired registration OTP and consumes it once', async () => {
+    const user = {
+      _id: 'user123',
+      registrationOtpHash: hashResetValue('123456'),
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpAttempts: 0
+    };
+    const req = httpMocks.createRequest({ body: { email: 'jane@example.com', otp: '123456' } });
+    const res = httpMocks.createResponse();
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    User.findOneAndUpdate.mockResolvedValue({ ...user, emailVerified: true });
+
+    await verifyRegistrationOtp(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toEqual({ success: true, message: 'Email verified successfully.' });
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: 'user123',
+        registrationOtpHash: user.registrationOtpHash,
+        registrationOtpExpiresAt: { $gt: expect.any(Date) }
+      }),
+      expect.objectContaining({
+        $set: { emailVerified: true },
+        $unset: expect.objectContaining({ registrationOtpHash: 1 })
+      }),
+      { new: true }
+    );
+    expect(res._getJSONData()).not.toHaveProperty('verificationCode');
+
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(null) });
+    const replayRes = httpMocks.createResponse();
+    await verifyRegistrationOtp(req, replayRes);
+    expect(replayRes.statusCode).toBe(400);
+  });
+
+  it('rejects a wrong registration OTP and atomically counts failed attempts', async () => {
+    const user = {
+      _id: 'user123',
+      registrationOtpHash: hashResetValue('123456'),
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpAttempts: 0
+    };
+    const req = httpMocks.createRequest({ body: { email: 'jane@example.com', otp: '654321' } });
+    const res = httpMocks.createResponse();
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    User.findOneAndUpdate.mockResolvedValue({ ...user, registrationOtpAttempts: 1 });
+
+    await verifyRegistrationOtp(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toContain('Invalid verification code');
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ registrationOtpHash: user.registrationOtpHash }),
+      { $inc: { registrationOtpAttempts: 1 } },
+      { new: true }
+    );
+  });
+
+  it('rejects expired and exhausted registration codes', async () => {
+    const expiredUser = {
+      _id: 'expired-user',
+      registrationOtpHash: hashResetValue('123456'),
+      registrationOtpExpiresAt: new Date(Date.now() - 1),
+      registrationOtpAttempts: 0
+    };
+    const expiredReq = httpMocks.createRequest({ body: { email: 'jane@example.com', otp: '123456' } });
+    const expiredRes = httpMocks.createResponse();
+    User.findOne.mockReturnValueOnce({ select: jest.fn().mockResolvedValue(expiredUser) });
+
+    await verifyRegistrationOtp(expiredReq, expiredRes);
+
+    expect(expiredRes.statusCode).toBe(400);
+    expect(expiredRes._getJSONData().message).toContain('expired');
+    expect(User.updateOne).toHaveBeenCalledWith(
+      { _id: 'expired-user', registrationOtpHash: expiredUser.registrationOtpHash },
+      expect.objectContaining({ $set: expect.objectContaining({ registrationOtpHash: null }) })
+    );
+
+    const exhaustedUser = {
+      ...expiredUser,
+      _id: 'exhausted-user',
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpAttempts: 5
+    };
+    const exhaustedReq = httpMocks.createRequest({ body: { email: 'jane@example.com', otp: '123456' } });
+    const exhaustedRes = httpMocks.createResponse();
+    User.findOne.mockReturnValueOnce({ select: jest.fn().mockResolvedValue(exhaustedUser) });
+
+    await verifyRegistrationOtp(exhaustedReq, exhaustedRes);
+
+    expect(exhaustedRes.statusCode).toBe(429);
+    expect(exhaustedRes._getJSONData().message).toContain('Too many');
+  });
+
+  it('resends a fresh registration OTP after the cooldown without returning the code', async () => {
+    const user = {
+      _id: 'user123',
+      registrationOtpHash: hashResetValue('123456'),
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpAttempts: 0,
+      registrationOtpLastSentAt: new Date(Date.now() - 60_000),
+      registrationOtpResendCount: 0
+    };
+    const req = httpMocks.createRequest({ body: { email: 'jane@example.com' } });
+    const res = httpMocks.createResponse();
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    User.findOneAndUpdate.mockResolvedValue(user);
+
+    await resendRegistrationOtp(req, res);
+
+    expect(res.statusCode).toBe(202);
+    expect(res._getJSONData()).not.toHaveProperty('otp');
+    expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith('jane@example.com', expect.stringMatching(/^\d{6}$/), 10);
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: 'user123',
+        registrationOtpLastSentAt: user.registrationOtpLastSentAt,
+        registrationOtpResendCount: 0
+      }),
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          registrationOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          registrationOtpResendCount: 1
+        })
+      }),
+      { new: true }
+    );
+    expect(User.findOneAndUpdate.mock.calls[0][1].$set.registrationOtpHash)
+      .not.toBe(user.registrationOtpHash);
+  });
+
+  it('limits resend attempts during the code cooldown and after the resend cap', async () => {
+    const user = {
+      _id: 'user123',
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpLastSentAt: new Date(),
+      registrationOtpResendCount: 0
+    };
+    const req = httpMocks.createRequest({ body: { email: 'jane@example.com' } });
+    const cooldownRes = httpMocks.createResponse();
+    User.findOne.mockReturnValueOnce({ select: jest.fn().mockResolvedValue(user) });
+
+    await resendRegistrationOtp(req, cooldownRes);
+
+    expect(cooldownRes.statusCode).toBe(429);
+    expect(cooldownRes.getHeader('Retry-After')).toBeDefined();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
+
+    User.findOne.mockReturnValueOnce({
+      select: jest.fn().mockResolvedValue({
+        ...user,
+        registrationOtpLastSentAt: new Date(Date.now() - 60_000),
+        registrationOtpResendCount: 5
+      })
+    });
+    const capRes = httpMocks.createResponse();
+
+    await resendRegistrationOtp(req, capRes);
+
+    expect(capRes.statusCode).toBe(429);
+    expect(capRes._getJSONData().message).toContain('Too many resend requests');
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
+  });
+
+  it('reuses a matching pending registration instead of creating a duplicate', async () => {
+    const pendingUser = {
+      _id: 'pending-user',
+      id: '23B1509',
+      email: 'jane@example.com',
+      emailVerified: false,
+      password: 'hashed-password',
+      registrationOtpLastSentAt: new Date(Date.now() - 61_000)
+    };
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue(pendingUser)
+    });
+    bcrypt.compare.mockResolvedValue(true);
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(202);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({ verificationRequired: true }));
+    expect(User.create).not.toHaveBeenCalled();
+    expect(User.hasRegisteredId).not.toHaveBeenCalled();
+  });
+
+  it('lets a user resume a pending email verification without changing its saved account details', async () => {
+    const pendingUser = {
+      _id: 'pending-user',
+      id: '23B1509',
+      email: 'jane@example.com',
+      emailVerified: false,
+      registrationOtpLastSentAt: new Date(Date.now() - 61_000),
+      registrationOtpHash: 'active-code-hash',
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000)
+    };
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'DifferentPassword1!',
+        id: '23B1510'
+      }
+    });
+    const res = httpMocks.createResponse();
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue(pendingUser)
+    });
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(202);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: true,
+      verificationRequired: true,
+      emailSent: true
+    }));
+    expect(User.create).not.toHaveBeenCalled();
+    expect(User.hasRegisteredId).not.toHaveBeenCalled();
+    expect(bcrypt.compare).not.toHaveBeenCalled();
   });
 
   it('saves and returns student year level and all registered sports', async () => {
@@ -178,6 +475,47 @@ describe('Auth Controllers', () => {
     });
   });
 
+  it('returns the pending verification step when the registered ID and email match an unverified account', async () => {
+    const pendingUser = {
+      _id: 'pending-user',
+      id: '23B1509',
+      email: 'jane@example.com',
+      emailVerified: false,
+      registrationOtpHash: 'active-code-hash',
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpLastSentAt: new Date(Date.now() - 61_000)
+    };
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.hasRegisteredId.mockResolvedValue(true);
+    User.findOne
+      .mockReturnValueOnce({ select: jest.fn().mockResolvedValue(null) })
+      .mockReturnValueOnce({ select: jest.fn().mockResolvedValue(pendingUser) });
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(202);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: true,
+      verificationRequired: true,
+      emailSent: true
+    }));
+    expect(User.create).not.toHaveBeenCalled();
+    expect(User.findOne).toHaveBeenLastCalledWith({
+      id: '23B1509',
+      emailNormalized: 'jane@example.com',
+      emailVerified: false
+    });
+  });
+
   it('returns the duplicate ID message when the unique index rejects a concurrent registration', async () => {
     const req = httpMocks.createRequest({
       body: {
@@ -205,6 +543,52 @@ describe('Auth Controllers', () => {
       success: false,
       message: 'This ID is already registered. Please use a different ID.'
     });
+  });
+
+  it('routes a concurrent duplicate-email registration to the pending verification step', async () => {
+    const pendingUser = {
+      _id: 'pending-user',
+      id: '23B1509',
+      email: 'jane@example.com',
+      emailVerified: false,
+      registrationOtpHash: 'active-code-hash',
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpLastSentAt: new Date(Date.now() - 61_000)
+    };
+    const req = httpMocks.createRequest({
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@example.com',
+        password: 'Password1!',
+        id: '23B1509'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    User.findOne
+      .mockResolvedValueOnce(null)
+      .mockReturnValueOnce({
+        select: jest.fn().mockResolvedValue(pendingUser)
+      });
+    User.create.mockRejectedValue({
+      code: 11000,
+      keyPattern: { emailNormalized: 1 },
+      keyValue: { emailNormalized: 'jane@example.com' }
+    });
+
+    await register(req, res);
+
+    expect(res.statusCode).toBe(202);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: true,
+      verificationRequired: true,
+      emailSent: true
+    }));
+    expect(User.findOne).toHaveBeenLastCalledWith({
+      emailNormalized: 'jane@example.com',
+      emailVerified: false
+    });
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
   });
 
   it('keeps the default student role for a valid long ID during registration', async () => {
@@ -310,6 +694,28 @@ describe('Auth Controllers', () => {
     }));
   });
 
+  it('rejects login for a valid-password account that has not verified its email', async () => {
+    const req = httpMocks.createRequest({
+      body: { id: '23B1509', password: 'Password1!' }
+    });
+    const res = httpMocks.createResponse();
+    User.findOne.mockResolvedValue({
+      _id: 'pending-user',
+      id: '23B1509',
+      email: 'jane@example.com',
+      emailVerified: false,
+      password: 'hashed-password',
+      role: 'student'
+    });
+    bcrypt.compare.mockResolvedValue(true);
+
+    await login(req, res);
+
+    expect(res.statusCode).toBe(403);
+    expect(res._getJSONData().message).toContain('verify your email');
+    expect(RefreshSession.create).not.toHaveBeenCalled();
+  });
+
   it('returns the saved role from the database during login', async () => {
     const req = httpMocks.createRequest({
       body: {
@@ -327,6 +733,7 @@ describe('Auth Controllers', () => {
       username: 'coachuser',
       email: 'coach@example.com',
       password: 'hashed-password',
+      emailVerified: true,
       role: 'coach',
       department: '',
       sport: ''

@@ -134,6 +134,24 @@ describe('Auth Middleware Tests', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
+    it('rejects an unverified account even if it presents a valid access token', async () => {
+      req.headers = { authorization: 'Bearer valid-token' };
+      jwt.verify.mockReturnValue({ id: 'pending-user', role: 'student' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({
+          _id: 'pending-user',
+          role: 'student',
+          emailVerified: false
+        })
+      });
+
+      await protect(req, res, next);
+
+      expect(res.statusCode).toBe(403);
+      expect(res._getJSONData().message).toContain('Email verification is required');
+      expect(next).not.toHaveBeenCalled();
+    });
+
     it('should reject an access token issued before the password was reset', async () => {
       req.headers = { authorization: 'Bearer old_access_token' };
       const passwordChangedAt = new Date(Date.now() - 5_000);

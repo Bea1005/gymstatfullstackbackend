@@ -1,12 +1,22 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { hashPassword } = require('../config/passwords');
+const crypto = require('crypto');
+const { hashPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
+const { getJWTSecret } = require('../config/security');
+const { sendRegistrationVerificationOtp } = require('../config/email');
 const router = express.Router();
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 
 const VALID_ROLES = ['student', 'coach', 'admin', 'screener'];
 const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REGISTRATION_OTP_TTL_MS = 10 * 60 * 1000;
+
+const hashRegistrationOtp = (otp) => crypto
+  .createHmac('sha256', getJWTSecret())
+  .update(String(otp))
+  .digest('hex');
 
 const normalizeRole = (role) => {
   const normalized = String(role || '').trim().toLowerCase();
@@ -33,7 +43,24 @@ const getAccountStatus = (userObject) => userObject?.accountStatus === 'archived
 
 const mapUserToResponse = (user) => {
   const userObject = user.toObject ? user.toObject() : user;
-  const { password, __v, ...rest } = userObject;
+  const {
+    password,
+    __v,
+    emailNormalized,
+    registrationOtpHash,
+    registrationOtpExpiresAt,
+    registrationOtpAttempts,
+    registrationOtpLastSentAt,
+    registrationOtpResendCount,
+    passwordResetOtpHash,
+    passwordResetOtpExpiresAt,
+    passwordResetOtpAttempts,
+    passwordResetLastSentAt,
+    passwordResetTokenHash,
+    passwordResetTokenExpiresAt,
+    passwordResetTokenConsumedAt,
+    ...rest
+  } = userObject;
   const isAdmin = String(userObject.role || '').trim().toLowerCase() === 'admin';
 
   if (isAdmin) {
@@ -99,7 +126,7 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
   try {
     const rawId = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
     const rawFullname = typeof req.body?.fullname === 'string' ? req.body.fullname.trim() : '';
-    const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+    const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const rawPassword = typeof req.body?.password === 'string' ? req.body.password : '';
     const rawDepartment = typeof req.body?.department === 'string' ? req.body.department.trim() : '';
     const rawSport = typeof req.body?.sport === 'string' ? req.body.sport.trim() : '';
@@ -120,6 +147,13 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       });
     }
 
+    if (!EMAIL_PATTERN.test(rawEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address.'
+      });
+    }
+
     if (!rawPassword) {
       return res.status(400).json({
         success: false,
@@ -127,8 +161,14 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       });
     }
 
+    if (!isPasswordValid(rawPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: PASSWORD_POLICY_MESSAGE
+      });
+    }
+
     const fullname = rawFullname || rawId;
-    // Check for existing user - check all unique fields
     if (await User.hasRegisteredId(rawId)) {
       return res.status(409).json({
         success: false,
@@ -136,19 +176,28 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       });
     }
 
-    const existingUserWithEmail = await User.findOne({ email: rawEmail });
-    if (existingUserWithEmail?.email === rawEmail) {
+    await User.ensureEmailIndex();
+    if (await User.hasRegisteredEmail(rawEmail)) {
       return res.status(409).json({
         success: false,
         message: 'A user with this Email already exists. Please use a different email.'
       });
     }
 
-    // Hash password and create user
     const hashedPassword = await hashPassword(rawPassword);
+    const otp = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const otpHash = hashRegistrationOtp(otp);
+    const now = Date.now();
     const userPayload = {
       fullname,
       email: rawEmail,
+      emailNormalized: rawEmail,
+      emailVerified: false,
+      registrationOtpHash: otpHash,
+      registrationOtpExpiresAt: new Date(now + REGISTRATION_OTP_TTL_MS),
+      registrationOtpAttempts: 0,
+      registrationOtpLastSentAt: new Date(now),
+      registrationOtpResendCount: 0,
       password: hashedPassword,
       role: requestedRole,
       id: rawId,
@@ -164,10 +213,34 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
 
     const user = await User.create(userPayload);
 
-    // Return success with user data
+    try {
+      await sendRegistrationVerificationOtp(rawEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
+    } catch {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: otpHash },
+        {
+          $set: {
+            registrationOtpHash: null,
+            registrationOtpExpiresAt: null,
+            registrationOtpAttempts: 0,
+            registrationOtpLastSentAt: null,
+            registrationOtpResendCount: 0
+          }
+        }
+      );
+      console.error('Admin-provisioned registration verification email delivery failed.');
+      return res.status(503).json({
+        success: false,
+        safeError: 'registration-email-delivery',
+        verificationRequired: true,
+        message: 'The account is pending email verification, but the verification email could not be sent. The user can retry from the Registration Page.'
+      });
+    }
+
     res.status(201).json({
       success: true,
-      message: `${requestedRole.charAt(0).toUpperCase() + requestedRole.slice(1)} account created successfully`,
+      verificationRequired: true,
+      message: `${requestedRole.charAt(0).toUpperCase() + requestedRole.slice(1)} account created. Email verification is required before login.`,
       user: mapUserToResponse(user)
     });
   } catch (error) {

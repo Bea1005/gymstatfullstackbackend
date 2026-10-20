@@ -23,7 +23,7 @@ const { auditSecurityEvents } = require('./src/middleware/securityAudit');
 console.log('🔐 Environment Configuration:');
 console.log(`   PORT: ${process.env.PORT || 4000}`);
 console.log(`   BASE_URI: ${process.env.BASE_URI || '/api/v1'}`);
-console.log(`   Password reset email service configured: ${getEmailConfigurationStatus().configured ? 'yes' : 'no'}`);
+console.log(`   Email delivery service configured: ${getEmailConfigurationStatus().configured ? 'yes' : 'no'}`);
 getJWTSecret();
 
 const authRoutes = require('./src/routes/authRoutes');
@@ -137,6 +137,15 @@ const listenWithRetry = (preferredPort) => {
   });
 };
 
+const cleanupExpiredRegistrationOtps = async () => {
+  if (mongoose.connection.readyState !== 1) return;
+  try {
+    await User.clearExpiredRegistrationOtps();
+  } catch (error) {
+    console.error('Expired registration verification cleanup failed:', error.message);
+  }
+};
+
 if (isProduction) {
   app.use((req, res, next) => {
     const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0].trim();
@@ -160,6 +169,17 @@ app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = (body) => {
     if (res.statusCode >= 500) {
+      if (body?.safeError === 'registration-email-delivery') {
+        return originalJson({
+          success: false,
+          verificationRequired: true,
+          deliveryIssue: typeof body.deliveryIssue === 'string'
+            ? body.deliveryIssue.slice(0, 60)
+            : 'delivery-failed',
+          message: String(body.message || 'The verification email could not be sent. Please try again.')
+            .slice(0, 240)
+        });
+      }
       return originalJson({
         success: false,
         message: 'An unexpected server error occurred. Please try again.'
@@ -591,6 +611,10 @@ const startServer = async () => {
       console.error(dbError.message || dbError);
     }
 
+    await cleanupExpiredRegistrationOtps();
+    const registrationOtpCleanupTimer = setInterval(cleanupExpiredRegistrationOtps, 60 * 60 * 1000);
+    registrationOtpCleanupTimer.unref();
+
     const preferredPort = Number(process.env.PORT || 4000);
     const PORT = await listenWithRetry(preferredPort);
     process.env.PORT = String(PORT);
@@ -602,6 +626,8 @@ const startServer = async () => {
     console.log('════════════════════════════════════════════════════');
     console.log('\n📋 PUBLIC ROUTES (No Authentication Required):');
     console.log(`   POST   ${BASE_URI}/register - User registration`);
+    console.log(`   POST   ${BASE_URI}/register/verify - Verify registration email`);
+    console.log(`   POST   ${BASE_URI}/register/resend - Resend registration email code`);
     console.log(`   POST   ${BASE_URI}/login - User login`);
     console.log(`   POST   ${BASE_URI}/schedule-requests - Submit schedule request`);
     console.log(`   GET    ${BASE_URI}/schedules - View schedules`);

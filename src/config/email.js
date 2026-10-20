@@ -5,24 +5,83 @@ const getSetting = (...names) => names
   .find((value) => value !== undefined && value !== null && String(value).trim() !== '')
   ?.trim();
 const getEmailPassword = () => String(getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD') || '').replace(/\s+/g, '');
+const createEmailError = (message, code) => Object.assign(new Error(message), { code });
+
+const getRegistrationEmailFailure = (error) => {
+  const code = String(error?.code || '');
+  if (code === 'EMAIL_PROVIDER_NOT_CONFIGURED') {
+    return {
+      code: 'provider-not-configured',
+      message: 'Email sending is not configured on the backend. Check the Brevo API key and verified sender settings.'
+    };
+  }
+  if (code === 'BREVO_HTTP_401' || code === 'BREVO_HTTP_403') {
+    return {
+      code: 'brevo-credentials-rejected',
+      message: 'Brevo rejected the request. Check that the API key is active and the sender email is verified in Brevo.'
+    };
+  }
+  if (code === 'BREVO_HTTP_400') {
+    return {
+      code: 'brevo-sender-rejected',
+      message: 'Brevo rejected the sender or message. Check the verified sender email and transactional email settings in Brevo.'
+    };
+  }
+  if (code === 'BREVO_HTTP_429') {
+    return {
+      code: 'brevo-rate-limited',
+      message: 'Brevo is temporarily limiting email requests. Wait a little, then request another code.'
+    };
+  }
+  if (/^BREVO_HTTP_5\d\d$/.test(code)) {
+    return {
+      code: 'brevo-unavailable',
+      message: 'Brevo is temporarily unavailable. Please try sending the code again later.'
+    };
+  }
+  if (code === 'EMAIL_PROVIDER_TIMEOUT' || code === 'EMAIL_PROVIDER_CONNECTION_FAILED') {
+    return {
+      code: 'provider-connection-failed',
+      message: 'The backend could not connect to the email service. Check the backend network and try again.'
+    };
+  }
+  if (code === 'SMTP_AUTH_FAILED') {
+    return {
+      code: 'smtp-auth-failed',
+      message: 'The configured email provider rejected its credentials. Check the backend email settings.'
+    };
+  }
+  return {
+    code: 'delivery-failed',
+    message: 'The verification email could not be sent. Check the backend email settings and provider logs, then try again.'
+  };
+};
 
 const getEmailConfigurationStatus = () => {
   const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
   const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
   const password = getEmailPassword();
   const brevoKey = getSetting('BREVO_API_KEY');
+  const brevoFromEmail = getSetting('BREVO_FROM_EMAIL', 'SMTP_FROM', 'SMTP_USER', 'EMAIL_USER');
+  const brevoConfigured = Boolean(brevoKey && brevoFromEmail);
   return {
-    configured: Boolean((host && user && password) || brevoKey),
+    configured: Boolean((host && user && password) || brevoConfigured),
     hostConfigured: Boolean(host),
     userConfigured: Boolean(user),
     passwordConfigured: Boolean(password),
-    brevoConfigured: Boolean(brevoKey)
+    brevoConfigured
   };
 };
 
 const sendViaBrevo = async (to, subject, text, html) => {
   const apiKey = getSetting('BREVO_API_KEY');
   const fromEmail = getSetting('BREVO_FROM_EMAIL', 'SMTP_FROM', 'SMTP_USER', 'EMAIL_USER');
+  if (!apiKey || !fromEmail) {
+    throw createEmailError(
+      'Email provider is not configured.',
+      'EMAIL_PROVIDER_NOT_CONFIGURED'
+    );
+  }
   const fromName = getSetting('BREVO_FROM_NAME') || 'GYMSTAT';
   const body = JSON.stringify({
     sender: { name: fromName, email: fromEmail },
@@ -46,19 +105,27 @@ const sendViaBrevo = async (to, subject, text, html) => {
         timeout: 15000
       },
       (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
+        res.on('data', () => {});
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve();
           } else {
-            reject(new Error('Brevo API error ' + res.statusCode + ': ' + data));
+            reject(createEmailError(
+              'Brevo rejected the email request.',
+              `BREVO_HTTP_${res.statusCode}`
+            ));
           }
         });
       }
     );
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Brevo request timed out')); });
+    req.on('error', () => reject(createEmailError(
+      'Email provider connection failed.',
+      'EMAIL_PROVIDER_CONNECTION_FAILED'
+    )));
+    req.on('timeout', () => {
+      req.destroy();
+      reject(createEmailError('Email provider request timed out.', 'EMAIL_PROVIDER_TIMEOUT'));
+    });
     req.write(body);
     req.end();
   });
@@ -76,7 +143,10 @@ const getEmailTransport = () => {
     ['SMTP_PASSWORD', password]
   ].filter(([, value]) => !value).map(([key]) => key);
   if (missing.length) {
-    throw new Error('Email service is not configured: missing ' + missing.join(', '));
+    throw createEmailError(
+      'Email provider is not configured.',
+      'EMAIL_PROVIDER_NOT_CONFIGURED'
+    );
   }
   return nodemailer.createTransport({
     host,
@@ -124,4 +194,50 @@ const sendPasswordResetOtp = async (email, otp, expiresInMinutes) => {
   });
 };
 
-module.exports = { getEmailConfigurationStatus, sendPasswordResetOtp };
+const sendRegistrationVerificationOtp = async (email, otp, expiresInMinutes) => {
+  const subject = 'GYMSTAT email verification code';
+  const text = [
+    'GYMSTAT email verification',
+    '',
+    'Your verification code is ' + otp + '.',
+    'This code expires in ' + expiresInMinutes + ' minutes.',
+    '',
+    'If you did not start a GYMSTAT registration, you can ignore this email.'
+  ].join('\n');
+  const html = [
+    '<div style=font-family:Arial,sans-serif;line-height:1.5;color:#333>',
+    '<h2 style=color:#7a0a0a>GYMSTAT email verification</h2>',
+    '<p>Enter this verification code to complete your registration:</p>',
+    '<p style=font-size:28px;font-weight:700;letter-spacing:6px;color:#7a0a0a>' + otp + '</p>',
+    '<p>This code expires in ' + expiresInMinutes + ' minutes.</p>',
+    '<p>If you did not start a GYMSTAT registration, you can ignore this email.</p>',
+    '</div>'
+  ].join('');
+
+  const brevoKey = getSetting('BREVO_API_KEY');
+  if (brevoKey) {
+    return sendViaBrevo(email, subject, text, html);
+  }
+
+  try {
+    const transporter = getEmailTransport();
+    await transporter.sendMail({
+      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
+      to: email,
+      subject,
+      text,
+      html
+    });
+  } catch (error) {
+    if (error?.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
+    const code = error?.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
+    throw createEmailError('SMTP email delivery failed.', code);
+  }
+};
+
+module.exports = {
+  getEmailConfigurationStatus,
+  getRegistrationEmailFailure,
+  sendPasswordResetOtp,
+  sendRegistrationVerificationOtp
+};

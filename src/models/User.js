@@ -15,6 +15,39 @@ const baseUserSchema = new mongoose.Schema({
     default: '',
     sparse: true
   },
+  emailNormalized: {
+    type: String,
+    default: undefined,
+    select: false
+  },
+  emailVerified: {
+    type: Boolean
+  },
+  registrationOtpHash: {
+    type: String,
+    default: null,
+    select: false
+  },
+  registrationOtpExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  registrationOtpAttempts: {
+    type: Number,
+    default: 0,
+    select: false
+  },
+  registrationOtpLastSentAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  registrationOtpResendCount: {
+    type: Number,
+    default: 0,
+    select: false
+  },
   contactNumber: {
     type: String,
     default: ''
@@ -205,6 +238,7 @@ const baseUserSchema = new mongoose.Schema({
 
 baseUserSchema.index({ id: 1 }, { unique: true });
 baseUserSchema.index({ email: 1 }, { sparse: true });
+baseUserSchema.index({ emailNormalized: 1 }, { unique: true, sparse: true });
 baseUserSchema.index({ role: 1, accountStatus: 1, createdAt: -1 });
 
 const roleModelMap = {
@@ -383,16 +417,50 @@ User.hasRegisteredId = async (id) => {
     { id: normalizedId },
     { projection: { _id: 1 } }
   );
-  if (canonicalUser) return true;
-
-  const roleRecords = await Promise.all(
-    Object.values(roleModelMap).map((model) => model.collection.findOne(
-      { id: normalizedId },
-      { projection: { _id: 1 } }
-    ))
-  );
-  return roleRecords.some(Boolean);
+  return Boolean(canonicalUser);
 };
+
+User.hasRegisteredEmail = async (email) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail) return false;
+  const escapedEmail = normalizedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const emailMatch = { $regex: `^${escapedEmail}$`, $options: 'i' };
+
+  const canonicalUser = await User.collection.findOne(
+    { $or: [{ emailNormalized: normalizedEmail }, { email: emailMatch }] },
+    { projection: { _id: 1 } }
+  );
+  return Boolean(canonicalUser);
+};
+
+let emailIndexPromise;
+User.ensureEmailIndex = async () => {
+  if (!emailIndexPromise) {
+    emailIndexPromise = User.collection
+      .createIndex({ emailNormalized: 1 }, { unique: true, sparse: true })
+      .catch((error) => {
+        emailIndexPromise = null;
+        throw error;
+      });
+  }
+  return emailIndexPromise;
+};
+
+User.clearExpiredRegistrationOtps = async (now = new Date()) => User.updateMany(
+  {
+    emailVerified: false,
+    registrationOtpExpiresAt: { $lte: now }
+  },
+  {
+    $set: {
+      registrationOtpHash: null,
+      registrationOtpExpiresAt: null,
+      registrationOtpAttempts: 0,
+      registrationOtpLastSentAt: null,
+      registrationOtpResendCount: 0
+    }
+  }
+);
 
 User.normalizeRole = normalizeRole;
 User.getRoleModel = getRoleModel;

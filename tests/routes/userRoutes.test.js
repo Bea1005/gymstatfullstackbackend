@@ -5,7 +5,9 @@ const userRoutes = require('../../src/routes/userRoutes');
 
 jest.mock('../../src/models/User', () => ({
   hasRegisteredId: jest.fn(),
-  findOne: jest.fn(),
+  hasRegisteredEmail: jest.fn(),
+  ensureEmailIndex: jest.fn(),
+  updateOne: jest.fn(),
   create: jest.fn()
 }));
 jest.mock('../../src/middleware/auth', () => ({
@@ -13,8 +15,17 @@ jest.mock('../../src/middleware/auth', () => ({
   authorize: () => (req, res, next) => next()
 }));
 jest.mock('../../src/config/passwords', () => ({
-  hashPassword: jest.fn().mockResolvedValue('hashed-password')
+  hashPassword: jest.fn().mockResolvedValue('hashed-password'),
+  isPasswordValid: jest.fn().mockReturnValue(true),
+  PASSWORD_POLICY_MESSAGE: 'Invalid password.'
 }));
+jest.mock('../../src/config/security', () => ({
+  getJWTSecret: jest.fn().mockReturnValue('test-jwt-secret')
+}));
+jest.mock('../../src/config/email', () => ({
+  sendRegistrationVerificationOtp: jest.fn().mockResolvedValue(true)
+}));
+const { sendRegistrationVerificationOtp } = require('../../src/config/email');
 
 describe('User registration route', () => {
   let app;
@@ -22,6 +33,9 @@ describe('User registration route', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     User.hasRegisteredId.mockResolvedValue(false);
+    User.hasRegisteredEmail.mockResolvedValue(false);
+    User.ensureEmailIndex.mockResolvedValue('emailNormalized_1');
+    sendRegistrationVerificationOtp.mockResolvedValue(true);
     app = express();
     app.use(express.json());
     app.use('/api/v1/users', userRoutes);
@@ -57,7 +71,6 @@ describe('User registration route', () => {
   );
 
   it('returns the same duplicate ID message when MongoDB rejects a concurrent account creation', async () => {
-    User.findOne.mockResolvedValue(null);
     User.create.mockRejectedValue({
       code: 11000,
       keyPattern: { id: 1 },
@@ -79,5 +92,113 @@ describe('User registration route', () => {
       success: false,
       message: 'This ID is already registered. Please use a different ID.'
     });
+  });
+
+  it.each(['student', 'coach', 'screener', 'admin'])(
+    'creates a pending %s account and sends a registration code without exposing verification data',
+    async (role) => {
+      const createdUser = {
+        _id: 'user-123',
+        id: 'ID-123456',
+        fullname: 'New Account',
+        email: 'new@example.com',
+        emailNormalized: 'new@example.com',
+        emailVerified: false,
+        registrationOtpHash: 'private-hash',
+        registrationOtpExpiresAt: new Date(),
+        registrationOtpAttempts: 0,
+        registrationOtpLastSentAt: new Date(),
+        registrationOtpResendCount: 0,
+        password: 'hashed-password',
+        role,
+        toObject() {
+          return { ...this };
+        }
+      };
+      User.create.mockResolvedValue(createdUser);
+
+      const response = await request(app)
+        .post('/api/v1/users')
+        .send({
+          id: 'ID-123456',
+          fullname: 'New Account',
+          email: 'New@Example.com',
+          password: 'Password1!',
+          role
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body).toEqual(expect.objectContaining({
+        success: true,
+        verificationRequired: true
+      }));
+      expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+        email: 'new@example.com',
+        emailNormalized: 'new@example.com',
+        emailVerified: false,
+        registrationOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        registrationOtpExpiresAt: expect.any(Date),
+        role
+      }));
+      expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith(
+        'new@example.com',
+        expect.stringMatching(/^\d{6}$/),
+        10
+      );
+      expect(response.body).not.toHaveProperty('otp');
+      expect(response.body.user).not.toHaveProperty('emailNormalized');
+      expect(response.body.user).not.toHaveProperty('registrationOtpHash');
+      expect(response.body.user).not.toHaveProperty('registrationOtpExpiresAt');
+      expect(response.body.user).not.toHaveProperty('password');
+    }
+  );
+
+  it('keeps admin-provisioned accounts pending and clears an undelivered code', async () => {
+    User.create.mockResolvedValue({ _id: 'user-123', id: 'ID-123456' });
+    sendRegistrationVerificationOtp.mockRejectedValueOnce(new Error('Brevo unavailable'));
+
+    const response = await request(app)
+      .post('/api/v1/users')
+      .send({
+        id: 'ID-123456',
+        fullname: 'New Screener',
+        email: 'screener@example.com',
+        password: 'Password1!',
+        role: 'screener'
+      });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual(expect.objectContaining({
+      success: false,
+      verificationRequired: true
+    }));
+    expect(User.updateOne).toHaveBeenCalledWith(
+      { _id: 'user-123', registrationOtpHash: expect.any(String) },
+      {
+        $set: expect.objectContaining({
+          registrationOtpHash: null,
+          registrationOtpExpiresAt: null,
+          registrationOtpLastSentAt: null
+        })
+      }
+    );
+  });
+
+  it('rejects an email already registered in any role collection', async () => {
+    User.hasRegisteredEmail.mockResolvedValue(true);
+
+    const response = await request(app)
+      .post('/api/v1/users')
+      .send({
+        id: 'ID-123456',
+        fullname: 'New Account',
+        email: 'existing@example.com',
+        password: 'Password1!',
+        role: 'student'
+      });
+
+    expect(response.status).toBe(409);
+    expect(User.create).not.toHaveBeenCalled();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
   });
 });

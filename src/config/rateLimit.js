@@ -87,6 +87,10 @@ const passwordResetRateLimiter = rateLimit(limiterOptions(
   parsePositiveInteger(process.env.PASSWORD_RESET_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
   parsePositiveInteger(process.env.PASSWORD_RESET_RATE_LIMIT_MAX, 5)
 ));
+const registrationVerificationRateLimiter = rateLimit(limiterOptions(
+  parsePositiveInteger(process.env.REGISTRATION_VERIFICATION_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+  parsePositiveInteger(process.env.REGISTRATION_VERIFICATION_RATE_LIMIT_MAX, 10)
+));
 const scheduleRequestRateLimiter = rateLimit(publicIpLimiterOptions(
   scheduleRequestWindowMs,
   scheduleRequestMax
@@ -101,6 +105,7 @@ module.exports = {
   coachApiRateLimiter,
   loginRateLimiter,
   passwordResetRateLimiter,
+  registrationVerificationRateLimiter,
   scheduleRequestRateLimiter,
   refreshRateLimiter,
   getCoachApiRateLimitKey,
