@@ -56,15 +56,61 @@ const normalizeTypeCode = (type) => normalizeString(type)
 const EQUIPMENT_TYPE_CODES = new Map([
   ['BASKETBALL', '1B'],
   ['BASKETBALLS', '1B'],
-  ['BALLS', '1B']
+  ['BALLS', '1B'],
+  ['BASK', '1B'],
+  ['VOLLEYBALL', 'VOL'],
+  ['VOL', 'VOL'],
+  ['SOCCERBALL', 'SOC'],
+  ['SOC', 'SOC'],
+  ['BASEBALLBAT', 'BBT'],
+  ['BBT', 'BBT'],
+  ['TENNISRACKET', 'TR'],
+  ['TR', 'TR'],
+  ['BADMINTONRACKET', 'BR'],
+  ['BR', 'BR'],
+  ['TABLETENNISPADDLE', 'TTP'],
+  ['TTP', 'TTP'],
+  ['FOOTBALL', 'FB'],
+  ['FB', 'FB'],
+  ['GYMMAT', 'GM'],
+  ['GM', 'GM'],
+  ['DUMBBELLS', 'DB'],
+  ['DB', 'DB'],
+  ['WEIGHTPLATES', 'WP'],
+  ['WP', 'WP'],
+  ['JUMPROPE', 'JR'],
+  ['JR', 'JR'],
+  ['CONES', 'CON'],
+  ['CON', 'CON'],
+  ['WHISTLE', 'WH'],
+  ['WH', 'WH'],
+  ['STOPWATCH', 'SW'],
+  ['SW', 'SW'],
+  ['FIRSTAIDKIT', 'FAK'],
+  ['FAK', 'FAK'],
+  ['WATERJUG', 'WJ'],
+  ['WJ', 'WJ'],
+  ['SCOREBOARD', 'SB'],
+  ['SB', 'SB'],
+  ['SPALDINGBALL', 'SPAL'],
+  ['SPAL', 'SPAL'],
+  ['VOLLEYBALLMIKASA', 'VM'],
+  ['VM', 'VM'],
+  ['RACKET', 'RACK'],
+  ['RACK', 'RACK'],
+  ['SPORTSEQUIPMENT', 'SE'],
+  ['SE', 'SE']
 ]);
 
-const normalizeEquipmentCode = (name, type) => {
-  const normalizedName = normalizeTypeCode(name);
+const normalizeEquipmentCode = (type) => {
   const normalizedType = normalizeTypeCode(type);
-  return EQUIPMENT_TYPE_CODES.get(normalizedName)
-    || EQUIPMENT_TYPE_CODES.get(normalizedType)
-    || normalizedType;
+  const mappedCode = EQUIPMENT_TYPE_CODES.get(normalizedType);
+  if (mappedCode) return mappedCode;
+
+  const words = normalizeString(type).toUpperCase().match(/[A-Z0-9]+/g) || [];
+  return words.length > 1
+    ? words.map((word) => word[0]).join('').slice(0, 4)
+    : normalizedType.slice(0, 4);
 };
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -111,7 +157,7 @@ const getNextEquipmentReferenceIds = async (typeCode, quantity, session, registe
 // @route GET /api/v1/admin/equipment/reference-ids
 const getEquipmentReferenceIds = async (req, res) => {
   try {
-    const typeCode = normalizeEquipmentCode(req.query.name, req.query.type);
+    const typeCode = normalizeEquipmentCode(req.query.type);
     const quantity = parseQuantity(req.query.quantity);
     if (!typeCode) {
       return res.status(400).json({ success: false, message: 'A valid equipment type is required.' });
@@ -191,7 +237,7 @@ const getEquipmentById = async (req, res) => {
 // @route   POST /api/v1/admin/equipment
 const createEquipment = async (req, res) => {
   try {
-    const { name, type, referenceId, condition, category, totalStock, quantity, referenceIds: requestedReferenceIds } = req.body;
+    const { name, type, referenceId, condition, category, totalStock, quantity } = req.body;
 
     const trimmedName = normalizeString(name);
     const trimmedReferenceId = normalizeString(referenceId);
@@ -204,20 +250,13 @@ const createEquipment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Reference ID is required' });
     }
 
-    const selectedType = normalizeString(type || category || req.body.equipmentType);
-    if (!selectedType) {
-      // Preserve backward compatibility for older clients and tests while still defaulting
-      // to the generic equipment type when none is supplied.
-      req.body.type = 'Sports Equipment';
-    }
+    const selectedType = normalizeString(type || req.body.equipmentType || category);
 
     const normalizedCondition = VALID_CONDITIONS.includes(condition) ? condition : 'Good';
     const normalizedCategory = VALID_CATEGORIES.includes(category)
       ? category
       : (VALID_CATEGORIES.includes(type) ? type : (VALID_CATEGORIES.includes(selectedType) ? selectedType : 'Sports Equipment'));
-    const normalizedType = VALID_CATEGORIES.includes(type)
-      ? type
-      : (VALID_CATEGORIES.includes(category) ? category : (VALID_CATEGORIES.includes(selectedType) ? selectedType : 'Sports Equipment'));
+    const normalizedType = selectedType || 'Sports Equipment';
     const parsedTotalStock = parseNonNegativeNumber(totalStock, 1);
     const parsedOnLoan = parseNonNegativeNumber(req.body.onLoan, 0);
 
@@ -231,40 +270,30 @@ const createEquipment = async (req, res) => {
         return res.status(400).json({ success: false, message: 'New equipment cannot have units on loan.' });
       }
 
-      const prefix = normalizeEquipmentCode(name, type);
+      const prefix = normalizeEquipmentCode(selectedType);
       if (!prefix) {
         return res.status(400).json({ success: false, message: 'A valid equipment type is required.' });
       }
-      if (!Array.isArray(requestedReferenceIds)
-        || requestedReferenceIds.length !== parsedQuantity
-        || requestedReferenceIds.some((referenceId) => typeof referenceId !== 'string')) {
-        return res.status(400).json({ success: false, message: 'Select every generated Reference ID before registering.' });
-      }
-
       let session;
       let createdEquipment = [];
       const registeredAt = new Date();
       try {
         session = await mongoose.startSession();
         let attempts = 0;
-        while (attempts < 5) {
+        while (attempts < 10) {
           attempts += 1;
           try {
             await session.withTransaction(async () => {
+              createdEquipment = [];
               const currentReferenceIds = await getNextEquipmentReferenceIds(
                 prefix,
                 parsedQuantity,
                 session,
                 registeredAt
               );
-              if (requestedReferenceIds.some((referenceId, index) => referenceId !== currentReferenceIds[index])) {
-                const staleSequenceError = new Error('The generated Reference IDs are no longer current. Review and select the updated IDs.');
-                staleSequenceError.code = 'STALE_REFERENCE_IDS';
-                throw staleSequenceError;
-              }
               const records = Array.from({ length: parsedQuantity }, (_, index) => ({
                 name: trimmedName,
-                type: prefix,
+                type: normalizedType,
                 referenceId: currentReferenceIds[index],
                 category: normalizedCategory,
                 totalStock: 1,
@@ -275,7 +304,7 @@ const createEquipment = async (req, res) => {
             });
             break;
           } catch (error) {
-            if (error.code !== 11000 || attempts >= 5) throw error;
+            if (error.code !== 11000 || attempts >= 10) throw error;
           }
         }
       } finally {
@@ -329,9 +358,6 @@ const createEquipment = async (req, res) => {
       data: buildEquipmentPayload(newEquipment)
     });
   } catch (error) {
-    if (error.code === 'STALE_REFERENCE_IDS') {
-      return res.status(409).json({ success: false, message: error.message });
-    }
     if (error.code === 'REFERENCE_ID_SEQUENCE_EXHAUSTED') {
       return res.status(409).json({ success: false, message: error.message });
     }
