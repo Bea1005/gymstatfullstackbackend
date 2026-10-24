@@ -54,10 +54,10 @@ const normalizeTypeCode = (type) => normalizeString(type)
   .replace(/[^A-Z0-9]/g, '');
 
 const EQUIPMENT_TYPE_CODES = new Map([
-  ['BASKETBALL', '1B'],
-  ['BASKETBALLS', '1B'],
+  ['BASKETBALL', 'BSB'],
+  ['BASKETBALLS', 'BSB'],
   ['BALLS', '1B'],
-  ['BASK', '1B'],
+  ['BASK', 'BSB'],
   ['VOLLEYBALL', 'VOL'],
   ['VOL', 'VOL'],
   ['SOCCERBALL', 'SOC'],
@@ -428,7 +428,10 @@ const updateEquipment = async (req, res) => {
     }
 
     if (condition !== undefined) {
-      equipment.condition = VALID_CONDITIONS.includes(condition) ? condition : equipment.condition;
+      if (!VALID_CONDITIONS.includes(condition)) {
+        return res.status(400).json({ success: false, message: 'Invalid equipment condition.' });
+      }
+      equipment.condition = condition;
     }
 
     if (category !== undefined) {

@@ -28,6 +28,60 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(req.body.description).toBe('Parent/Guardian consent for Consent Form');
   });
 
+  it('accepts fileless sport-assigned custom requirement definitions', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/requirements',
+      body: {
+        title: 'Updated Medical Clearance',
+        description: 'Submit an updated clearance.',
+        type: 'other',
+        sport: 'Basketball',
+        dueDate: '2026-10-29T00:00:00.000Z',
+        targetStudents: 'sport-specific',
+        isActive: true,
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.targetStudents).toBe('sport-specific');
+  });
+
+  it.each(['published', 'archived'])('accepts the %s status on admin requirement updates', (status) => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/requirements/507f1f77bcf86cd799439011',
+      body: { status, isActive: status === 'published' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.status).toBe(status);
+  });
+
+  it('continues rejecting requirement statuses outside the model enum', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/requirements/507f1f77bcf86cd799439011',
+      body: { status: 'disqualified' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Invalid value for status.');
+  });
+
   it('continues rejecting fields outside the explicit allowlist', () => {
     const req = httpMocks.createRequest({
       method: 'POST',

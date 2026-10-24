@@ -36,7 +36,7 @@ const allowedValues = {
   branchCampus: new Set(['', 'Boac Main', 'Santa Cruz', 'Gasan', 'Torrijos']),
   condition: new Set(['Good', 'Fair', 'Damaged', 'Lost', 'Returned']),
   priority: new Set(['low', 'medium', 'high']),
-  targetStudents: new Set(['all', 'student', 'student-athlete'])
+  targetStudents: new Set(['all', 'student', 'student-athlete', 'sport-specific'])
 };
 const coachAthleteStatuses = new Set(['completed', 'incomplete', 'disqualified', 'no-documents']);
 
@@ -143,6 +143,8 @@ const validateRequestBody = (req, res, next) => {
   try {
     const isCoachAthleteStatusUpdate = req.method === 'PUT'
       && /(?:^|\/)coach\/athletes\/[^/]+\/?$/.test(req.path);
+    const isRequirementDefinitionUpdate = req.method === 'PUT'
+      && /(?:^|\/)requirements\/[^/]+\/?$/.test(req.path);
     const isCoachRecordContentUpdate = req.method === 'PUT'
       && /(?:^|\/)coach\/record-content\/(?:form-header|eligibility|director)\/?$/.test(req.path);
     req.body = normalizeKeyValue(
@@ -150,7 +152,11 @@ const validateRequestBody = (req, res, next) => {
       req.body,
       0,
       '',
-      isCoachAthleteStatusUpdate ? coachAthleteStatuses : undefined,
+      isCoachAthleteStatusUpdate
+        ? coachAthleteStatuses
+        : isRequirementDefinitionUpdate
+          ? new Set(['draft', 'published', 'archived'])
+          : undefined,
       isCoachRecordContentUpdate ? COACH_RECORD_CONTENT_FIELDS : undefined
     );
     const isRegistration = /\/register$/.test(req.path);

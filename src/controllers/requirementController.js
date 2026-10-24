@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Requirement = require('../models/Requirement');
 const RequirementSubmission = require('../models/RequirementSubmission');
 const Announcement = require('../models/Announcement');
+const { isRequirementAssignedToStudent, splitRequirementSports } = require('../utils/requirementSports');
 const {
   storeUploadedFile,
   deleteStoredUpload,
@@ -18,15 +19,6 @@ exports.createRequirement = async (req, res) => {
   let storedFileReference;
   try {
     console.log('📝 ADMIN: Creating new requirement');
-    
-    // Check if file was uploaded
-    if (!req.file) {
-      console.error('❌ No file uploaded');
-      return res.status(400).json({
-        success: false,
-        message: 'File is required'
-      });
-    }
     
     // Get title from body
     const title = req.body.title || req.body['title'];
@@ -55,16 +47,33 @@ exports.createRequirement = async (req, res) => {
         message: 'Due date is required'
       });
     }
+
+    if (!req.file && type.trim().toLowerCase() !== 'other') {
+      return res.status(400).json({
+        success: false,
+        message: 'File is required'
+      });
+    }
+
+    if (Number.isNaN(new Date(dueDate).getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid due date is required'
+      });
+    }
     
     const isActive = req.body.isActive === 'true' || req.body.isActive === true;
-    
-    const storedFile = await storeUploadedFile({
-      buffer: req.file.buffer,
-      filename: req.file.originalname,
-      contentType: req.file.mimetype,
-      metadata: { purpose: 'admin-requirement' },
-    });
-    storedFileReference = storedFile.reference;
+
+    let storedFile;
+    if (req.file) {
+      storedFile = await storeUploadedFile({
+        buffer: req.file.buffer,
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        metadata: { purpose: 'admin-requirement' },
+      });
+      storedFileReference = storedFile.reference;
+    }
 
     const requirementData = {
       title: title.trim(),
@@ -78,13 +87,13 @@ exports.createRequirement = async (req, res) => {
       targetStudents: (req.body.targetStudents || 'all').trim(),
       publishedBy: req.user ? req.user._id : null,
       status: 'draft',
-      file: {
+      ...(req.file ? { file: {
         filename: storedFile.filename,
         originalname: req.file.originalname,
         mimetype: req.file.mimetype,
         size: req.file.size,
         path: storedFile.reference
-      }
+      } } : {})
     };
     
     console.log('📝 Final data:', {
@@ -150,7 +159,7 @@ exports.publishRequirement = async (req, res) => {
         ? new Date(requirement.dueDate).toISOString().slice(0, 10)
         : '';
       const targetScope = requirement.targetStudents === 'sport-specific'
-        ? `Students in ${requirement.sport || 'the specified sport'}`
+        ? `Students in ${splitRequirementSports(requirement.sport).join(', ') || 'the specified sport'}`
         : 'All students';
       const announcementDescription = [
         requirement.description?.trim(),
@@ -252,18 +261,18 @@ exports.getPublishedRequirements = async (req, res) => {
   try {
     console.log('📋 STUDENT: Fetching published requirements from MongoDB');
     
-    const { sport, type } = req.query;
+    const { type } = req.query;
     const filter = { status: 'published', isActive: true };
-    
-    if (sport && sport !== 'General') {
-      filter.$or = [{ sport }, { sport: 'General' }];
-    }
+
     if (type) filter.type = type;
     
-    const requirements = await Requirement.find(filter)
+    const matchedRequirements = await Requirement.find(filter)
       .select('-__v')
       .sort({ publishedAt: -1 })
       .lean();
+    const requirements = matchedRequirements.filter((requirement) => (
+      isRequirementAssignedToStudent(requirement, req.user)
+    ));
     
     // If user is authenticated, check which requirements they've submitted
     if (req.user) {
@@ -319,30 +328,15 @@ exports.getRequirementById = async (req, res) => {
     const filter = { _id: id };
 
     if (role === 'student') {
-      const studentSports = [
-        req.user?.sport,
-        ...(Array.isArray(req.user?.assignedSports) ? req.user.assignedSports : []),
-        ...(Array.isArray(req.user?.sportParticipation)
-          ? req.user.sportParticipation.map((participation) => participation?.sport)
-          : []),
-      ].filter(Boolean).map((sport) => String(sport).trim());
-
       filter.status = 'published';
       filter.isActive = true;
-      filter.$or = [
-        { targetStudents: 'all' },
-        {
-          targetStudents: 'sport-specific',
-          sport: { $in: studentSports },
-        },
-      ];
     }
 
     const requirement = await Requirement.findOne(filter)
       .populate('publishedBy', 'fullname email')
       .lean();
     
-    if (!requirement) {
+    if (!requirement || (role === 'student' && !isRequirementAssignedToStudent(requirement, req.user))) {
       return res.status(404).json({
         success: false,
         message: 'Requirement not found'

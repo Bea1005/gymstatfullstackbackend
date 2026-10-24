@@ -6,12 +6,22 @@ const {
 } = require('../models/studentRequirementCollections');
 const Announcement = require('../models/Announcement');
 const User = require('../models/User');
+const RequirementDefinition = require('../models/Requirement');
+const { isRequirementAssignedToStudent } = require('../utils/requirementSports');
 const fs = require('fs');
 const path = require('path');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
 const requirementUploadRoot = path.resolve(uploadRoot, 'requirements');
+const removeIncomingRequirementFile = (filePath) => {
+  if (!filePath || !fs.existsSync(filePath)) return;
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    console.warn('Unable to remove rejected requirement upload:', error.message);
+  }
+};
 const resolveStoredFilePath = (storedPath) => {
   if (!storedPath) return '';
   const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
@@ -146,7 +156,6 @@ exports.uploadRequirement = async (req, res) => {
       sport,
       participationType,
       requirementId,
-      customRequirementLabel,
       replacementSubmissionId,
     } = req.body;
     const normalizedRequirementType = String(requirementType || '').trim().toLowerCase();
@@ -162,6 +171,36 @@ exports.uploadRequirement = async (req, res) => {
     const studentId = await resolveStudentObjectId(req);
     if (!studentId) {
       return res.status(401).json({ success: false, message: 'Unable to resolve student account' });
+    }
+
+    let acceptedCustomRequirementLabel = '';
+    if (normalizedRequirementType === 'other') {
+      if (!mongoose.isValidObjectId(customRequirementKey)) {
+        removeIncomingRequirementFile(req.file.path);
+        return res.status(400).json({ success: false, message: 'Select an administrator-assigned requirement.' });
+      }
+
+      const customRequirement = await RequirementDefinition.findOne({
+        _id: customRequirementKey,
+        type: 'other',
+        status: 'published',
+        isActive: true
+      });
+      if (!customRequirement) {
+        removeIncomingRequirementFile(req.file.path);
+        return res.status(404).json({ success: false, message: 'This requirement is no longer available.' });
+      }
+      if (customRequirement.file?.filename || customRequirement.file?.path) {
+        removeIncomingRequirementFile(req.file.path);
+        return res.status(400).json({ success: false, message: 'This requirement does not accept student uploads.' });
+      }
+
+      if (!isRequirementAssignedToStudent(customRequirement, req.user)) {
+        removeIncomingRequirementFile(req.file.path);
+        return res.status(403).json({ success: false, message: 'This requirement is not assigned to your sport.' });
+      }
+
+      acceptedCustomRequirementLabel = customRequirement.title;
     }
 
     const currentAcademicYear = getAcademicYearLabel();
@@ -261,7 +300,7 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.expiresAt = null;
       replacementTarget.participationType = normalizedParticipationType;
       replacementTarget.customRequirementId = normalizedRequirementType === 'other' ? (customRequirementKey || replacementTarget.customRequirementId || '') : '';
-      replacementTarget.customRequirementLabel = normalizedRequirementType === 'other' ? (customRequirementLabel || replacementTarget.customRequirementLabel || '') : '';
+      replacementTarget.customRequirementLabel = normalizedRequirementType === 'other' ? acceptedCustomRequirementLabel : '';
       await replacementTarget.save();
 
       if (previousFilePath
@@ -311,7 +350,7 @@ exports.uploadRequirement = async (req, res) => {
       requirementType: normalizedRequirementType,
       participationType: normalizedParticipationType,
       customRequirementId: normalizedRequirementType === 'other' ? customRequirementKey : '',
-      customRequirementLabel: normalizedRequirementType === 'other' ? (customRequirementLabel || '') : '',
+      customRequirementLabel: normalizedRequirementType === 'other' ? acceptedCustomRequirementLabel : '',
       fileName: req.file.originalname,
       fileType: req.file.mimetype,
       fileSize: req.file.size,
@@ -331,9 +370,7 @@ exports.uploadRequirement = async (req, res) => {
       data: requirement
     });
   } catch (error) {
-    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+    removeIncomingRequirementFile(req.file?.path);
     res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };

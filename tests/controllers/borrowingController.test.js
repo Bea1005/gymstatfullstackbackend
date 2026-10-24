@@ -34,7 +34,7 @@ describe('Borrowing Controller Unit Tests', () => {
           quantity: 5, 
           status: 'Out Now',
           borrowDate: new Date(),
-          borrowedBy: null,
+          borrowedBy: { _id: 'user123', fullname: 'Prof. Reyes', email: 'reyes@example.com' },
           returnDate: null,
           returnedAt: null
         }
@@ -53,6 +53,7 @@ describe('Borrowing Controller Unit Tests', () => {
       expect(Array.isArray(responseData)).toBe(true);
       expect(responseData).toHaveLength(1);
       expect(responseData[0].Name).toBe('Prof. Reyes');
+      expect(responseData[0].borrowedBy).toEqual(fakeRecords[0].borrowedBy);
     });
   });
 
@@ -85,6 +86,81 @@ describe('Borrowing Controller Unit Tests', () => {
       expect(res.statusCode).toBe(201);
       expect(Equipment.findOne).toHaveBeenCalled();
       expect(Borrowing.create).toHaveBeenCalled();
+    });
+
+    it('updates the selected saved equipment units when borrowing multiple units', async () => {
+      req.body = {
+        Name: 'Prof. Juan',
+        equipment: 'Basketball',
+        quantity: 2,
+        referenceIds: ['BSB1013001', 'BSB1013002']
+      };
+      const equipmentItems = req.body.referenceIds.map((referenceId) => ({
+        name: 'Basketball',
+        referenceId,
+        totalStock: 1,
+        available: 1,
+        onLoan: 0,
+        save: jest.fn().mockImplementation(async function save() {
+          this.available = this.totalStock - this.onLoan;
+        })
+      }));
+      Equipment.find.mockResolvedValue(equipmentItems);
+      Borrowing.create.mockResolvedValue({
+        _id: 'borrow-multiple',
+        Name: 'Prof. Juan',
+        equipment: 'Basketball',
+        quantity: 2,
+        status: 'Out Now'
+      });
+
+      await createBorrowing(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(Equipment.find).toHaveBeenCalledWith({
+        name: 'Basketball',
+        referenceId: { $in: ['BSB1013001', 'BSB1013002'] }
+      });
+      expect(equipmentItems.map(({ available, onLoan }) => ({ available, onLoan }))).toEqual([
+        { available: 0, onLoan: 1 },
+        { available: 0, onLoan: 1 }
+      ]);
+    });
+
+    it('rejects borrowing when any selected saved unit is unavailable', async () => {
+      req.body = {
+        Name: 'Prof. Juan',
+        equipment: 'Basketball',
+        quantity: 2,
+        referenceIds: ['BSB1013001', 'BSB1013002']
+      };
+      const equipmentItems = [
+        {
+          name: 'Basketball',
+          referenceId: 'BSB1013001',
+          totalStock: 1,
+          available: 1,
+          onLoan: 0,
+          save: jest.fn()
+        },
+        {
+          name: 'Basketball',
+          referenceId: 'BSB1013002',
+          totalStock: 1,
+          available: 0,
+          onLoan: 1,
+          save: jest.fn()
+        }
+      ];
+      Equipment.find.mockResolvedValue(equipmentItems);
+
+      await createBorrowing(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res._getJSONData().message).toContain('no longer available');
+      expect(equipmentItems.map((item) => item.onLoan)).toEqual([0, 1]);
+      expect(equipmentItems.every((item) => !item.save.mock.calls.length)).toBe(true);
+      expect(Borrowing.create).not.toHaveBeenCalled();
     });
 
     it('should ignore invalid borrowedBy values and still create a borrowing record', async () => {
@@ -182,6 +258,50 @@ describe('Borrowing Controller Unit Tests', () => {
       expect(fakeBorrowing.status).toBe('Completed');
     });
 
+    it('restores availability on each selected unit exactly once when returned', async () => {
+      req.params = { id: 'borrow-multiple' };
+      const fakeBorrowing = {
+        _id: 'borrow-multiple',
+        Name: 'Prof. Juan',
+        equipment: 'Basketball',
+        quantity: 2,
+        status: 'Out Now',
+        referenceIds: ['BSB1013001', 'BSB1013002'],
+        referenceConditions: [],
+        borrowDate: new Date(),
+        save: jest.fn().mockResolvedValue(true)
+      };
+      const equipmentItems = fakeBorrowing.referenceIds.map((referenceId) => ({
+        name: 'Basketball',
+        referenceId,
+        totalStock: 1,
+        available: 0,
+        onLoan: 1,
+        save: jest.fn().mockImplementation(async function save() {
+          this.available = this.totalStock - this.onLoan;
+        })
+      }));
+      Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Equipment.find.mockResolvedValue(equipmentItems);
+      Equipment.findOne
+        .mockResolvedValueOnce(equipmentItems[0])
+        .mockResolvedValueOnce(equipmentItems[1]);
+
+      await returnBorrowedItem(req, res);
+      expect(res.statusCode).toBe(200);
+      expect(equipmentItems.map(({ available, onLoan }) => ({ available, onLoan }))).toEqual([
+        { available: 1, onLoan: 0 },
+        { available: 1, onLoan: 0 }
+      ]);
+      const saveCountsAfterReturn = equipmentItems.map((item) => item.save.mock.calls.length);
+
+      res = require('node-mocks-http').createResponse();
+      await returnBorrowedItem(req, res);
+      expect(res.statusCode).toBe(400);
+      expect(res._getJSONData().message).toBe('Item already returned');
+      expect(equipmentItems.map((item) => item.save.mock.calls.length)).toEqual(saveCountsAfterReturn);
+    });
+
     it('should return 404 if borrowing record not found', async () => {
       req.params = { id: 'nonexistent' };
       Borrowing.findById.mockResolvedValue(null);
@@ -228,8 +348,8 @@ describe('Borrowing Controller Unit Tests', () => {
       };
 
       Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Equipment.find.mockResolvedValue([damagedEquipment]);
       Equipment.findOne
-        .mockResolvedValueOnce(damagedEquipment) // name lookup before return
         .mockResolvedValueOnce(damagedEquipment) // reference lookup during sync
         .mockResolvedValueOnce(damagedEquipment) // original equipment lookup for replacement
         .mockResolvedValueOnce(null); // duplicate replacement check
@@ -391,11 +511,17 @@ describe('Borrowing Controller Unit Tests', () => {
         _id: 'eq-3',
         name: 'Basketball',
         referenceId: 'BASK-04-001',
+        totalStock: 1,
+        available: 0,
+        onLoan: 1,
         condition: 'Good',
-        save: jest.fn().mockResolvedValue(true)
+        save: jest.fn().mockImplementation(async function save() {
+          this.available = this.totalStock - this.onLoan;
+        })
       };
 
       Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Equipment.find.mockResolvedValue([equipmentItem]);
       Borrowing.findByIdAndUpdate.mockResolvedValue({
         ...fakeBorrowing,
         status: 'Completed',
@@ -448,6 +574,24 @@ describe('Borrowing Controller Unit Tests', () => {
       };
 
       Borrowing.findById.mockResolvedValue(fakeBorrowing);
+      Equipment.find.mockResolvedValue([
+        {
+          name: 'Basketball',
+          referenceId: 'BB-001',
+          totalStock: 1,
+          available: 0,
+          onLoan: 1,
+          save: jest.fn().mockResolvedValue(true)
+        },
+        {
+          name: 'Basketball',
+          referenceId: 'BB-002',
+          totalStock: 1,
+          available: 0,
+          onLoan: 1,
+          save: jest.fn().mockResolvedValue(true)
+        }
+      ]);
       Borrowing.findByIdAndUpdate.mockResolvedValue({
         ...fakeBorrowing,
         status: 'Completed',
@@ -456,13 +600,14 @@ describe('Borrowing Controller Unit Tests', () => {
         referenceIds: ['BB-001', 'BB-002']
       });
       Equipment.findOne
-        .mockResolvedValueOnce(stockEquipment)
         .mockResolvedValueOnce(firstEquipment);
 
       await updateBorrowingRecord(req, res);
 
-      expect(Equipment.findOne).toHaveBeenNthCalledWith(1, { name: 'Basketball' });
-      expect(Equipment.findOne).toHaveBeenNthCalledWith(2, { referenceId: 'BB-001' });
+      expect(Equipment.find).toHaveBeenCalledWith({
+        name: 'Basketball',
+        referenceId: { $in: ['BB-001', 'BB-002'] }
+      });
       expect(firstEquipment.condition).toBe('Damaged');
       expect(firstEquipment.save).toHaveBeenCalled();
       expect(res.statusCode).toBe(200);

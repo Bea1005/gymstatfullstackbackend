@@ -33,6 +33,76 @@ const normalizeBorrowedBy = (value) => {
   return null;
 };
 
+const createStockError = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
+
+const adjustBorrowedEquipmentStock = async (equipmentName, referenceIds, quantity, change) => {
+  const normalizedReferenceIds = Array.isArray(referenceIds) ? referenceIds.filter(Boolean) : [];
+  const hasIndividualReferences = normalizedReferenceIds.length === quantity
+    && new Set(normalizedReferenceIds).size === quantity
+    && normalizedReferenceIds.every((referenceId) => !String(referenceId).startsWith('AUTO-'));
+
+  if (hasIndividualReferences) {
+    const equipmentItems = await Equipment.find({
+      name: equipmentName,
+      referenceId: { $in: normalizedReferenceIds }
+    });
+
+    if (equipmentItems.length !== quantity) {
+      throw createStockError('One or more selected equipment units could not be found.');
+    }
+
+    const itemsByReferenceId = new Map(equipmentItems.map((item) => [item.referenceId, item]));
+    if (normalizedReferenceIds.some((referenceId) => !itemsByReferenceId.has(referenceId))) {
+      throw createStockError('One or more selected equipment units could not be found.');
+    }
+
+    for (const equipmentItem of equipmentItems) {
+      const totalStock = Number(equipmentItem.totalStock ?? equipmentItem.quantity ?? 0) || 0;
+      const onLoan = Number(equipmentItem.onLoan ?? 0) || 0;
+      const available = equipmentItem.available !== undefined
+        && equipmentItem.available !== null
+        && Number.isFinite(Number(equipmentItem.available))
+        ? Number(equipmentItem.available)
+        : Math.max(0, totalStock - onLoan);
+
+      if (change > 0 && available < 1) {
+        throw createStockError('One or more selected equipment units are no longer available.');
+      }
+      if (change < 0 && onLoan < 1) {
+        throw createStockError('One or more selected equipment units are not currently borrowed.');
+      }
+    }
+
+    for (const equipmentItem of equipmentItems) {
+      equipmentItem.onLoan = (Number(equipmentItem.onLoan) || 0) + change;
+      await equipmentItem.save();
+    }
+    return true;
+  }
+
+  const equipmentItem = await Equipment.findOne({ name: equipmentName });
+  if (!equipmentItem) return false;
+
+  const totalStock = Number(equipmentItem.totalStock ?? equipmentItem.quantity ?? 0) || 0;
+  const onLoan = Number(equipmentItem.onLoan ?? 0) || 0;
+  const available = equipmentItem.available !== undefined
+    && equipmentItem.available !== null
+    && Number.isFinite(Number(equipmentItem.available))
+    ? Number(equipmentItem.available)
+    : Math.max(0, totalStock - onLoan);
+
+  if (change > 0 && available < quantity) {
+    throw createStockError(`Insufficient stock. Only ${available} available.`);
+  }
+  if (change < 0 && onLoan < quantity) {
+    throw createStockError(`Cannot return more than borrowed. Only ${onLoan} unit(s) on loan.`);
+  }
+
+  equipmentItem.onLoan = onLoan + change * quantity;
+  await equipmentItem.save();
+  return true;
+};
+
 const generateReplacementReferenceId = async (equipmentName, damagedReferenceId) => {
   const normalizedName = normalizeText(equipmentName || 'Equipment');
   const originalReferenceId = normalizeText(damagedReferenceId);
@@ -213,6 +283,7 @@ const getBorrowingRecords = async (req, res) => {
       condition: b.condition || null,
       borrowDate: b.borrowDate,
       returnedAt: b.returnedAt,
+      borrowedBy: b.borrowedBy || null,
       Name: b.Name,
       quantity: b.quantity
     }));
@@ -271,6 +342,9 @@ const createBorrowing = async (req, res) => {
     if (requestedQuantity !== normalizedReferenceIds.length) {
       return res.status(400).json({ message: 'Quantity must match the number of selected reference IDs' });
     }
+    if (new Set(normalizedReferenceIds).size !== normalizedReferenceIds.length) {
+      return res.status(400).json({ message: 'Selected equipment units must be unique' });
+    }
 
     // Check for existing active borrowing
     const existingBorrowing = await Borrowing.findOne({
@@ -284,27 +358,15 @@ const createBorrowing = async (req, res) => {
       return res.status(409).json({ message: 'A matching active borrowing already exists.' });
     }
 
-    // Check if equipment exists and update stock
-    const equipmentItem = await Equipment.findOne({ name: equipmentName });
-
-    if (!equipmentItem) {
+    const stockUpdated = await adjustBorrowedEquipmentStock(
+      equipmentName,
+      normalizedReferenceIds,
+      requestedQuantity,
+      1
+    );
+    if (!stockUpdated) {
       return res.status(404).json({ message: 'Equipment not found' });
     }
-
-    const totalQuantity = Number(equipmentItem.quantity ?? equipmentItem.totalStock ?? 0) || 0;
-    const onLoan = Number(equipmentItem.onLoan ?? 0) || 0;
-    const availableQuantity = Number.isFinite(equipmentItem.available)
-      ? Number(equipmentItem.available)
-      : Math.max(0, totalQuantity - onLoan);
-
-    if (availableQuantity < requestedQuantity) {
-      return res.status(400).json({
-        message: `Insufficient stock. Only ${availableQuantity} available.`
-      });
-    }
-
-    equipmentItem.onLoan = (Number(equipmentItem.onLoan) || 0) + requestedQuantity;
-    await equipmentItem.save();
 
     // Create borrowing record
     const borrowingDate = normalizedBorrowTimestamp.date
@@ -366,7 +428,9 @@ const createBorrowing = async (req, res) => {
     });
   } catch (error) {
     console.error('Create borrowing error:', error);
-    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
+    res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : 'An unexpected server error occurred. Please try again.'
+    });
   }
 };
 
@@ -385,22 +449,22 @@ const updateBorrowingRecord = async (req, res) => {
     
     // Handle status change from Out to Returned
     if (updateData.status === 'Returned' && borrowing.status !== 'Returned' && borrowing.status !== 'Completed') {
-      // Update equipment stock when returning
-      const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-      if (equipmentItem) {
-        equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - (borrowing.quantity || borrowing.qty || 1));
-        await equipmentItem.save();
-      }
+      await adjustBorrowedEquipmentStock(
+        borrowing.equipment,
+        borrowing.referenceIds,
+        borrowing.quantity || borrowing.qty || 1,
+        -1
+      );
     }
     
     // Handle status change from Returned back to Out (undo return)
     if (updateData.status === 'Out' && (borrowing.status === 'Returned' || borrowing.status === 'Completed')) {
-      // Reverse stock update
-      const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-      if (equipmentItem) {
-        equipmentItem.onLoan = (equipmentItem.onLoan || 0) + (borrowing.quantity || borrowing.qty || 1);
-        await equipmentItem.save();
-      }
+      await adjustBorrowedEquipmentStock(
+        borrowing.equipment,
+        borrowing.referenceIds,
+        borrowing.quantity || borrowing.qty || 1,
+        1
+      );
     }
     
     // Update borrowing record
@@ -508,7 +572,9 @@ const updateBorrowingRecord = async (req, res) => {
     });
   } catch (error) {
     console.error('Update borrowing error:', error);
-    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
+    res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : 'An unexpected server error occurred. Please try again.'
+    });
   }
 };
 
@@ -527,12 +593,12 @@ const returnBorrowedItem = async (req, res) => {
       return res.status(400).json({ message: 'Item already returned' });
     }
     
-    // Update equipment stock if it exists
-    const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-    if (equipmentItem) {
-      equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - (borrowing.quantity || borrowing.qty || 1));
-      await equipmentItem.save();
-    }
+    await adjustBorrowedEquipmentStock(
+      borrowing.equipment,
+      borrowing.referenceIds,
+      borrowing.quantity || borrowing.qty || 1,
+      -1
+    );
     
     const returnedTimestamp = {
       date: new Date().toISOString().split('T')[0],
@@ -593,7 +659,9 @@ const returnBorrowedItem = async (req, res) => {
     });
   } catch (error) {
     console.error('Return item error:', error);
-    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
+    res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : 'An unexpected server error occurred. Please try again.'
+    });
   }
 };
 
@@ -610,11 +678,12 @@ const deleteBorrowingRecord = async (req, res) => {
     
     // If item was out, update equipment stock
     if (borrowing.status === 'Out Now' || borrowing.status === 'Out') {
-      const equipmentItem = await Equipment.findOne({ name: borrowing.equipment });
-      if (equipmentItem) {
-        equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) - (borrowing.quantity || borrowing.qty || 1));
-        await equipmentItem.save();
-      }
+      await adjustBorrowedEquipmentStock(
+        borrowing.equipment,
+        borrowing.referenceIds,
+        borrowing.quantity || borrowing.qty || 1,
+        -1
+      );
     }
     
     await Borrowing.findByIdAndDelete(req.params.id);
@@ -622,7 +691,9 @@ const deleteBorrowingRecord = async (req, res) => {
     res.status(200).json({ message: 'Borrowing record deleted successfully' });
   } catch (error) {
     console.error('Delete borrowing error:', error);
-    res.status(500).json({ message: 'An unexpected server error occurred. Please try again.' });
+    res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : 'An unexpected server error occurred. Please try again.'
+    });
   }
 };
 

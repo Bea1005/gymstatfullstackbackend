@@ -9,6 +9,7 @@ const {
 const StudentRequirement = require('../../src/models/StudentRequirement');
 const Announcement = require('../../src/models/Announcement');
 const User = require('../../src/models/User');
+const RequirementDefinition = require('../../src/models/Requirement');
 
 const mockSave = jest.fn();
 const mockQuery = (value) => ({
@@ -31,6 +32,10 @@ jest.mock('../../src/models/StudentRequirement', () => {
   return MockStudentRequirement;
 });
 
+jest.mock('../../src/models/Requirement', () => ({
+  findOne: jest.fn()
+}));
+
 describe('Student controller uploads', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -39,6 +44,7 @@ describe('Student controller uploads', () => {
     StudentRequirement.find.mockImplementation(() => mockQuery([]));
     StudentRequirement.deleteMany.mockResolvedValue({ deletedCount: 0 });
     StudentRequirement.findByIdAndUpdate.mockResolvedValue(null);
+    RequirementDefinition.findOne.mockResolvedValue(null);
   });
 
   it('stores uploads using the authenticated Mongo ObjectId for the student', async () => {
@@ -71,6 +77,116 @@ describe('Student controller uploads', () => {
       success: true,
       message: 'Requirement uploaded successfully'
     });
+  });
+
+  it('accepts a custom upload only for an active assigned fileless definition', async () => {
+    const studentId = new mongoose.Types.ObjectId();
+    const requirementId = new mongoose.Types.ObjectId();
+    RequirementDefinition.findOne.mockResolvedValue({
+      _id: requirementId,
+      title: 'Volleyball Clearance',
+      type: 'other',
+      status: 'published',
+      isActive: true,
+      targetStudents: 'sport-specific',
+      sport: 'Basketball (Men) | Volleyball (Women)',
+      file: {}
+    });
+    const req = httpMocks.createRequest({
+      body: {
+        requirementType: 'other',
+        requirementId: String(requirementId),
+        customRequirementLabel: 'Client-controlled title',
+      },
+      file: {
+        buffer: Buffer.from('document'),
+        originalname: 'clearance.pdf',
+        mimetype: 'application/pdf',
+        size: 8
+      }
+    });
+    req.user = {
+      _id: studentId,
+      sport: 'Basketball (Women)',
+      sports: ['Volleyball (Women)'],
+      role: 'student'
+    };
+    const res = httpMocks.createResponse();
+
+    await uploadRequirement(req, res);
+
+    expect(res.statusCode).toBe(201);
+    expect(RequirementDefinition.findOne).toHaveBeenCalledWith({
+      _id: String(requirementId),
+      type: 'other',
+      status: 'published',
+      isActive: true
+    });
+    expect(StudentRequirement.mock.calls[0][0]).toMatchObject({
+      studentId,
+      requirementType: 'other',
+      customRequirementId: String(requirementId),
+      customRequirementLabel: 'Volleyball Clearance'
+    });
+  });
+
+  it('rejects uploads that reference a file-backed requirement definition', async () => {
+    const requirementId = new mongoose.Types.ObjectId();
+    RequirementDefinition.findOne.mockResolvedValue({
+      _id: requirementId,
+      title: 'Downloadable Form',
+      type: 'other',
+      status: 'published',
+      isActive: true,
+      file: { filename: 'form.pdf' }
+    });
+    const req = httpMocks.createRequest({
+      body: { requirementType: 'other', requirementId: String(requirementId) },
+      file: {
+        buffer: Buffer.from('document'),
+        originalname: 'upload.pdf',
+        mimetype: 'application/pdf',
+        size: 8
+      }
+    });
+    req.user = { _id: new mongoose.Types.ObjectId(), role: 'student' };
+    const res = httpMocks.createResponse();
+
+    await uploadRequirement(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('This requirement does not accept student uploads.');
+    expect(StudentRequirement).not.toHaveBeenCalled();
+  });
+
+  it('rejects custom uploads when the definition is not assigned to the student', async () => {
+    const requirementId = new mongoose.Types.ObjectId();
+    RequirementDefinition.findOne.mockResolvedValue({
+      _id: requirementId,
+      title: 'Volleyball Clearance',
+      type: 'other',
+      status: 'published',
+      isActive: true,
+      targetStudents: 'sport-specific',
+      sport: 'Volleyball',
+      file: {}
+    });
+    const req = httpMocks.createRequest({
+      body: { requirementType: 'other', requirementId: String(requirementId) },
+      file: {
+        buffer: Buffer.from('document'),
+        originalname: 'upload.pdf',
+        mimetype: 'application/pdf',
+        size: 8
+      }
+    });
+    req.user = { _id: new mongoose.Types.ObjectId(), sport: 'Basketball', role: 'student' };
+    const res = httpMocks.createResponse();
+
+    await uploadRequirement(req, res);
+
+    expect(res.statusCode).toBe(403);
+    expect(StudentRequirement).not.toHaveBeenCalled();
   });
 
   it('updates the original PSA document and removes only duplicate PSA records after replacement', async () => {

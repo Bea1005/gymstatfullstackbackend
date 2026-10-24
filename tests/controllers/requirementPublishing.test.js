@@ -1,10 +1,19 @@
 const httpMocks = require('node-mocks-http');
 const Requirement = require('../../src/models/Requirement');
+const RequirementSubmission = require('../../src/models/RequirementSubmission');
 const Announcement = require('../../src/models/Announcement');
-const { publishRequirement } = require('../../src/controllers/requirementController');
+const {
+  publishRequirement,
+  getPublishedRequirements
+} = require('../../src/controllers/requirementController');
 
 jest.mock('../../src/models/Requirement', () => ({
   findById: jest.fn(),
+  find: jest.fn(),
+}));
+
+jest.mock('../../src/models/RequirementSubmission', () => ({
+  find: jest.fn(),
 }));
 
 jest.mock('../../src/models/Announcement', () => {
@@ -23,6 +32,11 @@ describe('publishRequirement', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    RequirementSubmission.find.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        lean: jest.fn().mockResolvedValue([])
+      })
+    });
     requirement = {
       _id: requirementId,
       title: 'Consent Form',
@@ -33,6 +47,7 @@ describe('publishRequirement', () => {
       targetStudents: 'all',
       sport: 'General',
       status: 'draft',
+      isActive: true,
       publishedAt: undefined,
       publishedBy: undefined,
       publish: jest.fn(async function publish(publisherId) {
@@ -81,6 +96,36 @@ describe('publishRequirement', () => {
     expect(Announcement.save).toHaveBeenCalledTimes(1);
   });
 
+  it('publishes a custom student requirement and confirms its saved published state', async () => {
+    requirement.title = 'Athlete Medical Clearance';
+    requirement.description = 'Submit current clearance details.';
+    requirement.instructions = 'Upload a readable document.';
+    requirement.type = 'other';
+    requirement.targetStudents = 'sport-specific';
+    requirement.sport = 'Volleyball';
+    const res = httpMocks.createResponse();
+
+    await publishRequirement(createRequest(), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toMatchObject({
+      success: true,
+      data: {
+        title: 'Athlete Medical Clearance',
+        type: 'other',
+        status: 'published',
+        isActive: true
+      }
+    });
+    expect(Announcement).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'New Requirement: Athlete Medical Clearance',
+      sport: 'Volleyball',
+      description: expect.stringContaining('Submit current clearance details.')
+    }));
+    expect(Announcement.mock.instances[0].description).toContain('Target: Students in Volleyball');
+    expect(Announcement.mock.instances[0].description).toContain('Instructions: Upload a readable document.');
+  });
+
   it('does not create a duplicate announcement when the requirement is already published', async () => {
     requirement.status = 'published';
     Announcement.findOne.mockResolvedValue({ _id: 'existing-announcement' });
@@ -104,5 +149,64 @@ describe('publishRequirement', () => {
     expect(requirement.status).toBe('draft');
     expect(requirement.publishedAt).toBeUndefined();
     expect(requirement.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns all-sports and exact multi-sport matches from the authenticated student sports', async () => {
+    const assignedDefinition = {
+      _id: requirementId,
+      type: 'other',
+      title: 'Volleyball Clearance',
+      status: 'published',
+      isActive: true,
+      targetStudents: 'sport-specific',
+      sport: 'Basketball (Men) | Volleyball (Women)',
+    };
+    const allSportsDefinition = {
+      _id: 'all-sports-id',
+      type: 'other',
+      title: 'All Sports Form',
+      status: 'published',
+      isActive: true,
+      targetStudents: 'all',
+      sport: 'General',
+    };
+    const unrelatedDefinition = {
+      _id: 'unrelated-sport-id',
+      type: 'other',
+      title: 'Badminton Form',
+      status: 'published',
+      isActive: true,
+      targetStudents: 'sport-specific',
+      sport: 'Badminton (Men)',
+    };
+    const query = {
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([assignedDefinition, allSportsDefinition, unrelatedDefinition]),
+    };
+    Requirement.find.mockReturnValue(query);
+    const req = httpMocks.createRequest({
+      query: { sport: 'Badminton (Men)' },
+      user: {
+        _id: 'student-id',
+        role: 'student',
+        sport: 'Basketball (Women)',
+        sports: ['Volleyball (Women)']
+      },
+    });
+    const res = httpMocks.createResponse();
+
+    await getPublishedRequirements(req, res);
+
+    expect(Requirement.find).toHaveBeenCalledWith({
+      status: 'published',
+      isActive: true,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData().data.map(({ title }) => title)).toEqual([
+      'Volleyball Clearance',
+      'All Sports Form'
+    ]);
+    expect(res._getJSONData().data[0].submissionStatus).toBe('not-submitted');
   });
 });
