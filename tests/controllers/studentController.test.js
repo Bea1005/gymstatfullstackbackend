@@ -79,6 +79,35 @@ describe('Student controller uploads', () => {
     });
   });
 
+  it('stores multiple photos on one requirement submission', async () => {
+    const studentId = new mongoose.Types.ObjectId();
+    const req = httpMocks.createRequest({
+      body: { requirementType: 'medical', sport: 'Basketball' },
+      files: {
+        files: [
+          { buffer: Buffer.from('photo one'), originalname: 'front.jpg', mimetype: 'image/jpeg', size: 9 },
+          { buffer: Buffer.from('photo two'), originalname: 'back.png', mimetype: 'image/png', size: 9 }
+        ]
+      }
+    });
+    req.user = { _id: studentId, role: 'student' };
+    const res = httpMocks.createResponse();
+
+    await uploadRequirement(req, res);
+
+    expect(res.statusCode).toBe(201);
+    expect(StudentRequirement).toHaveBeenCalledTimes(1);
+    expect(StudentRequirement.mock.calls[0][0]).toMatchObject({
+      studentId,
+      requirementType: 'medical',
+      fileName: 'front.jpg',
+      files: [
+        { fileName: 'front.jpg', fileType: 'image/jpeg', fileSize: 9 },
+        { fileName: 'back.png', fileType: 'image/png', fileSize: 9 }
+      ]
+    });
+  });
+
   it('accepts a custom upload only for an active assigned fileless definition', async () => {
     const studentId = new mongoose.Types.ObjectId();
     const requirementId = new mongoose.Types.ObjectId();

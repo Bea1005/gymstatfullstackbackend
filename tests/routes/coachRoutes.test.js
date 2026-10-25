@@ -4,6 +4,7 @@ const User = require('../../src/models/User');
 const StudentAthlete = require('../../src/models/StudentAthlete');
 const StudentProfile = require('../../src/models/StudentProfile');
 const StudentRequirement = require('../../src/models/StudentRequirement');
+const Requirement = require('../../src/models/Requirement');
 const CoachFormHeader = require('../../src/models/CoachFormHeader');
 const CoachEligibilityRequirements = require('../../src/models/CoachEligibilityRequirements');
 const CoachSportsDirector = require('../../src/models/CoachSportsDirector');
@@ -16,6 +17,7 @@ jest.mock('../../src/models/User');
 jest.mock('../../src/models/StudentAthlete');
 jest.mock('../../src/models/StudentProfile');
 jest.mock('../../src/models/StudentRequirement');
+jest.mock('../../src/models/Requirement');
 jest.mock('../../src/models/CoachFormHeader');
 jest.mock('../../src/models/CoachEligibilityRequirements');
 jest.mock('../../src/models/CoachSportsDirector');
@@ -210,22 +212,42 @@ describe('Coach athlete routes', () => {
     expect(CoachEligibilityRequirements.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
-  it('returns missing Screener requirements by student ID and ignores COR', async () => {
+  it('returns active upload-card definitions and file presence by student ID', async () => {
     User.findOne.mockReturnValue({
       select: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
     });
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ sports: ['Basketball Women'] }),
+    });
     StudentRequirement.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      sort: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue([
-        { requirementType: 'medical', status: 'approved' },
-        { requirementType: 'psa', status: 'pending' },
-        { requirementType: 'insurance', status: 'approved' },
-        { requirementType: 'profile', status: 'approved' },
-        { requirementType: 'consent', status: 'approved' },
-        { requirementType: 'cor', status: 'rejected' },
-        { requirementType: 'other', customRequirementLabel: 'Athlete Waiver', status: 'rejected' },
+        { requirementType: 'medical', fileName: 'medical.pdf', status: 'rejected' },
+        { requirementType: 'other', customRequirementId: 'custom-id', fileName: 'waiver.pdf', status: 'pending' },
+      ]),
+    });
+    Requirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        { _id: 'medical-id', title: 'Medical Certificate', type: 'medical' },
+        {
+          _id: 'custom-id',
+          title: 'Athlete Waiver',
+          type: 'other',
+          targetStudents: 'sport-specific',
+          sport: 'Basketball Women',
+          file: {},
+        },
+        {
+          _id: 'unassigned-id',
+          title: 'Unassigned Requirement',
+          type: 'other',
+          targetStudents: 'sport-specific',
+          sport: 'Soccer',
+          file: {},
+        },
       ]),
     });
 
@@ -233,12 +255,20 @@ describe('Coach athlete routes', () => {
       .get('/api/v1/coach/athletes/student-id/requirements');
 
     expect(response.status).toBe(200);
-    expect(response.body.missingDocuments).toEqual(['PSA', 'ATHLETE WAIVER']);
+    expect(response.body.publishedRequirements).toEqual([
+      { id: 'medical-id', title: 'Medical Certificate', type: 'medical', hasDocument: false },
+      { id: 'custom-id', title: 'Athlete Waiver', type: 'other', hasDocument: false },
+    ]);
+    expect(response.body.uploads).toEqual([
+      { requirementType: 'medical', customRequirementId: '', hasFile: true },
+      { requirementType: 'other', customRequirementId: 'custom-id', hasFile: true },
+    ]);
     expect(User.findOne.mock.calls[0][0]).toEqual({
       _id: 'coach-id',
       role: 'coach',
       strasucStudentIds: 'student-id',
     });
+    expect(User.findById).toHaveBeenCalledWith('student-id');
     expect(StudentRequirement.find.mock.calls[0][0]).toEqual({
       studentId: 'student-id',
       $or: [
@@ -246,23 +276,29 @@ describe('Coach athlete routes', () => {
         { participationType: { $exists: false } },
       ],
     });
+    expect(Requirement.find.mock.calls[0][0]).toEqual({
+      status: 'published',
+      isActive: { $ne: false },
+    });
   });
 
-  it('returns no missing requirements when all Screener-required documents are approved despite rejected COR', async () => {
+  it('returns no upload records for a student who has not uploaded requirements', async () => {
     User.findOne.mockReturnValue({
       select: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
     });
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({}),
+    });
     StudentRequirement.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    });
+    Requirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue([
-        { requirementType: 'medical', status: 'approved' },
-        { requirementType: 'psa', status: 'approved' },
-        { requirementType: 'insurance', status: 'approved' },
-        { requirementType: 'profile', status: 'approved' },
-        { requirementType: 'consent', status: 'approved' },
-        { requirementType: 'cor', status: 'rejected' },
+        { _id: 'medical-id', title: 'Medical Certificate', type: 'medical', file: {} },
       ]),
     });
 
@@ -270,14 +306,8 @@ describe('Coach athlete routes', () => {
       .get('/api/v1/coach/athletes/student-id/requirements');
 
     expect(response.status).toBe(200);
-    expect(response.body.missingDocuments).toEqual([]);
-    expect(StudentRequirement.find.mock.calls[0][0]).toEqual({
-      studentId: 'student-id',
-      $or: [
-        { participationType: 'Intrams' },
-        { participationType: { $exists: false } },
-      ],
-    });
+    expect(response.body.publishedRequirements).toHaveLength(1);
+    expect(response.body.uploads).toEqual([]);
   });
 
   it('denies requirement reads for students outside the Coach gallery', async () => {
@@ -291,6 +321,7 @@ describe('Coach athlete routes', () => {
 
     expect(response.status).toBe(403);
     expect(StudentRequirement.find).not.toHaveBeenCalled();
+    expect(Requirement.find).not.toHaveBeenCalled();
   });
 
   it('keeps a selected gallery student whose sport exists only in StudentAthlete', async () => {

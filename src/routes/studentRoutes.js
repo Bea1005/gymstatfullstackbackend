@@ -26,7 +26,10 @@ router.use(protect);
 router.use(authorize('student'));
 
 // Student-specific routes - all protected
-router.post('/requirements', requirementUpload.single('file'), validateRequestBody, uploadRequirement);
+router.post('/requirements', requirementUpload.fields([
+  { name: 'file', maxCount: 10 },
+  { name: 'files', maxCount: 10 }
+]), validateRequestBody, uploadRequirement);
 router.post('/requirements/import-previous-year', importPreviousYearRequirements);
 router.get('/requirements', getStudentRequirements);
 router.put('/requirements/:id/notifications/read', markRequirementNotificationRead);

@@ -158,7 +158,7 @@ describe('Screener routes', () => {
     });
     expect(StudentRequirement.find().populate).not.toHaveBeenCalled();
     expect(StudentRequirement.find().select).toHaveBeenCalledWith(
-      'studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks'
+      'studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status resubmitted uploadDate createdAt remarks'
     );
     expect(User.find().select).toHaveBeenCalledWith(
       'fullname username department createdAt'
@@ -209,6 +209,10 @@ describe('Screener routes', () => {
           fileName: 'bea-cor.pdf',
           fileType: 'application/pdf',
           fileSize: 128,
+          files: [
+            { fileName: 'front.jpg', fileType: 'image/jpeg', fileSize: 64 },
+            { fileName: 'back.jpg', fileType: 'image/jpeg', fileSize: 64 }
+          ],
           status: 'approved',
           uploadDate: '2026-10-01T00:00:00.000Z'
         }
@@ -234,7 +238,11 @@ describe('Screener routes', () => {
       submissionId: 'bea-cor-submission',
       fileName: 'bea-cor.pdf',
       status: 'approved',
-      hasUpload: true
+      hasUpload: true,
+      files: [
+        expect.objectContaining({ fileName: 'front.jpg', fileType: 'image/jpeg', fileUrl: expect.stringContaining('fileIndex=0') }),
+        expect.objectContaining({ fileName: 'back.jpg', fileType: 'image/jpeg', fileUrl: expect.stringContaining('fileIndex=1') })
+      ]
     }));
     expect(StudentRequirement.find).toHaveBeenCalledWith({
       $and: [
@@ -388,6 +396,29 @@ describe('Screener routes', () => {
     expect(response.headers['content-type']).toBe('image/png');
     expect(response.headers['content-disposition']).toContain('inline');
     expect(Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body)).toEqual(uploadedImage);
+  });
+
+  it('previews the selected photo from a multi-photo requirement submission', async () => {
+    const submissionId = '507f1f77bcf86cd799439011';
+    const secondPhoto = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    StudentRequirement.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: submissionId,
+        files: [
+          { fileName: 'front.jpg', fileType: 'image/jpeg', fileData: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+          { fileName: 'back.jpg', fileType: 'image/jpeg', fileData: secondPhoto }
+        ],
+        participationType: 'Intrams',
+      }),
+    });
+
+    const response = await request(app)
+      .get(`/api/v1/screener/requirements/${submissionId}/preview?participationType=Intrams&fileIndex=1`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('image/jpeg');
+    expect(Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body)).toEqual(secondPhoto);
   });
 
   it('denies Screener preview of a same-department requirement', async () => {

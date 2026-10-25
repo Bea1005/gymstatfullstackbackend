@@ -571,10 +571,19 @@ app.use((err, req, res, next) => {
     });
   }
 
+  if (err.code === 'LIMIT_UNEXPECTED_FILE' && /\/student\/requirements\/?$/.test(req.path)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid requirement upload field. Please select up to 10 supported files and try again.'
+    });
+  }
+
   if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.message === 'Unsupported schedule request file') {
     return res.status(400).json({
       success: false,
-      message: 'The uploaded request letter is invalid.'
+      message: err.message === 'Unsupported schedule request file'
+        ? 'The uploaded request letter is invalid.'
+        : 'The uploaded file is invalid.'
     });
   }
 
@@ -585,10 +594,10 @@ app.use((err, req, res, next) => {
     });
   }
 
-  if (err.message && /Only PDF, DOC, DOCX, JPG, PNG, and GIF/i.test(err.message)) {
+  if (err.message && /Only PDF, DOC, DOCX, JPG, PNG, GIF, and WebP/i.test(err.message)) {
     return res.status(400).json({
       success: false,
-      message: 'Unsupported file type. Please upload a PDF, DOC, DOCX, JPG, PNG, or GIF file.'
+      message: 'Unsupported file type. Please upload a PDF, DOC, DOCX, JPG, PNG, GIF, or WebP file.'
     });
   }
 

@@ -59,7 +59,10 @@ const requirementUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024
+    fileSize: 5 * 1024 * 1024,
+    files: 10,
+    fields: 16,
+    parts: 26
   }
 });
 

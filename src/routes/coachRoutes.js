@@ -6,11 +6,13 @@ const User = require('../models/User');
 const StudentAthlete = require('../models/StudentAthlete');
 const StudentProfile = require('../models/StudentProfile');
 const StudentRequirement = require('../models/StudentRequirement');
+const Requirement = require('../models/Requirement');
 const CoachFormHeader = require('../models/CoachFormHeader');
 const CoachEligibilityRequirements = require('../models/CoachEligibilityRequirements');
 const CoachSportsDirector = require('../models/CoachSportsDirector');
 const { initializeCoachRecordContent } = require('../config/coachRecordContent');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
+const { isRequirementAssignedToStudent } = require('../utils/requirementSports');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
 const { protect, authorize } = require('../middleware/auth');
@@ -29,48 +31,6 @@ const studentSearchProjection = '_id id studentNumber fullname department yearLe
 const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle updatedAt';
 const coachAthleteStatuses = new Set(['complete', 'incomplete', 'disqualified', 'no-documents']);
 const coachRecordConfigurationId = 'global';
-const requiredStrasucDocuments = [
-  ['medical', 'MEDICAL CERTIFICATE'],
-  ['psa', 'PSA'],
-  ['insurance', 'INSURANCE'],
-  ['profile', 'PROFILE'],
-  ['consent', 'PARENT CONSENT'],
-];
-
-const getMissingStudentDocuments = (submissions) => {
-  const missing = new Set();
-  const requiredTypes = new Set(requiredStrasucDocuments.map(([type]) => type));
-  const submittedTypes = new Set();
-
-  for (const submission of submissions) {
-    const type = String(submission.requirementType || '').trim().toLowerCase();
-    if (type === 'cor') continue;
-
-    const status = String(submission.status || '').trim().toLowerCase();
-    if (type === 'medical' || type === 'med') {
-      submittedTypes.add('medical');
-      if (status !== 'approved' && status !== 'completed') missing.add('MEDICAL CERTIFICATE');
-    } else if (requiredTypes.has(type)) {
-      submittedTypes.add(type);
-      if (status !== 'approved' && status !== 'completed') {
-        missing.add(requiredStrasucDocuments.find(([requiredType]) => requiredType === type)[1]);
-      }
-    } else if (status !== 'approved' && status !== 'completed') {
-      const label = String(submission.customRequirementLabel || type || 'OTHER REQUIREMENT').trim();
-      missing.add(label.toUpperCase());
-    }
-  }
-
-  for (const [type, label] of requiredStrasucDocuments) {
-    if (!submittedTypes.has(type)) missing.add(label);
-  }
-
-  return [
-    ...requiredStrasucDocuments.map(([, label]) => label).filter((label) => missing.has(label)),
-    ...Array.from(missing).filter((label) => !requiredStrasucDocuments.some(([, requiredLabel]) => requiredLabel === label)),
-  ];
-};
-
 const getStudentSportForCategory = (student, category) => {
   const normalizedCategory = String(category || '').trim().toLowerCase();
   const savedSports = [
@@ -559,15 +519,39 @@ router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'
     }).select('_id').lean();
     if (!coach) return res.status(403).json({ message: 'You are not authorized to view this student' });
 
-    const submissions = await StudentRequirement.find({
+    const student = await User.findById(req.params.studentId)
+      .select('sport sports assignedSports sportParticipation')
+      .lean();
+    if (!student) return res.status(404).json({ message: 'Student not found' });
+
+    const [publishedRequirements, uploads] = await Promise.all([
+      Requirement.find({ status: 'published', isActive: { $ne: false } })
+      .select('_id title type targetStudents sport file.filename file.path')
+      .lean(),
+      StudentRequirement.find({
       studentId: req.params.studentId,
       $or: [
         { participationType: 'Intrams' },
         { participationType: { $exists: false } },
       ],
-    }).select('requirementType customRequirementLabel status uploadDate').sort({ uploadDate: 1, _id: 1 }).lean();
+      }).select('requirementType customRequirementId fileName').lean(),
+    ]);
 
-    return res.json({ missingDocuments: getMissingStudentDocuments(submissions) });
+    return res.json({
+      publishedRequirements: publishedRequirements
+        .filter((requirement) => isRequirementAssignedToStudent(requirement, student))
+        .map((requirement) => ({
+          id: String(requirement._id),
+          title: requirement.title,
+          type: requirement.type,
+          hasDocument: Boolean(requirement.file?.filename || requirement.file?.path),
+        })),
+      uploads: uploads.map((upload) => ({
+        requirementType: upload.requirementType,
+        customRequirementId: upload.customRequirementId || '',
+        hasFile: Boolean(String(upload.fileName || '').trim()),
+      })),
+    });
   } catch (error) {
     console.error('Coach student requirements error:', error);
     return res.status(500).json({ message: 'Unable to load student requirements' });

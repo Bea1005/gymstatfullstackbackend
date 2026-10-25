@@ -22,6 +22,9 @@ const removeIncomingRequirementFile = (filePath) => {
     console.warn('Unable to remove rejected requirement upload:', error.message);
   }
 };
+const removeIncomingRequirementFiles = (files) => {
+  files.forEach((file) => removeIncomingRequirementFile(file.path));
+};
 const resolveStoredFilePath = (storedPath) => {
   if (!storedPath) return '';
   const normalizedPath = String(storedPath).replace(/[\\/]+/g, path.sep);
@@ -146,9 +149,21 @@ const resolveStudentObjectId = async (req) => {
 // @route POST /api/student/requirements
 // @access Private (Student only)
 exports.uploadRequirement = async (req, res) => {
+  const filesFromFields = req.files
+    ? [...(req.files.files || []), ...(req.files.file || [])]
+    : [];
+  const incomingFiles = filesFromFields.length > 0
+    ? filesFromFields
+    : (req.file ? [req.file] : []);
+  const firstFile = incomingFiles[0];
+
   try {
-    if (!req.file) {
+    if (incomingFiles.length === 0) {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    if (incomingFiles.length > 1 && incomingFiles.some((file) => !file.mimetype.startsWith('image/'))) {
+      removeIncomingRequirementFiles(incomingFiles);
+      return res.status(400).json({ success: false, message: 'Multiple uploads must contain photo files only' });
     }
 
     const {
@@ -164,7 +179,7 @@ exports.uploadRequirement = async (req, res) => {
     const replacementId = replacementSubmissionId ? String(replacementSubmissionId).trim() : '';
 
     if (!normalizedRequirementType) {
-      if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      removeIncomingRequirementFiles(incomingFiles);
       return res.status(400).json({ success: false, message: 'Requirement type is required' });
     }
 
@@ -176,7 +191,7 @@ exports.uploadRequirement = async (req, res) => {
     let acceptedCustomRequirementLabel = '';
     if (normalizedRequirementType === 'other') {
       if (!mongoose.isValidObjectId(customRequirementKey)) {
-        removeIncomingRequirementFile(req.file.path);
+        removeIncomingRequirementFiles(incomingFiles);
         return res.status(400).json({ success: false, message: 'Select an administrator-assigned requirement.' });
       }
 
@@ -187,16 +202,16 @@ exports.uploadRequirement = async (req, res) => {
         isActive: true
       });
       if (!customRequirement) {
-        removeIncomingRequirementFile(req.file.path);
+        removeIncomingRequirementFiles(incomingFiles);
         return res.status(404).json({ success: false, message: 'This requirement is no longer available.' });
       }
       if (customRequirement.file?.filename || customRequirement.file?.path) {
-        removeIncomingRequirementFile(req.file.path);
+        removeIncomingRequirementFiles(incomingFiles);
         return res.status(400).json({ success: false, message: 'This requirement does not accept student uploads.' });
       }
 
       if (!isRequirementAssignedToStudent(customRequirement, req.user)) {
-        removeIncomingRequirementFile(req.file.path);
+        removeIncomingRequirementFiles(incomingFiles);
         return res.status(403).json({ success: false, message: 'This requirement is not assigned to your sport.' });
       }
 
@@ -204,9 +219,18 @@ exports.uploadRequirement = async (req, res) => {
     }
 
     const currentAcademicYear = getAcademicYearLabel();
-    const normalizedFilePath = req.file.path
-      ? path.relative(path.resolve(__dirname, '../..'), req.file.path).replace(/\\/g, '/')
-      : '';
+    const storedFiles = incomingFiles.map((file) => ({
+      fileName: file.originalname,
+      fileType: file.mimetype,
+      fileSize: file.size,
+      filePath: file.path
+        ? path.relative(path.resolve(__dirname, '../..'), file.path).replace(/\\/g, '/')
+        : '',
+      fileData: file.buffer || null,
+      storageType: file.buffer ? 'mongodb' : 'filesystem'
+    }));
+    const firstStoredFile = storedFiles[0];
+    const normalizedFilePath = firstStoredFile.filePath;
 
     const replacementQuery = {
       studentId,
@@ -275,13 +299,17 @@ exports.uploadRequirement = async (req, res) => {
     }
 
     if (replacementTarget) {
-      const previousFilePath = resolveStoredFilePath(replacementTarget.filePath);
-      replacementTarget.fileName = req.file.originalname;
-      replacementTarget.fileType = req.file.mimetype;
-      replacementTarget.fileSize = req.file.size;
+      const previousFilePaths = [
+        replacementTarget.filePath,
+        ...(replacementTarget.files || []).map((file) => file.filePath)
+      ].map(resolveStoredFilePath).filter(Boolean);
+      replacementTarget.fileName = firstFile.originalname;
+      replacementTarget.fileType = firstFile.mimetype;
+      replacementTarget.fileSize = firstFile.size;
       replacementTarget.filePath = normalizedFilePath;
-      replacementTarget.fileData = req.file.buffer || null;
-      replacementTarget.storageType = req.file.buffer ? 'mongodb' : 'filesystem';
+      replacementTarget.fileData = firstFile.buffer || null;
+      replacementTarget.storageType = firstFile.buffer ? 'mongodb' : 'filesystem';
+      replacementTarget.files = storedFiles;
       replacementTarget.status = 'pending';
       replacementTarget.requirementStatus = 'active';
       replacementTarget.isReusable = false;
@@ -303,16 +331,15 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.customRequirementLabel = normalizedRequirementType === 'other' ? acceptedCustomRequirementLabel : '';
       await replacementTarget.save();
 
-      if (previousFilePath
-        && previousFilePath !== normalizedFilePath
-        && (normalizedRequirementType === 'psa' || normalizedFilePath)
-        && fs.existsSync(previousFilePath)) {
-        try {
-          fs.unlinkSync(previousFilePath);
-        } catch (error) {
-          console.warn('Unable to remove replaced requirement file:', error.message);
+      previousFilePaths.forEach((previousFilePath) => {
+        if (previousFilePath !== normalizedFilePath && fs.existsSync(previousFilePath)) {
+          try {
+            fs.unlinkSync(previousFilePath);
+          } catch (error) {
+            console.warn('Unable to remove replaced requirement file:', error.message);
+          }
         }
-      }
+      });
 
       if (psaDuplicateQuery) {
         const duplicateQuery = {
@@ -351,12 +378,13 @@ exports.uploadRequirement = async (req, res) => {
       participationType: normalizedParticipationType,
       customRequirementId: normalizedRequirementType === 'other' ? customRequirementKey : '',
       customRequirementLabel: normalizedRequirementType === 'other' ? acceptedCustomRequirementLabel : '',
-      fileName: req.file.originalname,
-      fileType: req.file.mimetype,
-      fileSize: req.file.size,
+      fileName: firstFile.originalname,
+      fileType: firstFile.mimetype,
+      fileSize: firstFile.size,
       filePath: normalizedFilePath,
-      fileData: req.file.buffer || null,
-      storageType: req.file.buffer ? 'mongodb' : 'filesystem',
+      fileData: firstFile.buffer || null,
+      storageType: firstFile.buffer ? 'mongodb' : 'filesystem',
+      files: storedFiles,
       sport: sport || 'General',
       academicYear: currentAcademicYear,
       requirementStatus: 'active'
@@ -370,7 +398,7 @@ exports.uploadRequirement = async (req, res) => {
       data: requirement
     });
   } catch (error) {
-    removeIncomingRequirementFile(req.file?.path);
+    removeIncomingRequirementFiles(incomingFiles);
     res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' });
   }
 };

@@ -62,44 +62,60 @@ const serveScreenerRequirementFile = async (req, res) => {
     }
 
     const RequirementModel = getStudentRequirementModel(req.query.participationType);
-    const submission = await RequirementModel.findById(req.params.id).select('+fileData').lean();
+    const submission = await RequirementModel.findById(req.params.id)
+      .select('+fileData +files.fileData')
+      .lean();
 
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
     if (await denyOwnDepartmentAccess(req, res, submission)) return;
 
-    const fileBuffer = toFileBuffer(submission.fileData);
+    const requestedFileIndex = Number(req.query.fileIndex || 0);
+    const storedFiles = Array.isArray(submission.files) && submission.files.length > 0
+      ? submission.files
+      : [{
+          fileName: submission.fileName,
+          fileType: submission.fileType,
+          fileSize: submission.fileSize,
+          filePath: submission.filePath,
+          fileData: submission.fileData
+        }];
+    if (!Number.isInteger(requestedFileIndex) || requestedFileIndex < 0 || requestedFileIndex >= storedFiles.length) {
+      return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
+    }
+    const selectedFile = storedFiles[requestedFileIndex];
+    const fileBuffer = toFileBuffer(selectedFile.fileData);
     if (fileBuffer?.length) {
-      const extension = path.extname(submission.fileName || '').toLowerCase();
+      const extension = path.extname(selectedFile.fileName || '').toLowerCase();
       const expectedMime = allowedRequirementTypes.get(extension);
-      const storedMime = String(submission.fileType || '').toLowerCase();
+      const storedMime = String(selectedFile.fileType || '').toLowerCase();
       if (!expectedMime || (storedMime && storedMime !== expectedMime) || fileBuffer.length > MAX_REQUIREMENT_FILE_SIZE) {
         return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
       }
 
-      const safeFileName = path.basename(submission.fileName || 'requirement').replace(/[\r\n"\\/]/g, '_');
+      const safeFileName = path.basename(selectedFile.fileName || 'requirement').replace(/[\r\n"\\/]/g, '_');
       res.setHeader('Content-Type', expectedMime);
       res.setHeader('Content-Disposition', `inline; filename="${safeFileName}"`);
       res.setHeader('Content-Type', storedMime || expectedMime);
       return res.send(fileBuffer);
     }
 
-    const storedPath = submission.filePath || '';
+    const storedPath = selectedFile.filePath || '';
     const filePath = resolveStoredFilePath(storedPath);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
     }
 
-    const extension = path.extname(submission.fileName || filePath).toLowerCase();
+    const extension = path.extname(selectedFile.fileName || filePath).toLowerCase();
     const expectedMime = allowedRequirementTypes.get(extension);
     const fileStats = fs.statSync(filePath);
-    if (!expectedMime || submission.fileType !== expectedMime || fileStats.size > MAX_REQUIREMENT_FILE_SIZE) {
+    if (!expectedMime || selectedFile.fileType !== expectedMime || fileStats.size > MAX_REQUIREMENT_FILE_SIZE) {
       return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
     }
 
-    const safeFileName = path.basename(submission.fileName || path.basename(filePath)).replace(/[\r\n"\\/]/g, '_');
+    const safeFileName = path.basename(selectedFile.fileName || path.basename(filePath)).replace(/[\r\n"\\/]/g, '_');
     res.setHeader('Content-Type', expectedMime);
     res.setHeader('Content-Disposition', `inline; filename="${safeFileName}"`);
     return res.sendFile(filePath);
@@ -257,7 +273,7 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         }
       : participationFilter;
     let submissionsQuery = RequirementModel.find(submissionFilter)
-      .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath status resubmitted uploadDate createdAt remarks')
+      .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status resubmitted uploadDate createdAt remarks')
       .sort({ uploadDate: -1, _id: -1 });
     if (!isScreener || participationType === 'STRASUC') {
       submissionsQuery = submissionsQuery.populate('studentId', 'fullname department yearLevel sport sports assignedSports id username');
@@ -366,8 +382,19 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
 
       // Add the requirement to the student's requirements
       const studentEntry = studentsById.get(studentId);
-      const storedFilePath = resolveStoredFilePath(submission.filePath);
-      const hasUpload = Number(submission.fileSize) > 0 || Boolean(storedFilePath && fs.existsSync(storedFilePath));
+      const attachmentFiles = Array.isArray(submission.files) && submission.files.length > 0
+        ? submission.files
+        : [{
+            fileName: submission.fileName,
+            fileType: submission.fileType,
+            fileSize: submission.fileSize,
+            filePath: submission.filePath
+          }];
+      const hasUpload = attachmentFiles.some((file) => (
+        Number(file.fileSize) > 0
+        || Boolean(resolveStoredFilePath(file.filePath))
+      ));
+      const fileUrl = `/screener/requirements/${submission._id}/preview?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}`;
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
@@ -376,7 +403,12 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
         label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: submission.fileName || 'Uploaded file',
         fileType: submission.fileType || '',
-        fileUrl: `/screener/requirements/${submission._id}/preview?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}`,
+        fileUrl,
+        files: attachmentFiles.map((file, index) => ({
+          fileName: file.fileName || 'Uploaded file',
+          fileType: file.fileType || '',
+          fileUrl: `${fileUrl}&fileIndex=${index}`
+        })),
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
         hasUpload,
