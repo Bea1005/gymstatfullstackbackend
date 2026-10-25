@@ -48,13 +48,6 @@ exports.createRequirement = async (req, res) => {
       });
     }
 
-    if (!req.file && type.trim().toLowerCase() !== 'other') {
-      return res.status(400).json({
-        success: false,
-        message: 'File is required'
-      });
-    }
-
     if (Number.isNaN(new Date(dueDate).getTime())) {
       return res.status(400).json({
         success: false,
@@ -383,6 +376,37 @@ exports.updateRequirement = async (req, res) => {
     
     console.log(`✅ Requirement ${id} updated in MongoDB`);
     
+    if (updatedRequirement.status === 'published' && updatedRequirement.isActive) {
+      const requirementType = updatedRequirement.type || 'requirement';
+      const dueDate = updatedRequirement.dueDate
+        ? new Date(updatedRequirement.dueDate).toISOString().slice(0, 10)
+        : '';
+      const targetScope = updatedRequirement.targetStudents === 'sport-specific'
+        ? `Students in ${splitRequirementSports(updatedRequirement.sport).join(', ') || 'the specified sport'}`
+        : 'All students';
+      const announcementDescription = [
+        updatedRequirement.description?.trim(),
+        updatedRequirement.instructions?.trim()
+          ? `Instructions: ${updatedRequirement.instructions.trim()}`
+          : '',
+        `Requirement type: ${requirementType}`,
+        dueDate ? `Due date: ${dueDate}` : '',
+        `Target: ${targetScope}`,
+      ].filter(Boolean).join('\n\n');
+
+      await Announcement.findOneAndUpdate(
+        { relatedRequirementId: updatedRequirement._id },
+        {
+          title: `Updated Requirement: ${updatedRequirement.title}`,
+          description: announcementDescription,
+          type: 'requirement',
+          sport: updatedRequirement.sport,
+          date: new Date(),
+          isActive: true,
+        }
+      );
+    }
+
     res.status(200).json({
       success: true,
       message: 'Requirement updated successfully',

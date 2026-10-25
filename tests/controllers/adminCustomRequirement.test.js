@@ -170,7 +170,7 @@ describe('admin custom requirement definitions', () => {
     });
   });
 
-  it('continues requiring a file for non-custom requirement definitions', async () => {
+  it('allows non-custom requirement definitions without an attached file', async () => {
     const req = httpMocks.createRequest({
       method: 'POST',
       body: {
@@ -183,9 +183,14 @@ describe('admin custom requirement definitions', () => {
 
     await createRequirement(req, res);
 
-    expect(res.statusCode).toBe(400);
-    expect(Requirement).not.toHaveBeenCalled();
-    expect(res._getJSONData().message).toBe('File is required');
+    expect(res.statusCode).toBe(201);
+    expect(Requirement).toHaveBeenCalledTimes(1);
+    expect(Requirement.mock.calls[0][0]).toMatchObject({
+      title: 'Consent Form',
+      type: 'consent',
+      status: 'draft'
+    });
+    expect(Requirement.mock.calls[0][0]).not.toHaveProperty('file');
   });
 
   it('archives a custom definition without deleting its record or student submissions', async () => {

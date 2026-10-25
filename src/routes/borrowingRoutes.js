@@ -41,7 +41,46 @@ const normalizeTimestampObject = (value) => {
     time: String(value.time || '').trim()
   };
 };
+const getBorrowingEquipmentItems = (borrowing) => (
+  Array.isArray(borrowing.equipmentItems) && borrowing.equipmentItems.length > 0
+    ? borrowing.equipmentItems.map((item) => ({
+        equipment: item.equipment,
+        referenceIds: Array.isArray(item.referenceIds) ? item.referenceIds : [],
+        referenceConditions: Array.isArray(item.referenceConditions) ? item.referenceConditions : [],
+        quantity: Number(item.quantity) || item.referenceIds?.length || 0,
+      }))
+    : [{
+        equipment: borrowing.equipment || '',
+        referenceIds: Array.isArray(borrowing.referenceIds) ? borrowing.referenceIds : [],
+        referenceConditions: Array.isArray(borrowing.referenceConditions) ? borrowing.referenceConditions : [],
+        quantity: Number(borrowing.quantity || borrowing.qty) || borrowing.referenceIds?.length || 1,
+      }]
+);
+const normalizeEquipmentItems = (equipmentItems, legacyData) => {
+  const submittedItems = Array.isArray(equipmentItems) && equipmentItems.length > 0
+    ? equipmentItems
+    : [{
+        equipment: legacyData.equipment,
+        referenceIds: legacyData.referenceIds,
+        referenceConditions: legacyData.referenceConditions,
+        quantity: legacyData.quantity ?? legacyData.qty,
+      }];
+
+  return submittedItems.map((item) => {
+    const referenceIds = Array.isArray(item.referenceIds)
+      ? item.referenceIds.map((id) => normalizeText(id)).filter(Boolean)
+      : [];
+    const quantity = normalizeQuantity(item.quantity ?? referenceIds.length);
+    return {
+      equipment: normalizeText(item.equipment || item.name),
+      referenceIds,
+      referenceConditions: Array.isArray(item.referenceConditions) ? item.referenceConditions : [],
+      quantity,
+    };
+  });
+};
 const buildBorrowingResponse = (borrowing) => {
+  const equipmentItems = getBorrowingEquipmentItems(borrowing);
   const borrowDate = borrowing.borrowDate ? new Date(borrowing.borrowDate) : new Date();
   const returnedAt = borrowing.returnedAt ? new Date(borrowing.returnedAt) : null;
   return {
@@ -51,6 +90,7 @@ const buildBorrowingResponse = (borrowing) => {
     contactNo: borrowing.contactNo || '',
     facebookAccount: borrowing.facebookAccount || '',
     equipment: borrowing.equipment || '',
+    equipmentItems,
     referenceIds: borrowing.referenceIds || [],
     referenceConditions: borrowing.referenceConditions || [],
     qty: borrowing.quantity || borrowing.qty || 1,
@@ -65,56 +105,42 @@ const buildBorrowingResponse = (borrowing) => {
   };
 };
 const syncReferenceConditionsToEquipment = async (borrowing) => {
-  if (!borrowing || !Array.isArray(borrowing.referenceIds) || borrowing.referenceIds.length === 0) {
-    return;
-  }
+  if (!borrowing) return;
 
-  const referenceIds = borrowing.referenceIds.filter(Boolean);
-  const referenceConditions = Array.isArray(borrowing.referenceConditions)
-    ? borrowing.referenceConditions.filter((condition) => typeof condition === 'string')
+  const groups = getBorrowingEquipmentItems(borrowing);
+  const allReferenceIds = groups.flatMap((group) => group.referenceIds);
+  const fallbackConditions = Array.isArray(borrowing.referenceConditions)
+    ? borrowing.referenceConditions
     : [];
   const fallbackCondition = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(borrowing.condition)
     ? borrowing.condition
     : null;
+  let flattenedIndex = 0;
 
-  const targetReferenceIds = (() => {
-    if (referenceConditions.length === 1 && referenceIds.length > 1) {
-      return [referenceIds[0]];
-    }
-    return referenceIds;
-  })();
-
-  for (let index = 0; index < targetReferenceIds.length; index += 1) {
-    const referenceId = targetReferenceIds[index];
-    const equipmentItem = await Equipment.findOne({ referenceId });
-
-    if (!equipmentItem) {
-      throw new Error(`Equipment reference ID not found: ${referenceId}`);
-    }
-
-    let resolvedCondition = fallbackCondition || 'Good';
-
-    if (referenceConditions.length === targetReferenceIds.length) {
-      const conditionAtIndex = referenceConditions[index];
-      if (['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(conditionAtIndex)) {
-        resolvedCondition = conditionAtIndex;
+  for (const group of groups) {
+    for (let index = 0; index < group.referenceIds.length; index += 1) {
+      const referenceId = group.referenceIds[index];
+      const equipmentItem = await Equipment.findOne({ referenceId });
+      if (!equipmentItem) {
+        throw new Error(`Equipment reference ID not found: ${referenceId}`);
       }
-    } else if (referenceConditions.length === 1 && index === 0) {
-      const singleCondition = referenceConditions[0];
-      if (['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(singleCondition)) {
-        resolvedCondition = singleCondition;
-      }
-    } else if (referenceConditions.length > 0) {
-      const conditionAtIndex = referenceConditions[index];
-      if (['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(conditionAtIndex)) {
-        resolvedCondition = conditionAtIndex;
-      }
-    }
 
-    if (equipmentItem.condition !== resolvedCondition) {
-      equipmentItem.condition = resolvedCondition;
-      await equipmentItem.save();
+      const groupCondition = group.referenceConditions[index];
+      const legacyCondition = fallbackConditions[flattenedIndex]
+        || (fallbackConditions.length === 1 ? fallbackConditions[0] : null);
+      const resolvedCondition = [legacyCondition, groupCondition, fallbackCondition]
+        .find((value) => ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(value))
+        || 'Good';
+
+      if (equipmentItem.condition !== resolvedCondition) {
+        equipmentItem.condition = resolvedCondition;
+        await equipmentItem.save();
+      }
+      flattenedIndex += 1;
     }
+  }
+  if (allReferenceIds.length !== flattenedIndex) {
+    throw new Error('Borrowing reference IDs could not be synchronized.');
   }
 };
 const ensureEquipmentExists = async (equipmentName) => {
@@ -125,23 +151,25 @@ const ensureEquipmentExists = async (equipmentName) => {
     name: { $regex: `^${escapeRegExp(name)}$`, $options: 'i' }
   });
 };
-const adjustBorrowedEquipmentStock = async (equipmentName, referenceIds, quantity, adjustment) => {
+const adjustBorrowedEquipmentStock = async (equipmentName, referenceIds, quantity, adjustment, session) => {
   const nameFilter = { name: { $regex: `^${escapeRegExp(normalizeText(equipmentName))}$`, $options: 'i' } };
   const validReferenceIds = Array.isArray(referenceIds) ? referenceIds.filter(Boolean) : [];
 
   if (validReferenceIds.length === 0) {
-    const equipmentItem = await Equipment.findOne(nameFilter);
+    const equipmentItemQuery = Equipment.findOne(nameFilter);
+    const equipmentItem = await (session ? equipmentItemQuery.session(session) : equipmentItemQuery);
     if (equipmentItem) {
       equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) + (quantity * adjustment));
-      await equipmentItem.save();
+      await equipmentItem.save(session ? { session } : undefined);
     }
     return;
   }
 
-  const equipmentItems = await Equipment.find({
+  const equipmentQuery = Equipment.find({
     ...nameFilter,
     referenceId: { $in: validReferenceIds }
   });
+  const equipmentItems = await (session ? equipmentQuery.session(session) : equipmentQuery);
   if (equipmentItems.length !== validReferenceIds.length) {
     throw new Error('One or more borrowed equipment reference IDs could not be found.');
   }
@@ -149,8 +177,34 @@ const adjustBorrowedEquipmentStock = async (equipmentName, referenceIds, quantit
   const equipmentByReferenceId = new Map(equipmentItems.map((item) => [item.referenceId, item]));
   for (const referenceId of validReferenceIds) {
     const equipmentItem = equipmentByReferenceId.get(referenceId);
-    equipmentItem.onLoan = Math.max(0, (equipmentItem.onLoan || 0) + adjustment);
-    await equipmentItem.save();
+    const onLoan = Number(equipmentItem.onLoan) || 0;
+    const available = Math.max(0, Number(equipmentItem.available ?? (equipmentItem.totalStock - onLoan)) || 0);
+    if (adjustment > 0 && available < 1) {
+      throw new Error(`Reference ID ${referenceId} is no longer available.`);
+    }
+    if (adjustment < 0 && onLoan < 1) {
+      throw new Error(`Reference ID ${referenceId} is not currently borrowed.`);
+    }
+    equipmentItem.onLoan = onLoan + adjustment;
+    await equipmentItem.save(session ? { session } : undefined);
+  }
+};
+const adjustBorrowingEquipmentStock = async (borrowing, adjustment) => {
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      for (const item of getBorrowingEquipmentItems(borrowing)) {
+        await adjustBorrowedEquipmentStock(
+          item.equipment,
+          item.referenceIds,
+          item.quantity,
+          adjustment,
+          session
+        );
+      }
+    });
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -172,33 +226,67 @@ router.get('/admin/borrowing', protect, authorize('admin'), async (req, res) => 
 // @access  Private/Admin
 router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) => {
   try {
-    const { Name, fullname, contactNo, facebookAccount, equipment, quantity, qty, referenceIds, referenceConditions, borrowTimestamp, endTime, returnedTimestamp, status, condition } = req.body;
+    const {
+      Name,
+      fullname,
+      contactNo,
+      facebookAccount,
+      equipmentItems,
+      equipment,
+      quantity,
+      qty,
+      referenceIds,
+      referenceConditions,
+      borrowTimestamp,
+      endTime,
+      returnedTimestamp,
+      status,
+      condition
+    } = req.body;
     const borrowerName = normalizeText(Name || fullname);
-    const equipmentName = normalizeText(equipment);
-    const selectedReferenceIds = Array.isArray(referenceIds) ? referenceIds.filter(Boolean) : [];
-    const selectedQuantity = normalizeQuantity(quantity ?? qty ?? selectedReferenceIds.length);
     const normalizedBorrowTimestamp = normalizeTimestampObject(borrowTimestamp);
     const normalizedReturnedTimestamp = returnedTimestamp && typeof returnedTimestamp === 'object'
       ? normalizeTimestampObject(returnedTimestamp)
       : null;
+    const itemGroups = normalizeEquipmentItems(equipmentItems, {
+      equipment,
+      quantity,
+      qty,
+      referenceIds,
+      referenceConditions,
+    });
 
-    if (!borrowerName || !equipmentName || selectedReferenceIds.length === 0 || selectedQuantity <= 0) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!borrowerName || itemGroups.length === 0) {
+      return res.status(400).json({ error: 'Borrower and equipment are required.' });
+    }
+    if (itemGroups.some((item) => (
+      !item.equipment
+      || !Number.isInteger(item.quantity)
+      || item.quantity < 1
+      || item.quantity !== item.referenceIds.length
+    ))) {
+      return res.status(400).json({ error: 'Each equipment type must have valid Reference IDs and a matching quantity.' });
+    }
+    if (new Set(itemGroups.map((item) => item.equipment.toLowerCase())).size !== itemGroups.length) {
+      return res.status(400).json({ error: 'Each equipment type can only be selected once.' });
     }
 
-    if (selectedQuantity !== selectedReferenceIds.length) {
-      return res.status(400).json({ error: 'Quantity must match the number of selected reference IDs' });
-    }
-
+    const selectedReferenceIds = itemGroups.flatMap((item) => item.referenceIds);
     if (new Set(selectedReferenceIds).size !== selectedReferenceIds.length) {
-      return res.status(400).json({ error: 'Reference IDs must be unique' });
+      return res.status(400).json({ error: 'Reference IDs must be unique across the transaction.' });
     }
+    const selectedQuantity = selectedReferenceIds.length;
+    const suppliedQuantity = quantity ?? qty;
+    if (suppliedQuantity !== undefined && normalizeQuantity(suppliedQuantity) !== selectedQuantity) {
+      return res.status(400).json({ error: 'Quantity must match the number of selected Reference IDs.' });
+    }
+    const selectedEquipmentNames = itemGroups.map((item) => item.equipment);
 
-    const equipmentItem = await ensureEquipmentExists(equipmentName);
-    if (!equipmentItem) {
-      return res.status(404).json({
-        error: 'Equipment not found in inventory. Please register it first.'
-      });
+    for (const equipmentName of selectedEquipmentNames) {
+      const equipmentRecord = await ensureEquipmentExists(equipmentName);
+      if (!equipmentRecord) {
+        return res.status(404).json({ error: `Equipment not found in inventory: ${equipmentName}.` });
+      }
     }
 
     const borrowDate = new Date();
@@ -206,46 +294,65 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
-        const referenceItems = await Equipment.find({
-          referenceId: { $in: selectedReferenceIds },
-          name: { $regex: `^${escapeRegExp(equipmentName)}$`, $options: 'i' }
-        }).session(session);
-        const equipmentByReferenceId = new Map(referenceItems.map((item) => [item.referenceId, item]));
-        if (selectedReferenceIds.some((referenceId) => !equipmentByReferenceId.has(referenceId))) {
-          throw Object.assign(
-            new Error('One or more reference IDs do not belong to the selected equipment'),
-            { statusCode: 400 }
-          );
-        }
+        const availableItemsByReferenceId = new Map();
+        for (const group of itemGroups) {
+          const referenceItems = await Equipment.find({
+            referenceId: { $in: group.referenceIds },
+            name: { $regex: `^${escapeRegExp(group.equipment)}$`, $options: 'i' }
+          }).session(session);
+          const itemsByReferenceId = new Map(referenceItems.map((item) => [item.referenceId, item]));
+          if (group.referenceIds.some((referenceId) => !itemsByReferenceId.has(referenceId))) {
+            throw Object.assign(
+              new Error(`One or more Reference IDs do not belong to ${group.equipment}.`),
+              { statusCode: 400 }
+            );
+          }
 
-        const availableCount = referenceItems.reduce((count, item) => {
-          const available = Math.max(
-            0,
-            Number(item.available ?? (item.totalStock - (item.onLoan || 0))) || 0
-          );
-          return count + (available > 0 ? 1 : 0);
-        }, 0);
-        if (availableCount < selectedQuantity) {
-          throw Object.assign(
-            new Error(`Insufficient stock. Only ${availableCount} of ${selectedQuantity} selected reference IDs are available.`),
-            { statusCode: 400 }
-          );
+          for (const referenceId of group.referenceIds) {
+            const item = itemsByReferenceId.get(referenceId);
+            const available = Math.max(
+              0,
+              Number(item.available ?? (item.totalStock - (item.onLoan || 0))) || 0
+            );
+            if (available < 1) {
+              throw Object.assign(
+                new Error(`Reference ID ${referenceId} is no longer available.`),
+                { statusCode: 400 }
+              );
+            }
+            availableItemsByReferenceId.set(referenceId, item);
+          }
         }
 
         for (const referenceId of selectedReferenceIds) {
-          const referenceItem = equipmentByReferenceId.get(referenceId);
+          const referenceItem = availableItemsByReferenceId.get(referenceId);
           referenceItem.onLoan = (referenceItem.onLoan || 0) + 1;
           await referenceItem.save({ session });
         }
+
+        const borrowTimestampValue = normalizedBorrowTimestamp.date
+          ? new Date(`${normalizedBorrowTimestamp.date} ${normalizedBorrowTimestamp.time || '09:00 AM'}`)
+          : borrowDate;
+        const savedEquipmentItems = itemGroups.map((item) => ({
+          equipment: item.equipment,
+          referenceIds: item.referenceIds,
+          referenceConditions: item.referenceIds.map((referenceId, index) => {
+            const submittedCondition = item.referenceConditions[index]
+              || referenceConditions?.[selectedReferenceIds.indexOf(referenceId)];
+            return submittedCondition || availableItemsByReferenceId.get(referenceId).condition || 'Good';
+          }),
+          quantity: item.referenceIds.length,
+        }));
 
         [borrowing] = await Borrowing.create([{
           Name: borrowerName,
           fullname: borrowerName,
           contactNo: normalizeText(contactNo),
           facebookAccount: normalizeText(facebookAccount),
-          equipment: equipmentName,
+          equipment: selectedEquipmentNames.join(', '),
+          equipmentItems: savedEquipmentItems,
           referenceIds: selectedReferenceIds,
-          referenceConditions: Array.isArray(referenceConditions) ? referenceConditions : [],
+          referenceConditions: savedEquipmentItems.flatMap((item) => item.referenceConditions),
           quantity: selectedQuantity,
           qty: selectedQuantity,
           borrowTimestamp: normalizedBorrowTimestamp.date || normalizedBorrowTimestamp.time
@@ -255,7 +362,7 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
           returnedTimestamp: normalizedReturnedTimestamp,
           status: status || 'Out Now',
           condition: condition || null,
-          borrowDate,
+          borrowDate: borrowTimestampValue,
           borrowedBy: normalizeBorrowedBy(req.user?.id || req.user?._id)
         }], { session });
       });
@@ -288,21 +395,11 @@ router.put('/admin/borrowing/:id', protect, authorize('admin'), async (req, res)
     }
 
     if (updateData.status === 'Returned' && !['Returned', 'Completed'].includes(borrowing.status)) {
-      await adjustBorrowedEquipmentStock(
-        borrowing.equipment,
-        borrowing.referenceIds,
-        borrowing.quantity || borrowing.qty || 1,
-        -1
-      );
+      await adjustBorrowingEquipmentStock(borrowing, -1);
     }
 
     if (updateData.status === 'Out' && ['Returned', 'Completed'].includes(borrowing.status)) {
-      await adjustBorrowedEquipmentStock(
-        borrowing.equipment,
-        borrowing.referenceIds,
-        borrowing.quantity || borrowing.qty || 1,
-        1
-      );
+      await adjustBorrowingEquipmentStock(borrowing, 1);
     }
 
     const updatedFields = {
@@ -384,20 +481,15 @@ router.put('/admin/borrowing/:id/return', protect, authorize('admin'), async (re
       await equipmentItem.save();
     }
 
-    await adjustBorrowedEquipmentStock(
-      borrowing.equipment,
-      borrowing.referenceIds,
-      borrowing.quantity || borrowing.qty || 1,
-      -1
-    );
+    borrowing.referenceConditions = requestedReferenceConditions.length > 0
+      ? requestedReferenceConditions
+      : borrowing.referenceConditions || [];
+    await adjustBorrowingEquipmentStock(borrowing, -1);
 
     const returnedAt = req.body.returnedAt ? new Date(req.body.returnedAt) : new Date();
     borrowing.status = 'Completed';
     borrowing.returnedAt = returnedAt;
     borrowing.returnedTimestamp = req.body.returnedTimestamp || formatBorrowTimestamp(returnedAt);
-    borrowing.referenceConditions = requestedReferenceConditions.length > 0
-      ? requestedReferenceConditions
-      : borrowing.referenceConditions || [];
     borrowing.condition = fallbackCondition;
     await borrowing.save();
 
@@ -420,12 +512,7 @@ router.delete('/admin/borrowing/:id', protect, authorize('admin'), async (req, r
     }
 
     if (borrowing.status === 'Out Now' || borrowing.status === 'Out') {
-      await adjustBorrowedEquipmentStock(
-        borrowing.equipment,
-        borrowing.referenceIds,
-        borrowing.quantity || borrowing.qty || 1,
-        -1
-      );
+      await adjustBorrowingEquipmentStock(borrowing, -1);
     }
 
     await Borrowing.findByIdAndDelete(req.params.id);

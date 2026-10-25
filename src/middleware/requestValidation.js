@@ -14,6 +14,7 @@ const COACH_RECORD_CONTENT_FIELDS = new Set([
   'directorTitle',
 ]);
 const FORMATTED_TEXT_FIELDS = COACH_RECORD_CONTENT_FIELDS;
+const BORROWING_CREATE_FIELDS = new Set(['equipmentItems']);
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
   'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
@@ -147,6 +148,8 @@ const validateRequestBody = (req, res, next) => {
       && /(?:^|\/)requirements\/[^/]+\/?$/.test(req.path);
     const isCoachRecordContentUpdate = req.method === 'PUT'
       && /(?:^|\/)coach\/record-content\/(?:form-header|eligibility|director)\/?$/.test(req.path);
+    const isBorrowingCreate = req.method === 'POST'
+      && /(?:^|\/)admin\/borrowing\/?$/.test(req.path);
     req.body = normalizeKeyValue(
       'body',
       req.body,
@@ -157,7 +160,11 @@ const validateRequestBody = (req, res, next) => {
         : isRequirementDefinitionUpdate
           ? new Set(['draft', 'published', 'archived'])
           : undefined,
-      isCoachRecordContentUpdate ? COACH_RECORD_CONTENT_FIELDS : undefined
+      isCoachRecordContentUpdate
+        ? COACH_RECORD_CONTENT_FIELDS
+        : isBorrowingCreate
+          ? BORROWING_CREATE_FIELDS
+          : undefined
     );
     const isRegistration = /\/register$/.test(req.path);
     const passwordValue = isRegistration ? req.body.password : req.body.newPassword;

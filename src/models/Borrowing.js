@@ -26,6 +26,16 @@ const borrowingSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  equipmentItems: {
+    type: [{
+      _id: false,
+      equipment: { type: String, required: true, trim: true },
+      referenceIds: { type: [String], default: [] },
+      referenceConditions: { type: [String], default: [] },
+      quantity: { type: Number, required: true, min: 1 }
+    }],
+    default: undefined
+  },
   quantity: {
     type: Number,
     required: true,

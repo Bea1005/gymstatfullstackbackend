@@ -2,6 +2,43 @@ const httpMocks = require('node-mocks-http');
 const { validateRequestBody } = require('../../src/middleware/requestValidation');
 
 describe('validateRequestBody requirement upload fields', () => {
+  it('accepts grouped equipment fields when creating an Admin borrowing', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/admin/borrowing',
+      body: {
+        fullname: 'Student Athlete',
+        equipmentItems: [
+          { equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 },
+          { equipment: 'Baseball', referenceIds: ['BB-001'], quantity: 1 },
+        ],
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.equipmentItems).toHaveLength(2);
+  });
+
+  it('does not allow grouped equipment fields on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/admin/equipment',
+      body: { equipmentItems: [] },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
   it('accepts the fields sent by the Admin Requirements FormData', () => {
     const req = httpMocks.createRequest({
       method: 'POST',

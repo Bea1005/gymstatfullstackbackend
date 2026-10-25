@@ -4,11 +4,13 @@ const RequirementSubmission = require('../../src/models/RequirementSubmission');
 const Announcement = require('../../src/models/Announcement');
 const {
   publishRequirement,
+  updateRequirement,
   getPublishedRequirements
 } = require('../../src/controllers/requirementController');
 
 jest.mock('../../src/models/Requirement', () => ({
   findById: jest.fn(),
+  findByIdAndUpdate: jest.fn(),
   find: jest.fn(),
 }));
 
@@ -22,6 +24,7 @@ jest.mock('../../src/models/Announcement', () => {
     this.save = announcementModel.save;
   });
   announcementModel.findOne = jest.fn();
+  announcementModel.findOneAndUpdate = jest.fn();
   announcementModel.save = jest.fn();
   return announcementModel;
 });
@@ -149,6 +152,41 @@ describe('publishRequirement', () => {
     expect(requirement.status).toBe('draft');
     expect(requirement.publishedAt).toBeUndefined();
     expect(requirement.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates the existing announcement when an active published requirement changes', async () => {
+    const updatedRequirement = {
+      _id: requirementId,
+      title: 'Updated Consent Form',
+      description: 'Updated parent consent details.',
+      instructions: 'Use the revised form.',
+      type: 'consent',
+      dueDate: new Date('2026-11-10T00:00:00.000Z'),
+      targetStudents: 'all',
+      sport: 'General',
+      status: 'published',
+      isActive: true,
+    };
+    Requirement.findByIdAndUpdate.mockResolvedValue(updatedRequirement);
+    Announcement.findOneAndUpdate.mockResolvedValue({ _id: 'existing-announcement' });
+    const req = httpMocks.createRequest({
+      params: { id: requirementId },
+      body: { title: updatedRequirement.title },
+    });
+    const res = httpMocks.createResponse();
+
+    await updateRequirement(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(Announcement.findOneAndUpdate).toHaveBeenCalledWith(
+      { relatedRequirementId: requirementId },
+      expect.objectContaining({
+        title: 'Updated Requirement: Updated Consent Form',
+        type: 'requirement',
+        description: expect.stringContaining('Updated parent consent details.'),
+      })
+    );
+    expect(Announcement).not.toHaveBeenCalled();
   });
 
   it('returns all-sports and exact multi-sport matches from the authenticated student sports', async () => {
