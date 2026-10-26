@@ -1,4 +1,5 @@
 const Schedule = require('../models/Schedule');
+const { getScheduleClientType } = require('../utils/scheduleClientType');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
 
@@ -247,8 +248,9 @@ exports.getSchedulesByDateRange = async (req, res) => {
       ]
     })
       .select('_id event startDate endDate startTime endTime prepDays status fromRequest')
-      .sort({ startDate: 1, startTime: 1 })
-      .lean();
+    .populate('fromRequest', 'requesterEmail')
+    .sort({ startDate: 1, startTime: 1 })
+    .lean();
 
     const calendarSchedules = schedules.filter((schedule) => {
       const scheduleStart = new Date(`${schedule.startDate}T00:00:00.000Z`);
@@ -257,6 +259,13 @@ exports.getSchedulesByDateRange = async (req, res) => {
       const prepStart = new Date(scheduleStart);
       prepStart.setUTCDate(prepStart.getUTCDate() - (Number(schedule.prepDays) || 0));
       return scheduleEnd >= rangeStart && prepStart <= rangeEnd;
+    }).map((schedule) => {
+      const clientType = getScheduleClientType(schedule.fromRequest?.requesterEmail);
+      return {
+        ...schedule,
+        ...(clientType ? { clientType } : {}),
+        fromRequest: schedule.fromRequest?._id || schedule.fromRequest || null
+      };
     });
     
     res.status(200).json({

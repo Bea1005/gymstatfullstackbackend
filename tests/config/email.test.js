@@ -4,7 +4,8 @@ const {
   getEmailConfigurationStatus,
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
-  sendRegistrationVerificationOtp
+  sendRegistrationVerificationOtp,
+  sendScheduleRequestStatusEmail
 } = require('../../src/config/email');
 
 describe('Email delivery configuration', () => {
@@ -86,6 +87,32 @@ describe('Email delivery configuration', () => {
       configured: true,
       brevoConfigured: true
     }));
+  });
+
+  it('sends escaped schedule decisions to requesters through the configured email provider', async () => {
+    await sendScheduleRequestStatusEmail(
+      'jane@example.test',
+      {
+        requesterName: '<script>Requester</script>',
+        eventName: '<b>Campus Event</b>',
+        startDate: '2026-11-01',
+        endDate: '2026-11-02',
+        startTime: '08:00 AM',
+        endTime: '12:00 PM',
+        rejectionReason: '<em>Schedule conflict</em>'
+      },
+      'rejected'
+    );
+
+    const message = JSON.parse(requestCapture.body);
+    expect(message).toEqual(expect.objectContaining({
+      to: [{ email: 'jane@example.test' }],
+      subject: 'GYMSTAT schedule request rejected',
+      textContent: expect.stringContaining('Schedule conflict'),
+      htmlContent: expect.stringContaining('&lt;script&gt;Requester&lt;/script&gt;')
+    }));
+    expect(message.htmlContent).toContain('&lt;b&gt;Campus Event&lt;/b&gt;');
+    expect(message.htmlContent).toContain('&lt;em&gt;Schedule conflict&lt;/em&gt;');
   });
 
   it('classifies Brevo credential rejection without exposing provider response content', async () => {

@@ -235,9 +235,75 @@ const sendRegistrationVerificationOtp = async (email, otp, expiresInMinutes) => 
   }
 };
 
+const escapeEmailHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+})[character]);
+
+const sendScheduleRequestStatusEmail = async (email, request, status) => {
+  if (!['approved', 'rejected'].includes(status)) {
+    throw createEmailError('Invalid schedule request status.', 'INVALID_SCHEDULE_REQUEST_STATUS');
+  }
+
+  const recipient = String(email || '').trim();
+  if (!recipient) {
+    throw createEmailError('Schedule requester email is missing.', 'INVALID_SCHEDULE_REQUEST_EMAIL');
+  }
+
+  const eventName = String(request?.eventName || 'your schedule request');
+  const decision = status === 'approved' ? 'approved' : 'rejected';
+  const subject = `GYMSTAT schedule request ${decision}`;
+  const rejectionReason = status === 'rejected' && request?.rejectionReason
+    ? `Reason: ${request.rejectionReason}`
+    : '';
+  const text = [
+    `Hello ${request?.requesterName || 'there'},`,
+    '',
+    `Your schedule request for "${eventName}" has been ${decision}.`,
+    `Dates: ${request?.startDate || ''} to ${request?.endDate || ''}`,
+    `Time: ${request?.startTime || ''} to ${request?.endTime || ''}`,
+    rejectionReason,
+    '',
+    'This is an automated message from GYMSTAT.'
+  ].filter(Boolean).join('\n');
+  const html = [
+    '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#333">',
+    `<p>Hello ${escapeEmailHtml(request?.requesterName || 'there')},</p>`,
+    `<p>Your schedule request for <strong>${escapeEmailHtml(eventName)}</strong> has been ${decision}.</p>`,
+    `<p>Dates: ${escapeEmailHtml(request?.startDate || '')} to ${escapeEmailHtml(request?.endDate || '')}<br>`,
+    `Time: ${escapeEmailHtml(request?.startTime || '')} to ${escapeEmailHtml(request?.endTime || '')}</p>`,
+    rejectionReason ? `<p>${escapeEmailHtml(rejectionReason)}</p>` : '',
+    '<p>This is an automated message from GYMSTAT.</p>',
+    '</div>'
+  ].filter(Boolean).join('');
+
+  if (getSetting('BREVO_API_KEY')) {
+    return sendViaBrevo(recipient, subject, text, html);
+  }
+
+  try {
+    const transporter = getEmailTransport();
+    await transporter.sendMail({
+      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
+      to: recipient,
+      subject,
+      text,
+      html
+    });
+  } catch (error) {
+    if (error?.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
+    const code = error?.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
+    throw createEmailError('SMTP email delivery failed.', code);
+  }
+};
+
 module.exports = {
   getEmailConfigurationStatus,
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
-  sendRegistrationVerificationOtp
+  sendRegistrationVerificationOtp,
+  sendScheduleRequestStatusEmail
 };

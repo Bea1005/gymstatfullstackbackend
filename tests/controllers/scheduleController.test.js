@@ -131,12 +131,27 @@ describe('getSchedulesByDateRange', () => {
 
   it('returns only active schedules whose event or prep window overlaps the requested month', async () => {
     const schedules = [
-      { _id: 'in-range', event: 'Campus Event', startDate: '2026-10-10', endDate: '2026-10-10', prepDays: 0 },
-      { _id: 'prep-window', event: 'November Event', startDate: '2026-11-05', endDate: '2026-11-05', prepDays: 10 },
+      {
+        _id: 'in-range',
+        event: 'Campus Event',
+        startDate: '2026-10-10',
+        endDate: '2026-10-10',
+        prepDays: 0,
+        fromRequest: { _id: 'internal-request', requesterEmail: '  staff@MARSU.EDU.PH  ' }
+      },
+      {
+        _id: 'prep-window',
+        event: 'November Event',
+        startDate: '2026-11-05',
+        endDate: '2026-11-05',
+        prepDays: 10,
+        fromRequest: { _id: 'external-request', requesterEmail: 'visitor@gmail.com' }
+      },
       { _id: 'outside-range', event: 'Later Event', startDate: '2026-11-25', endDate: '2026-11-25', prepDays: 2 }
     ];
     const query = {
       select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
       sort: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue(schedules)
     };
@@ -158,7 +173,49 @@ describe('getSchedulesByDateRange', () => {
       $expr: expect.any(Object)
     }));
     expect(query.select).toHaveBeenCalledWith('_id event startDate endDate startTime endTime prepDays status fromRequest');
+    expect(query.populate).toHaveBeenCalledWith('fromRequest', 'requesterEmail');
+    expect(res._getJSONData().data).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        _id: 'in-range',
+        fromRequest: 'internal-request',
+        clientType: 'Internal Client'
+      }),
+      expect.objectContaining({
+        _id: 'prep-window',
+        fromRequest: 'external-request',
+        clientType: 'External Client'
+      })
+    ]));
     expect(res._getJSONData().data.map(({ _id }) => _id)).toEqual(['in-range', 'prep-window']);
+  });
+
+  it('leaves older schedules without a linked request unclassified', async () => {
+    const schedules = [
+      {
+        _id: 'legacy-schedule',
+        event: 'Legacy Event',
+        startDate: '2026-10-10',
+        endDate: '2026-10-10',
+        prepDays: 0,
+        fromRequest: null
+      }
+    ];
+    const query = {
+      select: jest.fn().mockReturnThis(),
+      populate: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(schedules)
+    };
+    Schedule.find.mockReturnValue(query);
+    const req = httpMocks.createRequest({
+      query: { startDate: '2026-10-01', endDate: '2026-10-31' }
+    });
+    const res = httpMocks.createResponse();
+
+    await getSchedulesByDateRange(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData().data[0]).not.toHaveProperty('clientType');
   });
 
   it('rejects invalid date ranges without querying MongoDB', async () => {

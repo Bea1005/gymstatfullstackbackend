@@ -3,6 +3,8 @@ const Schedule = require('../models/Schedule');
 const mongoose = require('mongoose');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
+const { getScheduleClientType } = require('../utils/scheduleClientType');
+const { sendScheduleRequestStatusEmail } = require('../config/email');
 const {
   storeUploadedFile,
   deleteStoredUpload,
@@ -14,6 +16,20 @@ const isValidCalendarDate = (value) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
+
+const notifyScheduleRequester = async (request, status) => {
+  try {
+    await sendScheduleRequestStatusEmail(request.requesterEmail, request, status);
+    return true;
+  } catch (error) {
+    console.error('Unable to send schedule request status notification:', {
+      requestId: String(request._id),
+      status,
+      code: error?.code || 'EMAIL_DELIVERY_FAILED'
+    });
+    return false;
+  }
 };
 
 exports.getPublicCalendarScheduleRequests = async (req, res) => {
@@ -36,7 +52,7 @@ exports.getPublicCalendarScheduleRequests = async (req, res) => {
       startDate: { $lte: latestStartDate },
       endDate: { $gte: startDate }
     })
-      .select('_id eventName startDate endDate startTime endTime prepDays status')
+      .select('_id eventName requesterEmail startDate endDate startTime endTime prepDays status')
       .sort({ startDate: 1, startTime: 1 })
       .lean();
 
@@ -57,7 +73,8 @@ exports.getPublicCalendarScheduleRequests = async (req, res) => {
         startTime: request.startTime,
         endTime: request.endTime,
         prepDays: Number(request.prepDays) || 0,
-        status: 'pending'
+        status: 'pending',
+        clientType: getScheduleClientType(request.requesterEmail)
       }));
 
     return res.status(200).json({
@@ -158,7 +175,11 @@ exports.createScheduleRequest = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Schedule request submitted successfully. Admin will review your request.',
-      data: { id: newRequest._id, status: newRequest.status }
+      data: {
+        id: newRequest._id,
+        status: newRequest.status,
+        clientType: getScheduleClientType(newRequest.requesterEmail)
+      }
     });
   } catch (error) {
     if (storedFileReference) await deleteStoredUpload(storedFileReference).catch(() => {});
@@ -179,6 +200,14 @@ exports.downloadScheduleRequestFile = async (req, res) => {
   try {
     const request = await ScheduleRequest.findById(req.params.id).select('file').lean();
     const storageKey = request?.file?.storageKey;
+    if (!storageKey && request?.file?.data) {
+      const base64Data = request.file.data.replace(/^data:[^,]*,/, '');
+      const fileBuffer = Buffer.from(base64Data, 'base64');
+      if (!fileBuffer.length) return res.status(404).json({ success: false, message: 'File not found' });
+
+      res.setHeader('Content-Type', request.file.mimetype || 'application/octet-stream');
+      return res.attachment(request.file.originalname || request.file.filename || 'request-letter').send(fileBuffer);
+    }
     if (!storageKey) return res.status(404).json({ success: false, message: 'File not found' });
 
     const streamed = await streamUploadFile(storageKey, res, {
@@ -206,7 +235,8 @@ exports.getScheduleRequests = async (req, res) => {
     }
     
     const requests = (await ScheduleRequest.find(filter)
-      .sort({ createdAt: 1 }) // Ascending order (oldest first)
+      .select('-file.data')
+      .sort({ createdAt: 1 })
       .lean()).map(removeLegacyPathFromResponse);
     
     console.log(`✅ Retrieved ${requests.length} schedule requests from MongoDB`);
@@ -220,8 +250,7 @@ exports.getScheduleRequests = async (req, res) => {
     console.error('❌ Error fetching schedule requests:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch schedule requests',
-      message: 'An unexpected server error occurred. Please try again.'
+      message: 'Failed to fetch schedule requests. Please try again.'
     });
   }
 };
@@ -343,6 +372,7 @@ exports.updateScheduleRequest = async (req, res) => {
 
         Object.assign(request, updateData);
         await request.save();
+        const requesterNotified = await notifyScheduleRequester(request, status);
         
         console.log(`✅ Schedule created and saved to MongoDB: ${newSchedule._id}`);
         console.log(`✅ Schedule will be visible in both Admin and Public calendars`);
@@ -350,6 +380,7 @@ exports.updateScheduleRequest = async (req, res) => {
         return res.status(200).json({
           success: true,
           message: 'Schedule request approved and schedule created successfully',
+          requesterNotified,
           data: {
             request: removeLegacyPathFromResponse(request.toObject ? request.toObject() : request),
             schedule: newSchedule
@@ -359,18 +390,21 @@ exports.updateScheduleRequest = async (req, res) => {
         console.error('❌ Error creating schedule from approved request:', scheduleError);
         return res.status(500).json({
           success: false,
-          message: 'Schedule request could not be approved because calendar creation failed',
-          message: 'An unexpected server error occurred. Please try again.'
+          message: 'Schedule request could not be approved because calendar creation failed.'
         });
       }
     }
 
     Object.assign(request, updateData);
     await request.save();
+    const requesterNotified = ['approved', 'rejected'].includes(status)
+      ? await notifyScheduleRequester(request, status)
+      : undefined;
     
     res.status(200).json({
       success: true,
       message: `Schedule request ${status} successfully`,
+      ...(requesterNotified === undefined ? {} : { requesterNotified }),
       data: removeLegacyPathFromResponse(request.toObject ? request.toObject() : request)
     });
   } catch (error) {
