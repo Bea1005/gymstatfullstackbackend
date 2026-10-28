@@ -3,7 +3,8 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const { hashPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const { getJWTSecret } = require('../config/security');
-const { sendRegistrationVerificationOtp } = require('../config/email');
+const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail } = require('../config/email');
+const ScreenerAuthorization = require('../models/ScreenerAuthorization');
 const router = express.Router();
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
@@ -360,6 +361,59 @@ router.post('/students', protect, authorize('admin'), async (req, res) => {
 // @desc    List screeners
 // @route   GET /api/v1/users/screeners
 // @access  Private/Admin
+
+// POST /screeners/send-authorization — admin sends authorization email to screener
+router.post('/screeners/send-authorization', protect, authorize('admin'), async (req, res) => {
+  try {
+    const rawId = typeof req.body.screenerUserId === 'string' ? req.body.screenerUserId.trim() : '';
+    if (!rawId) return res.status(400).json({ success: false, message: 'screenerUserId is required.' });
+
+    const screener = await User.findOne({ _id: rawId, role: 'screener' }).select('_id id fullname email emailVerified');
+    if (!screener) return res.status(404).json({ success: false, message: 'Screener account not found.' });
+    if (screener.emailVerified) return res.status(409).json({ success: false, message: 'This screener has already confirmed their authorization.' });
+
+    const rawToken = require('crypto').randomBytes(32).toString('hex');
+    const tokenHash = require('crypto').createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+
+    await ScreenerAuthorization.deleteMany({ screenerUserId: screener._id });
+    await ScreenerAuthorization.create({ screenerUserId: screener._id, tokenHash, expiresAt });
+
+    const frontendUrl = (process.env.FRONTEND_URL || process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:5173').split(',')[0].trim().replace(/\/$/, '');
+    const confirmUrl = frontendUrl + '/screener/confirm-authorization?token=' + rawToken;
+
+    await sendScreenerAuthorizationEmail(screener.email, screener.fullname || screener.id || 'Screener', confirmUrl);
+    return res.json({ success: true, message: 'Authorization email sent to ' + screener.email + '.' });
+  } catch (error) {
+    console.error('Send screener authorization error:', error);
+    return res.status(503).json({ success: false, message: error.message || 'Failed to send authorization email.' });
+  }
+});
+
+// GET /screeners/confirm-authorization?token=... — screener clicks OK I Agree
+router.get('/screeners/confirm-authorization', async (req, res) => {
+  try {
+    const rawToken = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+    if (!rawToken) return res.status(400).json({ success: false, message: 'Authorization token is missing.' });
+
+    const tokenHash = require('crypto').createHash('sha256').update(rawToken).digest('hex');
+    const record = await ScreenerAuthorization.findOne({ tokenHash });
+    if (!record) return res.status(400).json({ success: false, message: 'This authorization link is invalid or has already been used.' });
+    if (record.confirmedAt) return res.status(409).json({ success: false, message: 'You have already accepted this authorization.' });
+    if (record.expiresAt < new Date()) return res.status(410).json({ success: false, message: 'This authorization link has expired. Ask the administrator to resend it.' });
+
+    record.confirmedAt = new Date();
+    await record.save();
+    await User.updateOne({ _id: record.screenerUserId, role: 'screener' }, { ['$set']: { emailVerified: true } });
+
+    const screener = await User.findOne({ _id: record.screenerUserId }).select('id fullname email');
+    return res.json({ success: true, message: 'Authorization confirmed. You may now log in to GYMSTAT as a Screener.', screener: { id: screener && screener.id, fullname: screener && screener.fullname, email: screener && screener.email } });
+  } catch (error) {
+    console.error('Screener confirm authorization error:', error);
+    return res.status(500).json({ success: false, message: 'An unexpected error occurred. Please try again.' });
+  }
+});
+
 router.get('/screeners/next-id', protect, authorize('admin'), async (_req, res) => {
   try {
     const id = await getNextScreenerId();

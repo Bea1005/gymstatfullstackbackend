@@ -313,10 +313,74 @@ const sendScheduleRequestStatusEmail = async (email, request, status) => {
   }
 };
 
+
+const sendScreenerAuthorizationEmail = async (email, screenerName, confirmUrl) => {
+  const recipient = String(email || '').trim();
+  const name = String(screenerName || 'Screener').trim();
+  const url = String(confirmUrl || '').trim();
+
+  if (!recipient) throw createEmailError('Screener email is missing.', 'INVALID_SCREENER_EMAIL');
+  if (!url) throw createEmailError('Confirmation URL is missing.', 'INVALID_CONFIRM_URL');
+
+  const subject = 'Screener Authorization - GYMSTAT';
+
+  const text = [
+    'Dear ' + name + ',',
+    '',
+    'You are hereby invited to serve as a Screener for the upcoming intramural event of Marinduque State University. Your responsibilities include reviewing and verifying Student-Athlete requirements in accordance with the university\'s established procedures.',
+    '',
+    'If you accept this role, please click the link below to confirm your acceptance:',
+    url,
+    '',
+    'This authorization link expires in 48 hours.',
+    '',
+    'Sincerely,',
+    'GYMSTAT System Administrator',
+    'Marinduque State University'
+  ].join('\n');
+
+  const html = [
+    '<div style="font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:24px">',
+    '<h2 style="color:#7a0a0a;margin-bottom:4px">GYMSTAT</h2>',
+    '<p style="color:#555;font-size:13px;margin-top:0">Marinduque State University</p>',
+    '<hr style="border:none;border-top:2px solid #7a0a0a;margin:16px 0">',
+    '<p>Dear <strong>' + escapeEmailHtml(name) + '</strong>,</p>',
+    '<p>You are hereby invited to serve as a <strong>Screener</strong> for the upcoming intramural event of Marinduque State University. Your responsibilities include reviewing and verifying Student-Athlete requirements in accordance with the university\'s established procedures.</p>',
+    '<p>If you accept this role, please click the button below to confirm your acceptance.</p>',
+    '<p style="margin:24px 0">',
+    '<a href="' + escapeEmailHtml(url) + '" style="display:inline-block;background:#7a0a0a;color:#fff;text-decoration:none;padding:12px 28px;border-radius:6px;font-weight:700;font-size:15px">OK, I Agree</a>',
+    '</p>',
+    '<p style="font-size:13px;color:#666">Or copy and paste this link into your browser:<br><a href="' + escapeEmailHtml(url) + '" style="color:#7a0a0a">' + escapeEmailHtml(url) + '</a></p>',
+    '<p style="font-size:12px;color:#888">This authorization link expires in 48 hours. Do not share this link with anyone.</p>',
+    '<hr style="border:none;border-top:1px solid #ddd;margin:24px 0">',
+    '<p style="margin-bottom:2px">Sincerely,</p>',
+    '<p style="margin:0"><strong>GYMSTAT System Administrator</strong><br>Marinduque State University</p>',
+    '<hr style="border:none;border-top:1px solid #ddd;margin:24px 0">',
+    '<p style="font-size:11px;color:#aaa">This is an automated message from the GYMSTAT System. Do not reply to this email.</p>',
+    '</div>'
+  ].join('');
+
+  if (getSetting('BREVO_API_KEY')) {
+    return sendViaBrevo(recipient, subject, text, html);
+  }
+
+  try {
+    const transporter = getEmailTransport();
+    await transporter.sendMail({
+      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
+      to: recipient, subject, text, html
+    });
+  } catch (error) {
+    if (error && error.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
+    const code = error && error.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
+    throw createEmailError('SMTP email delivery failed.', code);
+  }
+};
 module.exports = {
   getEmailConfigurationStatus,
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
   sendRegistrationVerificationOtp,
-  sendScheduleRequestStatusEmail
+  sendScheduleRequestStatusEmail,
+  sendScreenerAuthorizationEmail
 };
