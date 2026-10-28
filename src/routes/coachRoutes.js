@@ -13,6 +13,7 @@ const CoachSportsDirector = require('../models/CoachSportsDirector');
 const { initializeCoachRecordContent } = require('../config/coachRecordContent');
 const StrasucFacultyMember = require('../models/StrasucFacultyMember');
 const { isRequirementAssignedToStudent } = require('../utils/requirementSports');
+const { getAllStudentRequirementModels } = require('../models/studentRequirementCollections');
 const { streamProfilePhoto } = require('../config/profilePhotoStorage');
 const { uploadProfilePhoto, deleteProfilePhoto } = require('../config/profilePhotoStorage');
 const { protect, authorize } = require('../middleware/auth');
@@ -24,6 +25,19 @@ const getCoachAccess = async (coachId) => {
     .select('_id')
     .lean();
   return coach;
+};
+
+const getCoachStudentUploads = async (studentId) => {
+  const requirementModels = getAllStudentRequirementModels();
+  const uploadsByModel = await Promise.all(requirementModels.map((RequirementModel) => RequirementModel.find({
+    studentId,
+    $or: [
+      { participationType: { $in: ['Intrams', 'STRASUC'] } },
+      { participationType: { $exists: false } },
+    ],
+  }).select('requirementType customRequirementId fileName status coachStatus participationType').lean()));
+
+  return uploadsByModel.flat();
 };
 
 const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle';
@@ -528,13 +542,7 @@ router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'
       Requirement.find({ status: 'published', isActive: { $ne: false } })
       .select('_id title type targetStudents sport file.filename file.path')
       .lean(),
-      StudentRequirement.find({
-      studentId: req.params.studentId,
-      $or: [
-        { participationType: 'Intrams' },
-        { participationType: { $exists: false } },
-      ],
-      }).select('requirementType customRequirementId fileName').lean(),
+      getCoachStudentUploads(req.params.studentId),
     ]);
 
     return res.json({
@@ -549,7 +557,10 @@ router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'
       uploads: uploads.map((upload) => ({
         requirementType: upload.requirementType,
         customRequirementId: upload.customRequirementId || '',
+        fileName: upload.fileName || '',
         hasFile: Boolean(String(upload.fileName || '').trim()),
+        status: upload.status || 'pending',
+        coachStatus: upload.coachStatus || upload.status || 'pending',
       })),
     });
   } catch (error) {
@@ -732,38 +743,42 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
   try {
     const query = String(req.query.q || '').trim();
     const selectedSport = String(req.query.sport || '').trim();
-    if (!selectedSport) return res.json([]);
+    if (!selectedSport && !query) return res.json([]);
 
     const access = await getCoachAccess(req.user._id || req.user.id);
     if (!access) return res.status(403).json({ message: 'Coach access could not be verified' });
 
-    const queryMatcher = { $regex: escapeRegex(query), $options: 'i' };
-    const sportMatcher = { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' };
-    const sportConditions = [
+    const queryMatcher = query ? { $regex: escapeRegex(query), $options: 'i' } : null;
+    const sportMatcher = selectedSport ? { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' } : null;
+    const sportConditions = selectedSport ? [
       { sport: sportMatcher },
       { sports: sportMatcher },
       { assignedSports: sportMatcher },
       { 'sportParticipation.sport': sportMatcher },
-    ];
+    ] : [];
     const userFilter = {
       role: 'student',
       accountStatus: { $ne: 'archived' },
-      $and: [{ $or: sportConditions }],
     };
     const studentAthleteFilter = {
       role: 'student',
-      $or: [
+    };
+
+    if (selectedSport && !query) {
+      userFilter.$and = [{ $or: sportConditions }];
+      studentAthleteFilter.$or = [
         { sport: sportMatcher },
         { sports: sportMatcher },
-      ],
-    };
+      ];
+    }
+
     if (query) {
       const textConditions = [
         { id: queryMatcher },
         { studentNumber: queryMatcher },
         { fullname: queryMatcher },
       ];
-      userFilter.$and.push({ $or: textConditions });
+      userFilter.$and = [{ $or: textConditions }];
       studentAthleteFilter.$and = [{ $or: textConditions }];
     }
 
@@ -810,7 +825,14 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     );
     const normalizedQuery = query.toLowerCase();
     const matchingStudents = students
-      .filter((student) => getStudentSportForCategory(student, selectedSport))
+      .filter((student) => {
+        if (!query) {
+          return !selectedSport
+            || getStudentSportForCategory(student, selectedSport)
+            || student.sport === selectedSport;
+        }
+        return true;
+      })
       .filter((student) => !normalizedQuery
         || getStudentSearchIdentifiers({
           ...student,

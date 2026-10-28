@@ -5,6 +5,8 @@ const {
   verifyRegistrationOtp,
   resendRegistrationOtp,
   login,
+  verifyLoginOtp,
+  resendLoginOtp,
   refreshSession,
   logout,
   requestPasswordReset,
@@ -25,6 +27,8 @@ router.post('/register', loginRateLimiter, register);
 router.post('/register/verify', registrationVerificationRateLimiter, verifyRegistrationOtp);
 router.post('/register/resend', registrationVerificationRateLimiter, resendRegistrationOtp);
 router.post('/login', loginRateLimiter, login);
+router.post('/login/verify', loginRateLimiter, verifyLoginOtp);
+router.post('/login/resend', loginRateLimiter, resendLoginOtp);
 router.post('/refresh', refreshRateLimiter, csrfProtection, refreshSession);
 router.post('/logout', csrfProtection, logout);
 router.post('/forgot-password/request', passwordResetRateLimiter, requestPasswordReset);

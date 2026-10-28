@@ -5,7 +5,8 @@ const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE }
 const {
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
-  sendRegistrationVerificationOtp
+  sendRegistrationVerificationOtp,
+  sendScreenerAccountCreatedEmail
 } = require('../config/email');
 const RefreshSession = require('../models/RefreshSession');
 const {
@@ -90,6 +91,33 @@ const clearPasswordResetState = (user) => {
   user.passwordResetTokenHash = null;
   user.passwordResetTokenExpiresAt = null;
   user.passwordResetTokenConsumedAt = null;
+};
+
+const issueLoginOtpForScreener = async (user) => {
+  const otp = String(crypto.randomInt(100000, 1000000));
+  const otpHash = hashResetValue(otp);
+  const now = Date.now();
+
+  user.registrationOtpHash = otpHash;
+  user.registrationOtpExpiresAt = new Date(now + REGISTRATION_OTP_TTL_MS);
+  user.registrationOtpAttempts = 0;
+  user.registrationOtpLastSentAt = new Date(now);
+  user.registrationOtpResendCount = 0;
+  user.emailVerified = false;
+  await user.save();
+
+  try {
+    await sendRegistrationVerificationOtp(user.email, otp, REGISTRATION_OTP_TTL_MS / 60000);
+    return { success: true, email: user.email, message: 'A verification code was sent to your institutional email.' };
+  } catch (error) {
+    user.registrationOtpHash = null;
+    user.registrationOtpExpiresAt = null;
+    user.registrationOtpAttempts = 0;
+    user.registrationOtpLastSentAt = null;
+    user.registrationOtpResendCount = 0;
+    await user.save();
+    throw error;
+  }
 };
 
 const isValidId = (id) => {
@@ -694,7 +722,6 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Find user by ID
     const user = await User.findOne({ id });
 
     if (!user) {
@@ -711,7 +738,6 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Check password
     const passwordCheck = await verifyPassword(password, user.password);
 
     if (!passwordCheck.valid) {
@@ -721,11 +747,11 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Accounts predating email verification have no flag and remain compatible.
-    if (user.emailVerified === false) {
+    const userRole = user.role?.toString().trim().toLowerCase();
+    if (!['student', 'coach', 'admin', 'screener'].includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Please verify your email before logging in. Return to the Registration Page to enter or resend your verification code.'
+        message: 'This account is not authorized to log in.'
       });
     }
 
@@ -733,11 +759,30 @@ exports.login = async (req, res) => {
       user.password = await hashPassword(password);
     }
 
-    const userRole = user.role?.toString().trim().toLowerCase();
-    if (!['student', 'coach', 'admin', 'screener'].includes(userRole)) {
+    if (userRole === 'screener' && user.emailVerified === false) {
+      try {
+        const otpResult = await issueLoginOtpForScreener(user);
+        return res.status(202).json({
+          success: true,
+          verificationRequired: true,
+          email: otpResult.email,
+          user: buildUserResponse(user, userRole),
+          message: otpResult.message
+        });
+      } catch (error) {
+        console.error('Screener login verification email delivery failed.', error?.message || error);
+        return res.status(503).json({
+          success: false,
+          message: 'Your account is ready, but the verification email could not be sent. Please try again later.'
+        });
+      }
+    }
+
+    // Accounts predating email verification have no flag and remain compatible.
+    if (user.emailVerified === false) {
       return res.status(403).json({
         success: false,
-        message: 'This account is not authorized to log in.'
+        message: 'Please verify your email before logging in. Return to the Registration Page to enter or resend your verification code.'
       });
     }
 
@@ -756,8 +801,6 @@ exports.login = async (req, res) => {
     const csrfToken = crypto.randomBytes(32).toString('base64url');
     setAuthenticationCookies(res, accessToken, refreshToken, csrfToken, userRole);
 
-    console.log(`✅ Login successful: ${user.id} (${userRole})`);
-
     res.json({
       success: true,
       message: `Welcome back, ${user.fullname}!`,
@@ -771,6 +814,156 @@ exports.login = async (req, res) => {
       success: false,
       message: 'Server error during login. Please try again.'
     });
+  }
+};
+
+exports.verifyLoginOtp = async (req, res) => {
+  try {
+    const id = String(req.body?.id || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+
+    if (!id || !/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid 6-digit verification code.' });
+    }
+
+    const user = await User.findOne({ id, role: 'screener' }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts');
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'No matching Screener account was found.' });
+    }
+
+    const now = Date.now();
+    if (!user.registrationOtpHash || !user.registrationOtpExpiresAt) {
+      return res.status(400).json({ success: false, message: 'No active verification code is available. Please log in again.' });
+    }
+    if (user.registrationOtpExpiresAt.getTime() <= now) {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: user.registrationOtpHash },
+        { $set: { registrationOtpHash: null, registrationOtpExpiresAt: null, registrationOtpAttempts: 0 } }
+      );
+      return res.status(400).json({ success: false, message: 'This verification code has expired. Please request a new code.' });
+    }
+    if (user.registrationOtpAttempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
+      await User.updateOne(
+        { _id: user._id, registrationOtpHash: user.registrationOtpHash },
+        { $set: { registrationOtpHash: null, registrationOtpExpiresAt: null, registrationOtpAttempts: 0 } }
+      );
+      return res.status(429).json({ success: false, message: 'Too many attempts. Please request a new code.' });
+    }
+
+    if (!resetValueMatches(otp, user.registrationOtpHash)) {
+      const attemptUpdate = await User.findOneAndUpdate(
+        {
+          _id: user._id,
+          role: 'screener',
+          registrationOtpHash: user.registrationOtpHash,
+          registrationOtpExpiresAt: { $gt: new Date(now) },
+          registrationOtpAttempts: { $lt: REGISTRATION_OTP_MAX_ATTEMPTS }
+        },
+        { $inc: { registrationOtpAttempts: 1 } },
+        { new: true }
+      );
+      if (attemptUpdate?.registrationOtpAttempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
+        await User.updateOne(
+          { _id: user._id, registrationOtpHash: user.registrationOtpHash },
+          { $set: { registrationOtpHash: null, registrationOtpExpiresAt: null, registrationOtpAttempts: 0 } }
+        );
+        return res.status(429).json({ success: false, message: 'Too many attempts. Please request a new code.' });
+      }
+      return res.status(400).json({ success: false, message: 'The code you entered is invalid. Please try again.' });
+    }
+
+    const verifiedUser = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        role: 'screener',
+        registrationOtpHash: user.registrationOtpHash,
+        registrationOtpExpiresAt: { $gt: new Date(now) },
+        emailVerified: false
+      },
+      {
+        $set: { emailVerified: true },
+        $unset: {
+          registrationOtpHash: 1,
+          registrationOtpExpiresAt: 1,
+          registrationOtpAttempts: 1,
+          registrationOtpLastSentAt: 1,
+          registrationOtpResendCount: 1
+        }
+      },
+      { new: true }
+    );
+
+    if (!verifiedUser) {
+      return res.status(400).json({ success: false, message: 'This verification code is no longer valid.' });
+    }
+
+    const accessToken = createAccessToken({
+      _id: verifiedUser._id,
+      role: 'screener',
+      email: verifiedUser.email || ''
+    });
+    const { refreshToken } = await createRefreshSession(verifiedUser._id);
+    const csrfToken = crypto.randomBytes(32).toString('base64url');
+    setAuthenticationCookies(res, accessToken, refreshToken, csrfToken, 'screener');
+
+    return res.json({
+      success: true,
+      message: 'Verification successful. Redirecting to your Screener portal.',
+      user: buildUserResponse(verifiedUser, 'screener')
+    });
+  } catch (error) {
+    console.error('Screener login verification failed.', error);
+    return res.status(500).json({ success: false, message: 'Unable to verify your code. Please try again later.' });
+  }
+};
+
+exports.resendLoginOtp = async (req, res) => {
+  try {
+    const id = String(req.body?.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ success: false, message: 'A Screener ID is required.' });
+    }
+
+    const user = await User.findOne({ id, role: 'screener' }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpLastSentAt +registrationOtpResendCount');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'No matching Screener account was found.' });
+    }
+
+    const now = Date.now();
+    if (user.registrationOtpLastSentAt && now - user.registrationOtpLastSentAt.getTime() < REGISTRATION_OTP_COOLDOWN_MS) {
+      return res.status(429).json({
+        success: false,
+        retryAfterSeconds: Math.ceil((REGISTRATION_OTP_COOLDOWN_MS - (now - user.registrationOtpLastSentAt.getTime())) / 1000),
+        message: 'Please wait a moment before requesting a new code.'
+      });
+    }
+
+    const otp = String(crypto.randomInt(100000, 1000000));
+    const otpHash = hashResetValue(otp);
+    user.registrationOtpHash = otpHash;
+    user.registrationOtpExpiresAt = new Date(now + REGISTRATION_OTP_TTL_MS);
+    user.registrationOtpAttempts = 0;
+    user.registrationOtpLastSentAt = new Date(now);
+    user.registrationOtpResendCount = Number(user.registrationOtpResendCount || 0) + 1;
+    user.emailVerified = false;
+    await user.save();
+
+    try {
+      await sendRegistrationVerificationOtp(user.email, otp, REGISTRATION_OTP_TTL_MS / 60000);
+      return res.status(202).json({ success: true, message: 'A new verification code has been sent to your institutional email.' });
+    } catch (error) {
+      user.registrationOtpHash = null;
+      user.registrationOtpExpiresAt = null;
+      user.registrationOtpAttempts = 0;
+      user.registrationOtpLastSentAt = null;
+      user.registrationOtpResendCount = 0;
+      await user.save();
+      console.error('Screener login verification resend failed.', error?.message || error);
+      return res.status(503).json({ success: false, message: 'The verification email could not be sent. Please try again later.' });
+    }
+  } catch (error) {
+    console.error('Screener login OTP resend failed.', error);
+    return res.status(500).json({ success: false, message: 'Unable to resend your verification code. Please try again later.' });
   }
 };
 

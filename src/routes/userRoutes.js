@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const { hashPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const { getJWTSecret } = require('../config/security');
-const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail } = require('../config/email');
+const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail, sendScreenerAccountCreatedEmail } = require('../config/email');
 const ScreenerAuthorization = require('../models/ScreenerAuthorization');
 const router = express.Router();
 const User = require('../models/User');
@@ -236,20 +236,30 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     let user;
     if (requestedRole === 'screener') {
       let minimumNumber = 1;
-      for (let attempt = 0; attempt < SCREENER_ID_CREATION_ATTEMPTS; attempt += 1) {
-        const generatedId = await getNextScreenerId(minimumNumber);
-        const screenerPayload = {
-          ...userPayload,
-          id: generatedId,
-          fullname: rawFullname || generatedId
-        };
+      const preferredId = await getNextScreenerId();
+      const screenerPayload = {
+        ...userPayload,
+        id: preferredId,
+        fullname: rawFullname || preferredId
+      };
 
-        try {
-          user = await User.create(screenerPayload);
-          break;
-        } catch (error) {
-          if (!isDuplicateIdError(error)) throw error;
-          minimumNumber = Number(generatedId.slice(1)) + 1;
+      try {
+        user = await User.create(screenerPayload);
+      } catch (error) {
+        if (!isDuplicateIdError(error)) throw error;
+        for (let attempt = 0; attempt < SCREENER_ID_CREATION_ATTEMPTS; attempt += 1) {
+          const generatedId = await getNextScreenerId(minimumNumber);
+          try {
+            user = await User.create({
+              ...userPayload,
+              id: generatedId,
+              fullname: rawFullname || generatedId
+            });
+            break;
+          } catch (duplicateError) {
+            if (!isDuplicateIdError(duplicateError)) throw duplicateError;
+            minimumNumber = Number(generatedId.slice(1)) + 1;
+          }
         }
       }
 
@@ -264,14 +274,19 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     }
 
     try {
-      await sendRegistrationVerificationOtp(rawEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
-    } catch {
+      if (requestedRole === 'screener') {
+        const loginUrl = (process.env.FRONTEND_URL || process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:5173').split(',')[0].trim().replace(/\/$/, '');
+        await sendScreenerAccountCreatedEmail(rawEmail, user.id, loginUrl);
+      } else {
+        await sendRegistrationVerificationOtp(rawEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
+      }
+    } catch (error) {
       if (requestedRole === 'screener') {
         await User.deleteOne({ _id: user._id });
         await User.getRoleModel('screener').deleteOne({ userId: user._id });
       } else {
         await User.updateOne(
-          { _id: user._id, registrationOtpHash: otpHash },
+          { _id: user._id },
           {
             $set: {
               registrationOtpHash: null,
@@ -283,21 +298,24 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
           }
         );
       }
-      console.error('Admin-provisioned registration verification email delivery failed.');
+      console.error('Admin-provisioned account email delivery failed.', { role: requestedRole, error: error?.message || error });
       return res.status(503).json({
         success: false,
-        safeError: 'registration-email-delivery',
+        safeError: requestedRole === 'screener' ? 'screener-account-email-delivery' : 'registration-email-delivery',
         verificationRequired: requestedRole !== 'screener',
         message: requestedRole === 'screener'
-          ? 'The verification email could not be sent, so the Screener account was not created. Please try again later.'
+          ? 'The Screener account could not be created because the account notification email could not be sent. Please try again later.'
           : 'The account is pending email verification, but the verification email could not be sent. The user can retry from the Registration Page.'
       });
     }
 
+    const shouldRequireVerification = requestedRole !== 'screener';
     res.status(201).json({
       success: true,
-      verificationRequired: true,
-      message: `${requestedRole.charAt(0).toUpperCase() + requestedRole.slice(1)} account created. Email verification is required before login.`,
+      verificationRequired: shouldRequireVerification,
+      message: requestedRole === 'screener'
+        ? 'Screener account created successfully. The Screener can log in with their institutional email and the assigned password.'
+        : `${requestedRole.charAt(0).toUpperCase() + requestedRole.slice(1)} account created. Email verification is required before login.`,
       user: mapUserToResponse(user)
     });
   } catch (error) {

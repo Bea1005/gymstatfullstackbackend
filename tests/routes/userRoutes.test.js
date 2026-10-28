@@ -26,9 +26,11 @@ jest.mock('../../src/config/security', () => ({
   getJWTSecret: jest.fn().mockReturnValue('test-jwt-secret')
 }));
 jest.mock('../../src/config/email', () => ({
-  sendRegistrationVerificationOtp: jest.fn().mockResolvedValue(true)
+  sendRegistrationVerificationOtp: jest.fn().mockResolvedValue(true),
+  sendScreenerAccountCreatedEmail: jest.fn().mockResolvedValue(true),
+  sendScreenerAuthorizationEmail: jest.fn().mockResolvedValue(true)
 }));
-const { sendRegistrationVerificationOtp } = require('../../src/config/email');
+const { sendRegistrationVerificationOtp, sendScreenerAccountCreatedEmail } = require('../../src/config/email');
 
 describe('User registration route', () => {
   let app;
@@ -119,12 +121,12 @@ describe('User registration route', () => {
     });
   });
 
-  it.each(['student', 'coach', 'screener', 'admin'])(
+  it.each(['student', 'coach', 'admin'])(
     'creates a pending %s account and sends a registration code without exposing verification data',
     async (role) => {
       const createdUser = {
         _id: 'user-123',
-        id: role === 'screener' ? 'S000001' : 'ID-123456',
+        id: 'ID-123456',
         fullname: 'New Account',
         email: 'new@example.com',
         emailNormalized: 'new@example.com',
@@ -158,7 +160,7 @@ describe('User registration route', () => {
         verificationRequired: true
       }));
       expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
-        id: role === 'screener' ? 'S000001' : 'ID-123456',
+        id: 'ID-123456',
         email: 'new@example.com',
         emailNormalized: 'new@example.com',
         emailVerified: false,
@@ -179,9 +181,49 @@ describe('User registration route', () => {
     }
   );
 
-  it('keeps admin-provisioned accounts pending and clears an undelivered code', async () => {
+  it('creates a screener account without requesting verification at creation and sends the account notification email', async () => {
+    const createdUser = {
+      _id: 'user-123',
+      id: 'S000001',
+      fullname: 'S000001',
+      email: 'screener@example.com',
+      emailNormalized: 'screener@example.com',
+      emailVerified: false,
+      registrationOtpHash: 'private-hash',
+      registrationOtpExpiresAt: new Date(),
+      registrationOtpAttempts: 0,
+      registrationOtpLastSentAt: new Date(),
+      registrationOtpResendCount: 0,
+      password: 'hashed-password',
+      role: 'screener',
+      toObject() {
+        return { ...this };
+      }
+    };
+    User.create.mockResolvedValue(createdUser);
+
+    const response = await request(app)
+      .post('/api/v1/users')
+      .send({
+        email: 'screener@example.com',
+        password: 'Password1!',
+        department: 'Engineering',
+        role: 'screener'
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(expect.objectContaining({
+      success: true,
+      verificationRequired: false
+    }));
+    expect(response.body.user.id).toBe('S000001');
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
+    expect(sendScreenerAccountCreatedEmail).toHaveBeenCalledWith('screener@example.com', 'S000001', expect.any(String));
+  });
+
+  it('cleans up a screener account when the account notification email cannot be delivered', async () => {
     User.create.mockResolvedValue({ _id: 'user-123', id: 'S000001' });
-    sendRegistrationVerificationOtp.mockRejectedValueOnce(new Error('Brevo unavailable'));
+    sendScreenerAccountCreatedEmail.mockRejectedValueOnce(new Error('Brevo unavailable'));
 
     const response = await request(app)
       .post('/api/v1/users')

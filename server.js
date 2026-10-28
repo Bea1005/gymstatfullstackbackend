@@ -180,6 +180,19 @@ app.use((req, res, next) => {
             .slice(0, 240)
         });
       }
+
+      if (body?.safeError === 'screener-account-email-delivery') {
+        return originalJson({
+          success: false,
+          verificationRequired: false,
+          deliveryIssue: typeof body.deliveryIssue === 'string'
+            ? body.deliveryIssue.slice(0, 60)
+            : 'delivery-failed',
+          message: String(body.message || 'The Screener account could not be created because the account notification email could not be sent. Please try again later.')
+            .slice(0, 240)
+        });
+      }
+
       return originalJson({
         success: false,
         message: 'An unexpected server error occurred. Please try again.'

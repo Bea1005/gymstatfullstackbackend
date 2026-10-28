@@ -256,6 +256,72 @@ const escapeEmailHtml = (value) => String(value || '').replace(/[&<>"']/g, (char
   "'": '&#39;'
 })[character]);
 
+const sendScreenerAccountCreatedEmail = async (email, screenerId, loginUrl) => {
+  const recipient = String(email || '').trim();
+  const loginLink = String(loginUrl || process.env.FRONTEND_URL || 'http://localhost:5173/login').trim();
+  const safeLink = loginLink.replace(/\/$/, '');
+  const subject = 'Your GYMSTAT Screener account is ready';
+  const username = recipient || 'your institutional email';
+  const text = [
+    'GYMSTAT Screener Account Created',
+    '',
+    'A GYMSTAT Screener account has been created for you.',
+    'Screener ID: ' + screenerId,
+    'Username / institutional email: ' + username,
+    'Initial login instructions: sign in to GYMSTAT using your institutional email and the temporary password assigned by the administrator.',
+    'Login link: ' + safeLink + '/login',
+    '',
+    'This account is for authorized GYMSTAT system use only at Marinduque State University.',
+    'Do not share your credentials or login link with unauthorized persons.',
+    '',
+    'Regards,',
+    'GYMSTAT System Administrator',
+    'Marinduque State University'
+  ].join('\n');
+
+  const html = [
+    '<div style="font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:620px;margin:0 auto;padding:24px">',
+    '<h2 style="color:#7a0a0a;margin-bottom:8px">GYMSTAT</h2>',
+    '<p style="color:#555;font-size:13px;margin-top:0">Marinduque State University</p>',
+    '<hr style="border:none;border-top:2px solid #7a0a0a;margin:16px 0">',
+    '<p><strong>Your Screener account is ready.</strong></p>',
+    '<p>Your GYMSTAT Screener account has been created successfully.</p>',
+    '<ul>',
+    '<li><strong>Screener ID:</strong> ' + escapeEmailHtml(String(screenerId || '')) + '</li>',
+    '<li><strong>Username / institutional email:</strong> ' + escapeEmailHtml(username) + '</li>',
+    '<li><strong>Initial login:</strong> sign in with your institutional email and the temporary password provided by the administrator.</li>',
+    '</ul>',
+    '<p style="margin:20px 0"><a href="' + escapeEmailHtml(safeLink + '/login') + '" style="display:inline-block;background:#7a0a0a;color:#fff;text-decoration:none;padding:12px 28px;border-radius:6px;font-weight:700;font-size:15px">Open GYMSTAT Login</a></p>',
+    '<p style="font-size:13px;color:#666">Login link: <a href="' + escapeEmailHtml(safeLink + '/login') + '" style="color:#7a0a0a">' + escapeEmailHtml(safeLink + '/login') + '</a></p>',
+    '<p style="font-size:12px;color:#888">This account is exclusively for authorized use of the GYMSTAT system at Marinduque State University.</p>',
+    '<hr style="border:none;border-top:1px solid #ddd;margin:24px 0">',
+    '<p style="margin-bottom:2px">Regards,</p>',
+    '<p style="margin:0"><strong>GYMSTAT System Administrator</strong><br>Marinduque State University</p>',
+    '<hr style="border:none;border-top:1px solid #ddd;margin:24px 0">',
+    '<p style="font-size:11px;color:#aaa">This is an automated message from the GYMSTAT System. Do not reply to this email.</p>',
+    '</div>'
+  ].join('');
+
+  if (getSetting('BREVO_API_KEY')) {
+    return sendViaBrevo(recipient, subject, text, html);
+  }
+
+  try {
+    const transporter = getEmailTransport();
+    await transporter.sendMail({
+      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
+      to: recipient,
+      subject,
+      text,
+      html
+    });
+  } catch (error) {
+    if (error?.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
+    const code = error?.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
+    throw createEmailError('SMTP email delivery failed.', code);
+  }
+};
+
 const sendScheduleRequestStatusEmail = async (email, request, status) => {
   if (!['approved', 'rejected'].includes(status)) {
     throw createEmailError('Invalid schedule request status.', 'INVALID_SCHEDULE_REQUEST_STATUS');
@@ -381,6 +447,7 @@ module.exports = {
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
   sendRegistrationVerificationOtp,
+  sendScreenerAccountCreatedEmail,
   sendScheduleRequestStatusEmail,
   sendScreenerAuthorizationEmail
 };
