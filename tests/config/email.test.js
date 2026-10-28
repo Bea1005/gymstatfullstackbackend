@@ -1,5 +1,6 @@
 const { EventEmitter } = require('events');
 const https = require('https');
+const nodemailer = require('nodemailer');
 const {
   getEmailConfigurationStatus,
   getRegistrationEmailFailure,
@@ -21,6 +22,7 @@ describe('Email delivery configuration', () => {
   ];
   let requestCapture;
   let httpsRequestSpy;
+  let smtpTransportSpy;
 
   beforeEach(() => {
     environmentNames.forEach((name) => {
@@ -51,6 +53,7 @@ describe('Email delivery configuration', () => {
 
   afterEach(() => {
     httpsRequestSpy.mockRestore();
+    if (smtpTransportSpy) smtpTransportSpy.mockRestore();
     environmentNames.forEach((name) => {
       if (previousEnvironment[name] === undefined) delete process.env[name];
       else process.env[name] = previousEnvironment[name];
@@ -113,6 +116,40 @@ describe('Email delivery configuration', () => {
     }));
     expect(message.htmlContent).toContain('&lt;b&gt;Campus Event&lt;/b&gt;');
     expect(message.htmlContent).toContain('&lt;em&gt;Schedule conflict&lt;/em&gt;');
+  });
+
+  it('falls back to configured SMTP when Brevo rejects a registration verification email', async () => {
+    process.env.SMTP_HOST = 'smtp.example.test';
+    process.env.SMTP_USER = 'mailer@example.test';
+    process.env.SMTP_PASSWORD = 'test-password';
+    const sendMail = jest.fn().mockResolvedValue({});
+    smtpTransportSpy = jest.spyOn(nodemailer, 'createTransport').mockReturnValue({ sendMail });
+    httpsRequestSpy.mockImplementationOnce((_options, callback) => {
+      const response = new EventEmitter();
+      response.statusCode = 403;
+      const request = new EventEmitter();
+      request.write = jest.fn();
+      request.end = () => {
+        process.nextTick(() => {
+          callback(response);
+          response.emit('end');
+        });
+      };
+      request.destroy = jest.fn();
+      return request;
+    });
+
+    await sendRegistrationVerificationOtp('jane@example.test', '654321', 10);
+
+    expect(nodemailer.createTransport).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'smtp.example.test',
+      auth: { user: 'mailer@example.test', pass: 'test-password' }
+    }));
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'jane@example.test',
+      subject: 'GYMSTAT email verification code',
+      text: expect.stringContaining('654321')
+    }));
   });
 
   it('classifies Brevo credential rejection without exposing provider response content', async () => {

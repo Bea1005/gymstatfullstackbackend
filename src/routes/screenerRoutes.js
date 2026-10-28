@@ -7,9 +7,9 @@ const User = require('../models/User');
 const StudentAthlete = require('../models/StudentAthlete');
 const {
   getStudentRequirementModel,
-  getAllStudentRequirementModels,
   normalizeParticipationType
 } = require('../models/studentRequirementCollections');
+const { getStudentSports, splitRequirementSports } = require('../utils/requirementSports');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
@@ -57,6 +57,11 @@ const resolveStoredFilePath = (storedPath) => {
 
 const serveScreenerRequirementFile = async (req, res) => {
   try {
+    const role = String(req.user?.role || '').toLowerCase();
+    if (!['admin', 'coach'].includes(role)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
+    }
+
     if (!/^[a-f\d]{24}$/i.test(req.params.id)) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
@@ -69,7 +74,18 @@ const serveScreenerRequirementFile = async (req, res) => {
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
-    if (await denyOwnDepartmentAccess(req, res, submission)) return;
+    if (String(req.user?.role || '').toLowerCase() === 'coach') {
+      const context = await getCoachRequirementContext(
+        req,
+        submission,
+        normalizeParticipationType(req.query.participationType)
+      );
+      if (!context) {
+        return res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
+      }
+    } else if (await denyOwnDepartmentAccess(req, res, submission)) {
+      return;
+    }
 
     const requestedFileIndex = Number(req.query.fileIndex || 0);
     const storedFiles = Array.isArray(submission.files) && submission.files.length > 0
@@ -124,8 +140,10 @@ const serveScreenerRequirementFile = async (req, res) => {
   }
 };
 
-router.get('/screener/requirements/:id/download', protect, authorize('screener', 'admin'), serveScreenerRequirementFile);
-router.get('/screener/requirements/:id/preview', protect, authorize('screener', 'admin'), serveScreenerRequirementFile);
+router.get('/screener/requirements/:id/download', protect, authorize('admin'), serveScreenerRequirementFile);
+router.get('/screener/requirements/:id/preview', protect, authorize('admin'), serveScreenerRequirementFile);
+router.get('/coach/requirements/:id/download', protect, authorize('coach'), serveScreenerRequirementFile);
+router.get('/coach/requirements/:id/preview', protect, authorize('coach'), serveScreenerRequirementFile);
 
 const requirementKeyLabels = {
   medical: 'Medical Certificate',
@@ -162,6 +180,111 @@ const deriveOverallStatus = (requirements) => {
   return requiredCategoriesApproved && otherRequiredDocumentsApproved
     ? 'Completed'
     : 'Incomplete';
+};
+
+const normalizeScopeValue = (value) => String(value || '')
+  .normalize('NFKC')
+  .replace(/[^\p{L}\p{N}]+/gu, '')
+  .toLowerCase();
+
+const collectCoachSports = (coach) => {
+  const sports = [
+    ...(Array.isArray(coach?.assignedSports) ? coach.assignedSports : []),
+    ...(Array.isArray(coach?.sports) ? coach.sports : []),
+    ...(Array.isArray(coach?.sportParticipation)
+      ? coach.sportParticipation.map((entry) => entry?.sport)
+      : []),
+    coach?.sport,
+  ];
+
+  return new Set(sports.map(normalizeScopeValue).filter(Boolean));
+};
+
+const collectCoachEvents = (coach) => {
+  const assignedEvents = [
+    ...(Array.isArray(coach?.assignedEvents) ? coach.assignedEvents : []),
+    ...(Array.isArray(coach?.assignedParticipationTypes) ? coach.assignedParticipationTypes : []),
+    ...(Array.isArray(coach?.events) ? coach.events : []),
+    ...(Array.isArray(coach?.eventAssignments) ? coach.eventAssignments : []),
+    ...(Array.isArray(coach?.sportParticipation)
+      ? coach.sportParticipation.map((entry) => entry?.participationType || entry?.event)
+      : []),
+  ].map((event) => (
+    typeof event === 'string'
+      ? event
+      : event?.participationType || event?.event || event?.name || event?.title
+  ));
+
+  return new Set(assignedEvents.map(normalizeScopeValue).filter(Boolean));
+};
+
+const findCoachAccount = async (coachId) => User.findById(coachId)
+  .select('role sport sports assignedSports sportParticipation assignedEvents assignedParticipationTypes events eventAssignments')
+  .lean();
+
+const findStudentForCoachRequirement = async (studentId) => {
+  if (!studentId) return null;
+
+  let student;
+  try {
+    student = await User.findOne({ _id: studentId, role: 'student' })
+      .select('role id sport sports assignedSports sportParticipation')
+      .lean();
+  } catch (error) {
+    if (!/Cast to ObjectId/i.test(error.message || '')) throw error;
+  }
+
+  if (!student) {
+    student = await User.findOne({ id: String(studentId), role: 'student' })
+      .select('role id sport sports assignedSports sportParticipation')
+      .lean();
+  }
+
+  return student;
+};
+
+const getCoachRequirementContext = async (req, submission, participationType) => {
+  if (String(req.user?.role || '').toLowerCase() !== 'coach') return null;
+
+  const coachId = req.user?._id || req.user?.id;
+  const coach = coachId ? await findCoachAccount(coachId) : null;
+  if (!coach || coach.role !== 'coach') return null;
+
+  const assignedSports = collectCoachSports(coach);
+  if (!assignedSports.size) return null;
+
+  const studentId = submission.studentId?._id || submission.studentId;
+  const student = await findStudentForCoachRequirement(studentId);
+  if (!student) return null;
+
+  const athleteProfiles = await StudentAthlete.find({ userId: student._id })
+    .select('sport sports assignedSports sportParticipation')
+    .lean();
+  const athleteProfile = athleteProfiles[0] || {};
+  const studentSports = new Set([
+    ...getStudentSports(student),
+    ...getStudentSports(athleteProfile),
+  ].map(normalizeScopeValue).filter(Boolean));
+  const assignedStudentSports = [...studentSports].filter((sport) => assignedSports.has(sport));
+  if (!assignedStudentSports.length) return null;
+
+  const eventScope = collectCoachEvents(coach);
+  const submissionEvent = normalizeScopeValue(submission.participationType || participationType || 'Intrams');
+  if (eventScope.size && !eventScope.has(submissionEvent)) return null;
+
+  const submissionSports = splitRequirementSports(submission.sport || '')
+    .map(normalizeScopeValue)
+    .filter(Boolean);
+  if (submissionSports.length && !submissionSports.includes(normalizeScopeValue('General'))
+    && !submissionSports.some((sport) => assignedSports.has(sport) && studentSports.has(sport))) {
+    return null;
+  }
+
+  return {
+    coach,
+    student,
+    assignedStudentSports,
+  };
 };
 
 const findStudentForSubmission = async (studentId) => {
@@ -213,7 +336,7 @@ const denyOwnDepartmentAccess = async (req, res, submission) => {
 // @desc    Get all student requirement submissions for the screener portal
 // @route   GET /api/v1/screener/requirements
 // @access  Private/Screener
-router.get('/screener/requirements', protect, authorize('screener', 'admin'), async (req, res) => {
+router.get('/screener/requirements', protect, authorize('admin'), async (req, res) => {
   console.log('🔍 Screener requirements request:', { 
     path: req.originalUrl, 
     method: req.method, 
@@ -222,6 +345,10 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
   });
   
   try {
+    if (String(req.user?.role || '').toLowerCase() !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Student requirement screening has moved to the Coach Portal.' });
+    }
+
     const isScreener = String(req.user?.role || '').toLowerCase() === 'screener';
     const screenerDepartment = String(req.user?.department || '').trim();
     if (isScreener && !screenerDepartment) {
@@ -444,11 +571,190 @@ router.get('/screener/requirements', protect, authorize('screener', 'admin'), as
   }
 });
 
+router.get('/coach/requirements', protect, authorize('coach'), async (req, res) => {
+  try {
+    const coachId = req.user?._id || req.user?.id;
+    const coach = coachId ? await findCoachAccount(coachId) : null;
+    if (String(req.user?.role || '').toLowerCase() !== 'coach' || !coach || coach.role !== 'coach') {
+      return res.status(403).json({ success: false, message: 'Coach access could not be verified.' });
+    }
+
+    const assignedSports = collectCoachSports(coach);
+    if (!assignedSports.size) {
+      return res.json({ success: true, count: 0, data: [] });
+    }
+
+    const [registeredStudents, athleteProfiles] = await Promise.all([
+      User.find({ role: 'student', accountStatus: { $ne: 'archived' } })
+        .select('fullname username id department yearLevel sport sports assignedSports sportParticipation createdAt')
+        .sort({ createdAt: -1 })
+        .lean(),
+      StudentAthlete.find({})
+        .select('userId id studentNumber fullname department yearLevel sport sports assignedSports sportParticipation')
+        .lean(),
+    ]);
+
+    const profilesByUserId = new Map();
+    athleteProfiles.forEach((profile) => {
+      if (profile.userId && !profilesByUserId.has(String(profile.userId))) {
+        profilesByUserId.set(String(profile.userId), profile);
+      }
+    });
+
+    const studentsById = new Map();
+    const assignedStudentIds = [];
+    const eventScope = collectCoachEvents(coach);
+    registeredStudents.forEach((student) => {
+      const studentId = String(student._id);
+      const profile = profilesByUserId.get(studentId) || {};
+      const studentSports = new Map([
+        ...getStudentSports(student),
+        ...getStudentSports(profile),
+      ].map((sport) => [normalizeScopeValue(sport), String(sport || '').trim()]).filter(([sport, label]) => sport && label));
+      const matchedSports = [...studentSports.entries()]
+        .filter(([sport]) => assignedSports.has(sport))
+        .map(([, label]) => label);
+      if (!matchedSports.length) return;
+
+      studentsById.set(studentId, {
+        student,
+        profile,
+        matchedSports,
+        entry: {
+          id: studentId,
+          name: student.fullname || student.username || profile.fullname || 'Unknown Student',
+          department: student.department || profile.department || 'Not specified',
+          sport: matchedSports[0],
+          sports: matchedSports,
+          yearLevel: student.yearLevel || profile.yearLevel || '',
+          requirements: {
+            cor: null,
+            med: null,
+            psa: null,
+            insurance: null,
+            profile: null,
+            consent: null,
+            documents: [],
+          },
+        },
+      });
+      assignedStudentIds.push(student._id);
+    });
+
+    if (!assignedStudentIds.length) {
+      return res.json({ success: true, count: 0, data: [] });
+    }
+
+    const submissionsByEvent = await Promise.all(['Intrams', 'STRASUC'].map(async (participationType) => {
+      if (eventScope.size && !eventScope.has(normalizeScopeValue(participationType))) return [];
+
+      const RequirementModel = getStudentRequirementModel(participationType);
+      const participationFilter = participationType === 'Intrams'
+        ? { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] }
+        : { participationType: 'STRASUC' };
+
+      return RequirementModel.find({
+        $and: [
+          participationFilter,
+          { studentId: { $in: assignedStudentIds } },
+        ],
+      })
+        .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status resubmitted uploadDate createdAt remarks sport')
+        .sort({ uploadDate: -1, _id: -1 })
+        .lean()
+        .then((eventSubmissions) => eventSubmissions.map((submission) => ({
+          ...submission,
+          participationType: submission.participationType || participationType,
+        })));
+    }));
+
+    const submissions = submissionsByEvent.flat();
+    submissions.forEach((submission) => {
+      const participationType = submission.participationType || 'Intrams';
+      if (eventScope.size && !eventScope.has(normalizeScopeValue(participationType))) return;
+
+      const studentId = String(submission.studentId?._id || submission.studentId || '');
+      const matchedStudent = studentsById.get(studentId);
+      if (!matchedStudent) return;
+
+      const submissionSports = splitRequirementSports(submission.sport || '')
+        .map(normalizeScopeValue)
+        .filter(Boolean);
+      if (submissionSports.length && !submissionSports.includes(normalizeScopeValue('General'))
+        && !submissionSports.some((sport) => assignedSports.has(sport)
+          && matchedStudent.matchedSports.some((matchedSport) => normalizeScopeValue(matchedSport) === sport))) {
+        return;
+      }
+
+      const fileList = Array.isArray(submission.files) && submission.files.length
+        ? submission.files
+        : [{
+            fileName: submission.fileName,
+            fileType: submission.fileType,
+            fileSize: submission.fileSize,
+            filePath: submission.filePath,
+          }];
+      const hasUpload = fileList.some((file) => (
+        Number(file.fileSize) > 0 || Boolean(resolveStoredFilePath(file.filePath))
+      ));
+      const fileUrl = `/coach/requirements/${submission._id}/preview?participationType=${encodeURIComponent(participationType)}`;
+      const document = {
+        submissionId: submission._id,
+        requirementType: submission.requirementType,
+        status: normalizeRequirementStatus(submission.status),
+        resubmitted: Boolean(submission.resubmitted),
+        label: submission.customRequirementLabel
+          || requirementKeyLabels[submission.requirementType]
+          || submission.requirementType,
+        fileName: submission.fileName || 'Uploaded file',
+        fileType: submission.fileType || '',
+        fileUrl,
+        files: fileList.map((file, index) => ({
+          fileName: file.fileName || 'Uploaded file',
+          fileType: file.fileType || '',
+          fileUrl: `${fileUrl}&fileIndex=${index}`,
+        })),
+        uploadedAt: submission.uploadDate || submission.createdAt,
+        remarks: submission.remarks || '',
+        hasUpload,
+        participationType,
+        sport: submission.sport || matchedStudent.entry.sport,
+      };
+
+      matchedStudent.entry.requirements.documents.push(document);
+      const normalizedKey = submission.requirementType === 'medical' ? 'med' : submission.requirementType;
+      const currentEntry = matchedStudent.entry.requirements[normalizedKey];
+      if (!currentEntry || new Date(document.uploadedAt || 0) > new Date(currentEntry.uploadedAt || 0)) {
+        matchedStudent.entry.requirements[normalizedKey] = document;
+      }
+    });
+
+    const data = [...studentsById.values()]
+      .filter(({ entry }) => entry.requirements.documents.length > 0)
+      .map(({ entry }) => ({
+        ...entry,
+        overallStatus: deriveOverallStatus(entry.requirements),
+      }));
+
+    return res.json({ success: true, count: data.length, data });
+  } catch (error) {
+    console.error('Coach requirements error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to load coach requirements.',
+    });
+  }
+});
+
 // @desc    Mark a resubmitted requirement as viewed by the screener
 // @route   PUT /api/v1/screener/requirements/:id/viewed
 // @access  Private/Screener
-router.put('/screener/requirements/:id/viewed', protect, authorize('screener', 'admin'), async (req, res) => {
+router.put('/screener/requirements/:id/viewed', protect, authorize('admin'), async (req, res) => {
   try {
+    if (String(req.user?.role || '').toLowerCase() !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Student requirement screening has moved to the Coach Portal.' });
+    }
+
     const { id } = req.params;
     const RequirementModel = getStudentRequirementModel(req.body?.participationType);
     const submission = await RequirementModel.findById(id);
@@ -467,11 +773,41 @@ router.put('/screener/requirements/:id/viewed', protect, authorize('screener', '
   }
 });
 
+router.put('/coach/requirements/:id/viewed', protect, authorize('coach'), async (req, res) => {
+  try {
+    const RequirementModel = getStudentRequirementModel(req.body?.participationType);
+    const submission = await RequirementModel.findById(req.params.id);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    const context = await getCoachRequirementContext(
+      req,
+      submission,
+      normalizeParticipationType(req.body?.participationType)
+    );
+    if (!context) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
+    }
+
+    submission.resubmitted = false;
+    await submission.save();
+    return res.json({ success: true, message: 'Requirement resubmission marked as viewed', data: submission });
+  } catch (error) {
+    console.error('Coach requirement viewed error:', error);
+    return res.status(500).json({ success: false, message: 'Unable to update requirement notification.' });
+  }
+});
+
 // @desc    Review a student requirement submission
 // @route   PUT /api/v1/screener/requirements/:id/review
 // @access  Private/Screener
-router.put('/screener/requirements/:id/review', protect, authorize('screener', 'admin'), async (req, res) => {
+router.put('/screener/requirements/:id/review', protect, authorize('admin'), async (req, res) => {
   try {
+    if (String(req.user?.role || '').toLowerCase() !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Student requirement screening has moved to the Coach Portal.' });
+    }
+
     const { id } = req.params;
     const { status, feedback = '', remarks = '', studentId, participationType } = req.body;
     const normalizedStatus = String(status || '').toLowerCase();
@@ -554,6 +890,71 @@ router.put('/screener/requirements/:id/review', protect, authorize('screener', '
     res.status(500).json({
       success: false,
       message: 'An unexpected server error occurred. Please try again.'
+    });
+  }
+});
+
+router.put('/coach/requirements/:id/review', protect, authorize('coach'), async (req, res) => {
+  try {
+    const { status, feedback = '', remarks = '', studentId, participationType } = req.body;
+    const normalizedStatus = String(status || '').toLowerCase();
+    if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid review status. Must be: approved, rejected, or pending',
+      });
+    }
+    if (normalizedStatus === 'rejected' && !studentId) {
+      return res.status(400).json({ success: false, message: 'Student context is required' });
+    }
+
+    const RequirementModel = getStudentRequirementModel(participationType);
+    const submission = await RequirementModel.findById(req.params.id);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    const context = await getCoachRequirementContext(
+      req,
+      submission,
+      normalizeParticipationType(participationType)
+    );
+    if (!context || (studentId && String(submission.studentId) !== String(studentId))) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not authorized to modify this requirement.',
+      });
+    }
+
+    submission.status = normalizedStatus;
+    submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
+    submission.reviewedAt = new Date();
+    submission.reviewedBy = req.user?._id || req.user?.id || null;
+    submission.notificationReadAt = null;
+    if (normalizedStatus === 'approved') {
+      submission.approvedBy = req.user?._id || req.user?.id || null;
+      submission.approvalDate = new Date();
+    }
+    submission.resubmitted = false;
+    await submission.save();
+
+    return res.json({
+      success: true,
+      message: normalizedStatus === 'rejected'
+        ? 'Requirement rejected and retained for re-upload'
+        : `Requirement ${normalizedStatus} successfully`,
+      data: {
+        id: submission._id,
+        status: submission.status,
+        remarks: submission.remarks,
+        reviewedAt: submission.reviewedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Coach requirement review error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to review this requirement.',
     });
   }
 });

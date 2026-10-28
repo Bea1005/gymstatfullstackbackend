@@ -5,6 +5,11 @@ const getSetting = (...names) => names
   .find((value) => value !== undefined && value !== null && String(value).trim() !== '')
   ?.trim();
 const getEmailPassword = () => String(getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD') || '').replace(/\s+/g, '');
+const hasSmtpConfiguration = () => Boolean(
+  getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST')
+  && getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER')
+  && getEmailPassword()
+);
 const createEmailError = (message, code) => Object.assign(new Error(message), { code });
 
 const getRegistrationEmailFailure = (error) => {
@@ -105,7 +110,8 @@ const sendViaBrevo = async (to, subject, text, html) => {
         timeout: 15000
       },
       (res) => {
-        res.on('data', () => {});
+        let responseBody = '';
+        res.on('data', (chunk) => { responseBody += chunk; });
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve();
@@ -216,7 +222,14 @@ const sendRegistrationVerificationOtp = async (email, otp, expiresInMinutes) => 
 
   const brevoKey = getSetting('BREVO_API_KEY');
   if (brevoKey) {
-    return sendViaBrevo(email, subject, text, html);
+    try {
+      return await sendViaBrevo(email, subject, text, html);
+    } catch (brevoError) {
+      if (!hasSmtpConfiguration()) throw brevoError;
+      console.warn(
+        `Brevo registration email delivery failed [${brevoError?.code || 'unknown'}]; trying configured SMTP fallback.`
+      );
+    }
   }
 
   try {
