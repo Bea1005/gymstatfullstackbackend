@@ -263,12 +263,16 @@ exports.getPublishedRequirements = async (req, res) => {
       .select('-__v')
       .sort({ publishedAt: -1 })
       .lean();
-    const requirements = matchedRequirements.filter((requirement) => (
-      isRequirementAssignedToStudent(requirement, req.user)
-    ));
+    const userRole = String(req.user?.role || '').toLowerCase();
+    const activePublishedRequirements = matchedRequirements.filter(
+      (requirement) => requirement.status === 'published' && requirement.isActive
+    );
+    const requirements = userRole === 'screener'
+      ? activePublishedRequirements
+      : activePublishedRequirements.filter((requirement) => isRequirementAssignedToStudent(requirement, req.user));
     
     // If user is authenticated, check which requirements they've submitted
-    if (req.user) {
+    if (userRole === 'student') {
       const studentId = req.user._id;
       const submissions = await RequirementSubmission.find({
         studentId,

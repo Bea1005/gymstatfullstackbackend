@@ -311,6 +311,10 @@ exports.uploadRequirement = async (req, res) => {
       replacementTarget.storageType = firstFile.buffer ? 'mongodb' : 'filesystem';
       replacementTarget.files = storedFiles;
       replacementTarget.status = 'pending';
+      replacementTarget.coachStatus = 'pending';
+      replacementTarget.coachReviewedAt = null;
+      replacementTarget.coachReviewedBy = null;
+      replacementTarget.coachRemarks = '';
       replacementTarget.requirementStatus = 'active';
       replacementTarget.isReusable = false;
       replacementTarget.importedFromPreviousYear = false;

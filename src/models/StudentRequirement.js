@@ -66,6 +66,24 @@ const StudentRequirementSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'rejected'],
     default: 'pending'
   },
+  coachStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending'
+  },
+  coachReviewedAt: {
+    type: Date,
+    default: null
+  },
+  coachReviewedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  coachRemarks: {
+    type: String,
+    default: ''
+  },
   requirementStatus: {
     type: String,
     enum: ['active', 'expired', 'archived', 'reusable'],

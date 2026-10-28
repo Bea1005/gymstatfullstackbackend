@@ -228,6 +228,10 @@ describe('Student controller uploads', () => {
       studentId,
       requirementType: 'psa',
       status: 'approved',
+      coachStatus: 'approved',
+      coachReviewedAt: new Date('2026-01-01T00:00:00.000Z'),
+      coachReviewedBy: new mongoose.Types.ObjectId(),
+      coachRemarks: 'Previously approved',
       requirementStatus: 'reusable',
       fileName: 'original-psa.pdf',
       filePath: '',
@@ -272,6 +276,10 @@ describe('Student controller uploads', () => {
     expect(originalPsa.fileName).toBe('latest-psa.pdf');
     expect(originalPsa.fileData).toEqual(Buffer.from('latest PSA bytes'));
     expect(originalPsa.status).toBe('pending');
+    expect(originalPsa.coachStatus).toBe('pending');
+    expect(originalPsa.coachReviewedAt).toBeNull();
+    expect(originalPsa.coachReviewedBy).toBeNull();
+    expect(originalPsa.coachRemarks).toBe('');
     expect(originalPsa.save).toHaveBeenCalledTimes(1);
     expect(StudentRequirement).not.toHaveBeenCalled();
     expect(StudentRequirement.deleteMany).toHaveBeenCalledWith(expect.objectContaining({

@@ -247,4 +247,46 @@ describe('publishRequirement', () => {
     ]);
     expect(res._getJSONData().data[0].submissionStatus).toBe('not-submitted');
   });
+
+  it('returns all active published requirement labels to screeners', async () => {
+    const publishedRequirements = [
+      {
+        _id: requirementId,
+        title: 'Updated Waiver Label',
+        type: 'other',
+        status: 'published',
+        isActive: true,
+        targetStudents: 'sport-specific',
+        sport: 'Basketball'
+      },
+      {
+        _id: 'inactive-id',
+        title: 'Inactive Requirement',
+        type: 'other',
+        status: 'archived',
+        isActive: false,
+        targetStudents: 'all'
+      }
+    ];
+    Requirement.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(publishedRequirements)
+    });
+    const req = httpMocks.createRequest({
+      query: {},
+      user: {
+        _id: 'screener-id',
+        role: 'screener',
+        department: 'Engineering'
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    await getPublishedRequirements(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData().data.map(({ title }) => title)).toEqual(['Updated Waiver Label']);
+    expect(RequirementSubmission.find).not.toHaveBeenCalled();
+  });
 });

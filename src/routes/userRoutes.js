@@ -12,11 +12,30 @@ const VALID_ROLES = ['student', 'coach', 'admin', 'screener'];
 const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REGISTRATION_OTP_TTL_MS = 10 * 60 * 1000;
+const SCREENER_ID_PATTERN = /^S(\d{6,})$/;
+const SCREENER_ID_CREATION_ATTEMPTS = 25;
 
 const hashRegistrationOtp = (otp) => crypto
   .createHmac('sha256', getJWTSecret())
   .update(String(otp))
   .digest('hex');
+
+const getNextScreenerId = async (minimumNumber = 1) => {
+  const screeners = await User.find({
+    role: 'screener',
+    id: { $regex: /^S\d{6,}$/ }
+  }).select('id').lean();
+  const highestNumber = (Array.isArray(screeners) ? screeners : []).reduce((highest, screener) => {
+    const match = SCREENER_ID_PATTERN.exec(String(screener?.id || ''));
+    const number = match ? Number(match[1]) : 0;
+    return Number.isSafeInteger(number) ? Math.max(highest, number) : highest;
+  }, 0);
+
+  return `S${String(Math.max(highestNumber + 1, minimumNumber)).padStart(6, '0')}`;
+};
+
+const isDuplicateIdError = (error) => error?.code === 11000
+  && (error.keyPattern?.id || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'id'));
 
 const normalizeRole = (role) => {
   const normalized = String(role || '').trim().toLowerCase();
@@ -133,7 +152,7 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     const requestedRole = normalizeRole(req.body?.role || getRequestedRole(req) || 'student');
 
     // Validate required fields
-    if (!rawId) {
+    if (requestedRole !== 'screener' && !rawId) {
       return res.status(400).json({
         success: false,
         message: 'ID is required.'
@@ -168,8 +187,7 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       });
     }
 
-    const fullname = rawFullname || rawId;
-    if (await User.hasRegisteredId(rawId)) {
+    if (requestedRole !== 'screener' && await User.hasRegisteredId(rawId)) {
       return res.status(409).json({
         success: false,
         message: DUPLICATE_ID_MESSAGE
@@ -189,7 +207,6 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     const otpHash = hashRegistrationOtp(otp);
     const now = Date.now();
     const userPayload = {
-      fullname,
       email: rawEmail,
       emailNormalized: rawEmail,
       emailVerified: false,
@@ -200,40 +217,79 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       registrationOtpResendCount: 0,
       password: hashedPassword,
       role: requestedRole,
-      id: rawId,
+      ...(requestedRole !== 'screener' && { id: rawId }),
       status: 'Inactive',
       accountStatus: 'active',
       lastActiveAt: null
     };
+
+    if (requestedRole !== 'screener') {
+      userPayload.fullname = rawFullname || rawId;
+    }
 
     if (requestedRole !== 'admin') {
       userPayload.department = rawDepartment || '';
       userPayload.sport = rawSport || '';
     }
 
-    const user = await User.create(userPayload);
+    let user;
+    if (requestedRole === 'screener') {
+      let minimumNumber = 1;
+      for (let attempt = 0; attempt < SCREENER_ID_CREATION_ATTEMPTS; attempt += 1) {
+        const generatedId = await getNextScreenerId(minimumNumber);
+        const screenerPayload = {
+          ...userPayload,
+          id: generatedId,
+          fullname: rawFullname || generatedId
+        };
+
+        try {
+          user = await User.create(screenerPayload);
+          break;
+        } catch (error) {
+          if (!isDuplicateIdError(error)) throw error;
+          minimumNumber = Number(generatedId.slice(1)) + 1;
+        }
+      }
+
+      if (!user) {
+        return res.status(503).json({
+          success: false,
+          message: 'Unable to allocate a Screener ID right now. Please try again.'
+        });
+      }
+    } else {
+      user = await User.create(userPayload);
+    }
 
     try {
       await sendRegistrationVerificationOtp(rawEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
     } catch {
-      await User.updateOne(
-        { _id: user._id, registrationOtpHash: otpHash },
-        {
-          $set: {
-            registrationOtpHash: null,
-            registrationOtpExpiresAt: null,
-            registrationOtpAttempts: 0,
-            registrationOtpLastSentAt: null,
-            registrationOtpResendCount: 0
+      if (requestedRole === 'screener') {
+        await User.deleteOne({ _id: user._id });
+        await User.getRoleModel('screener').deleteOne({ userId: user._id });
+      } else {
+        await User.updateOne(
+          { _id: user._id, registrationOtpHash: otpHash },
+          {
+            $set: {
+              registrationOtpHash: null,
+              registrationOtpExpiresAt: null,
+              registrationOtpAttempts: 0,
+              registrationOtpLastSentAt: null,
+              registrationOtpResendCount: 0
+            }
           }
-        }
-      );
+        );
+      }
       console.error('Admin-provisioned registration verification email delivery failed.');
       return res.status(503).json({
         success: false,
         safeError: 'registration-email-delivery',
-        verificationRequired: true,
-        message: 'The account is pending email verification, but the verification email could not be sent. The user can retry from the Registration Page.'
+        verificationRequired: requestedRole !== 'screener',
+        message: requestedRole === 'screener'
+          ? 'The verification email could not be sent, so the Screener account was not created. Please try again later.'
+          : 'The account is pending email verification, but the verification email could not be sent. The user can retry from the Registration Page.'
       });
     }
 
@@ -304,6 +360,19 @@ router.post('/students', protect, authorize('admin'), async (req, res) => {
 // @desc    List screeners
 // @route   GET /api/v1/users/screeners
 // @access  Private/Admin
+router.get('/screeners/next-id', protect, authorize('admin'), async (_req, res) => {
+  try {
+    const id = await getNextScreenerId();
+    return res.json({ success: true, id });
+  } catch (error) {
+    console.error('Get next Screener ID error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to load the next Screener ID. Please try again.'
+    });
+  }
+});
+
 router.get('/screeners', protect, authorize('admin'), async (req, res) => {
   try {
     const accountStatus = req.query.accountStatus === 'archived' ? 'archived' : 'active';

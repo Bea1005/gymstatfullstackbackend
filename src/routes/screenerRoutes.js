@@ -58,7 +58,7 @@ const resolveStoredFilePath = (storedPath) => {
 const serveScreenerRequirementFile = async (req, res) => {
   try {
     const role = String(req.user?.role || '').toLowerCase();
-    if (!['admin', 'coach'].includes(role)) {
+    if (!['admin', 'coach', 'screener'].includes(role)) {
       return res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
     }
 
@@ -74,6 +74,7 @@ const serveScreenerRequirementFile = async (req, res) => {
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Requirement not found' });
     }
+
     if (String(req.user?.role || '').toLowerCase() === 'coach') {
       const context = await getCoachRequirementContext(
         req,
@@ -83,8 +84,14 @@ const serveScreenerRequirementFile = async (req, res) => {
       if (!context) {
         return res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
       }
-    } else if (await denyOwnDepartmentAccess(req, res, submission)) {
+    } else if (await denyScreenerDepartmentMismatch(req, res, submission)) {
       return;
+    }
+    if (role === 'screener' && submission.coachStatus !== 'approved') {
+      return res.status(409).json({
+        success: false,
+        message: 'This requirement is not available until its sport group is approved by the coach.'
+      });
     }
 
     const requestedFileIndex = Number(req.query.fileIndex || 0);
@@ -140,8 +147,8 @@ const serveScreenerRequirementFile = async (req, res) => {
   }
 };
 
-router.get('/screener/requirements/:id/download', protect, authorize('admin'), serveScreenerRequirementFile);
-router.get('/screener/requirements/:id/preview', protect, authorize('admin'), serveScreenerRequirementFile);
+router.get('/screener/requirements/:id/download', protect, authorize('admin', 'screener'), serveScreenerRequirementFile);
+router.get('/screener/requirements/:id/preview', protect, authorize('admin', 'screener'), serveScreenerRequirementFile);
 router.get('/coach/requirements/:id/download', protect, authorize('coach'), serveScreenerRequirementFile);
 router.get('/coach/requirements/:id/preview', protect, authorize('coach'), serveScreenerRequirementFile);
 
@@ -182,9 +189,58 @@ const deriveOverallStatus = (requirements) => {
     : 'Incomplete';
 };
 
+const getCoachReviewStatus = (submission) => (
+  normalizeRequirementStatus(submission?.coachStatus)
+);
+
+const getSportScopedSubmissions = (submissions, sport) => submissions.filter((submission) => {
+  const submissionSports = splitRequirementSports(submission.sport || '')
+    .map(normalizeScopeValue)
+    .filter(Boolean);
+  return !submissionSports.length
+    || submissionSports.includes(normalizeScopeValue('General'))
+    || submissionSports.includes(normalizeScopeValue(sport));
+});
+
+const isCoachApprovedSportGroup = (athletes, submissions, sport) => {
+  if (!athletes.length) return false;
+
+  return athletes.every((athlete) => {
+    const athleteId = athlete?._id || athlete?.id || athlete?.userId;
+    const athleteSubmissions = getSportScopedSubmissions(
+      submissions.filter((submission) => String(submission.studentId?._id || submission.studentId) === String(athleteId)),
+      sport
+    ).filter((submission) => !['archived', 'expired'].includes(
+      String(submission.requirementStatus || '').toLowerCase()
+    ));
+    const latestByRequirement = new Map();
+    athleteSubmissions.forEach((submission) => {
+      const requirementType = submission.requirementType === 'medical' ? 'med' : submission.requirementType;
+      const key = requirementType === 'other'
+        ? `other:${submission.customRequirementId || submission.customRequirementLabel || submission._id}`
+        : requirementType;
+      const previous = latestByRequirement.get(key);
+      if (!previous || new Date(submission.uploadDate || submission.createdAt || 0)
+        > new Date(previous.uploadDate || previous.createdAt || 0)) {
+        latestByRequirement.set(key, submission);
+      }
+    });
+
+    const requiredTypes = ['med', 'psa', 'insurance', 'profile', 'consent'];
+    return requiredTypes.every((type) => latestByRequirement.get(type)?.coachStatus === 'approved')
+      && athleteSubmissions.every((submission) => submission.coachStatus === 'approved');
+  });
+};
+
 const normalizeScopeValue = (value) => String(value || '')
   .normalize('NFKC')
   .replace(/[^\p{L}\p{N}]+/gu, '')
+  .toLowerCase();
+
+const normalizeDepartmentValue = (value) => String(value || '')
+  .normalize('NFKC')
+  .replace(/\s+/g, ' ')
+  .trim()
   .toLowerCase();
 
 const collectCoachSports = (coach) => {
@@ -314,18 +370,18 @@ const findStudentForSubmission = async (studentId) => {
   return student;
 };
 
-const denyOwnDepartmentAccess = async (req, res, submission) => {
+const denyScreenerDepartmentMismatch = async (req, res, submission) => {
   if (String(req.user?.role || '').toLowerCase() !== 'screener') return false;
 
-  const screenerDepartment = String(req.user.department || '').trim();
+  const screenerDepartment = normalizeDepartmentValue(req.user.department);
   if (!screenerDepartment) {
     res.status(403).json({ success: false, message: 'Screener department is not configured.' });
     return true;
   }
 
   const student = await findStudentForSubmission(submission.studentId);
-  const studentDepartment = String(student?.department || '').trim();
-  if (!studentDepartment || studentDepartment === screenerDepartment) {
+  const studentDepartment = normalizeDepartmentValue(student?.department);
+  if (!studentDepartment || studentDepartment !== screenerDepartment) {
     res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
     return true;
   }
@@ -336,7 +392,7 @@ const denyOwnDepartmentAccess = async (req, res, submission) => {
 // @desc    Get all student requirement submissions for the screener portal
 // @route   GET /api/v1/screener/requirements
 // @access  Private/Screener
-router.get('/screener/requirements', protect, authorize('admin'), async (req, res) => {
+router.get('/screener/requirements', protect, authorize('admin', 'screener'), async (req, res) => {
   console.log('🔍 Screener requirements request:', { 
     path: req.originalUrl, 
     method: req.method, 
@@ -345,39 +401,27 @@ router.get('/screener/requirements', protect, authorize('admin'), async (req, re
   });
   
   try {
-    if (String(req.user?.role || '').toLowerCase() !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Student requirement screening has moved to the Coach Portal.' });
-    }
-
     const isScreener = String(req.user?.role || '').toLowerCase() === 'screener';
-    const screenerDepartment = String(req.user?.department || '').trim();
+    const screenerDepartment = normalizeDepartmentValue(req.user?.department);
     if (isScreener && !screenerDepartment) {
       return res.status(403).json({ success: false, message: 'Screener department is not configured.' });
     }
 
     // Get all students
-    const participationType = normalizeParticipationType(req.query.participationType);
-    const studentQuery = { role: 'student' };
-    if (isScreener) {
-      studentQuery.department = {
-        $exists: true,
-        $nin: ['', null, screenerDepartment]
-      };
-    }
-    const studentsFromDb = participationType === 'STRASUC' && !isScreener
-      ? []
-      : await User.find(studentQuery)
-      .select('fullname username department createdAt')
+    const participationTypes = req.query.participationType
+      ? [normalizeParticipationType(req.query.participationType)]
+      : ['Intrams', 'STRASUC'];
+    const studentsFromDb = await User.find({ role: 'student', accountStatus: { $ne: 'archived' } })
+      .select('fullname username department createdAt sport sports assignedSports sportParticipation')
       .sort({ createdAt: -1 })
       .lean();
     const visibleStudents = isScreener
-      ? studentsFromDb.filter((student) => String(student.department || '').trim()
-        && String(student.department).trim() !== screenerDepartment)
+      ? studentsFromDb.filter((student) => normalizeDepartmentValue(student.department) === screenerDepartment)
       : studentsFromDb;
 
     const athleteProfiles = visibleStudents.length
       ? await StudentAthlete.find({ userId: { $in: visibleStudents.map((student) => student._id) } })
-        .select('userId sports yearLevel')
+        .select('userId sport sports assignedSports sportParticipation yearLevel')
         .lean()
       : [];
     const athleteProfilesByUserId = new Map(
@@ -387,25 +431,52 @@ router.get('/screener/requirements', protect, authorize('admin'), async (req, re
     console.log(`👥 Found ${studentsFromDb.length} students in database`);
 
     // Get all student requirements submissions
-    const RequirementModel = getStudentRequirementModel(participationType);
-    const participationFilter = participationType === 'Intrams'
-      ? { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] }
-      : { participationType: 'STRASUC' };
-    const submissionFilter = isScreener
-      ? {
-          $and: [
-            participationFilter,
-            { studentId: { $in: visibleStudents.map((student) => student._id) } }
-          ]
-        }
-      : participationFilter;
-    let submissionsQuery = RequirementModel.find(submissionFilter)
-      .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status resubmitted uploadDate createdAt remarks')
-      .sort({ uploadDate: -1, _id: -1 });
-    if (!isScreener || participationType === 'STRASUC') {
+    const submissionsByParticipation = await Promise.all(participationTypes.map(async (participationType) => {
+      const RequirementModel = getStudentRequirementModel(participationType);
+      const participationFilter = participationType === 'Intrams'
+        ? { $or: [{ participationType: 'Intrams' }, { participationType: { $exists: false } }] }
+        : { participationType: 'STRASUC' };
+      const activeSubmissionConditions = [
+        participationFilter,
+        { requirementStatus: { $nin: ['archived', 'expired'] } }
+      ];
+      if (isScreener) {
+        activeSubmissionConditions.push({
+          studentId: { $in: visibleStudents.map((student) => student._id) }
+        });
+      }
+      const activeSubmissionFilter = { $and: activeSubmissionConditions };
+      let submissionsQuery = RequirementModel.find(activeSubmissionFilter)
+        .select('studentId requirementType participationType customRequirementId customRequirementLabel requirementStatus sport fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status coachStatus resubmitted uploadDate createdAt remarks')
+        .sort({ uploadDate: -1, _id: -1 });
       submissionsQuery = submissionsQuery.populate('studentId', 'fullname department yearLevel sport sports assignedSports id username');
-    }
-    const submissions = await submissionsQuery.lean();
+      const submissions = await submissionsQuery.lean();
+      return submissions.map((submission) => ({
+        ...submission,
+        participationType: submission.participationType || participationType
+      }));
+    }));
+    const submissions = submissionsByParticipation.flat()
+      .sort((submissionA, submissionB) => (
+        new Date(submissionB.uploadDate || submissionB.createdAt || 0)
+        - new Date(submissionA.uploadDate || submissionA.createdAt || 0)
+      ));
+
+    const athletesBySport = new Map();
+    visibleStudents.forEach((student) => {
+      const profile = athleteProfilesByUserId.get(String(student._id)) || {};
+      const sports = getSavedSports(profile.sports);
+      sports.forEach((sport) => {
+        const key = normalizeScopeValue(sport);
+        if (!athletesBySport.has(key)) athletesBySport.set(key, { sport, athletes: [] });
+        athletesBySport.get(key).athletes.push(student);
+      });
+    });
+    const readySports = new Set(
+      [...athletesBySport.entries()]
+        .filter(([, group]) => isCoachApprovedSportGroup(group.athletes, submissions, group.sport))
+        .map(([key]) => key)
+    );
 
     console.log(`📄 Found ${submissions.length} requirement submissions`);
 
@@ -475,7 +546,7 @@ router.get('/screener/requirements', protect, authorize('admin'), async (req, re
       }
 
       const studentDepartment = String(student.department || '').trim();
-      if (isScreener && (!studentDepartment || studentDepartment === screenerDepartment)) continue;
+      if (isScreener && normalizeDepartmentValue(studentDepartment) !== screenerDepartment) continue;
 
       const studentId = (student._id || student.id).toString();
       
@@ -525,7 +596,9 @@ router.get('/screener/requirements', protect, authorize('admin'), async (req, re
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
+        customRequirementId: submission.customRequirementId || '',
         status: normalizeRequirementStatus(submission.status),
+        coachStatus: getCoachReviewStatus(submission),
         resubmitted: submission.resubmitted || false,
         label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
         fileName: submission.fileName || 'Uploaded file',
@@ -539,7 +612,8 @@ router.get('/screener/requirements', protect, authorize('admin'), async (req, re
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
         hasUpload,
-        participationType: submission.participationType || 'Intrams'
+        participationType: submission.participationType || 'Intrams',
+        sport: submission.sport || studentEntry.sport
       };
       studentEntry.requirements.documents.push(document);
 
@@ -550,16 +624,53 @@ router.get('/screener/requirements', protect, authorize('admin'), async (req, re
     }
 
     // Convert map to array and add overall status
-    const students = Array.from(studentsById.values()).map((student) => ({
-      ...student,
-      overallStatus: deriveOverallStatus(student.requirements)
-    }));
+    const students = Array.from(studentsById.values()).flatMap((student) => {
+      const readyStudentSports = student.sports.filter((sport) => readySports.has(normalizeScopeValue(sport)));
+      if (!readyStudentSports.length) return [];
+
+      const eligibleDocuments = student.requirements.documents.filter((document) => {
+        if (document.coachStatus !== 'approved') return false;
+        const documentSports = splitRequirementSports(document.sport || '')
+          .map(normalizeScopeValue)
+          .filter(Boolean);
+        return !documentSports.length
+          || documentSports.includes(normalizeScopeValue('General'))
+          || documentSports.some((sport) => readyStudentSports.some((readySport) => normalizeScopeValue(readySport) === sport));
+      });
+      if (!eligibleDocuments.length) return [];
+
+      const requirements = {
+        cor: null,
+        med: null,
+        psa: null,
+        insurance: null,
+        profile: null,
+        consent: null,
+        documents: eligibleDocuments
+      };
+      eligibleDocuments.forEach((document) => {
+        const key = document.requirementType === 'medical' ? 'med' : document.requirementType;
+        const currentEntry = requirements[key];
+        if (!currentEntry || new Date(document.uploadedAt || 0) > new Date(currentEntry.uploadedAt || 0)) {
+          requirements[key] = document;
+        }
+      });
+
+      return [{
+        ...student,
+        sport: readyStudentSports[0],
+        sports: readyStudentSports,
+        requirements,
+        overallStatus: deriveOverallStatus(requirements)
+      }];
+    });
 
     console.log(`✅ Returning ${students.length} students with requirements`);
 
     res.json({
       success: true,
       count: students.length,
+      assignedDepartment: isScreener ? String(req.user.department || '').trim() : null,
       data: students
     });
   } catch (error) {
@@ -656,10 +767,11 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
       return RequirementModel.find({
         $and: [
           participationFilter,
+          { requirementStatus: { $nin: ['archived', 'expired'] } },
           { studentId: { $in: assignedStudentIds } },
         ],
       })
-        .select('studentId requirementType participationType customRequirementLabel fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status resubmitted uploadDate createdAt remarks sport')
+        .select('studentId requirementType participationType customRequirementId customRequirementLabel requirementStatus fileName fileType fileSize filePath files.fileName files.fileType files.fileSize files.filePath status coachStatus coachRemarks resubmitted uploadDate createdAt remarks sport')
         .sort({ uploadDate: -1, _id: -1 })
         .lean()
         .then((eventSubmissions) => eventSubmissions.map((submission) => ({
@@ -701,7 +813,9 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
-        status: normalizeRequirementStatus(submission.status),
+        customRequirementId: submission.customRequirementId || '',
+        status: getCoachReviewStatus(submission),
+        finalStatus: normalizeRequirementStatus(submission.status),
         resubmitted: Boolean(submission.resubmitted),
         label: submission.customRequirementLabel
           || requirementKeyLabels[submission.requirementType]
@@ -715,7 +829,7 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
           fileUrl: `${fileUrl}&fileIndex=${index}`,
         })),
         uploadedAt: submission.uploadDate || submission.createdAt,
-        remarks: submission.remarks || '',
+        remarks: submission.coachRemarks || submission.remarks || '',
         hasUpload,
         participationType,
         sport: submission.sport || matchedStudent.entry.sport,
@@ -729,12 +843,47 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
       }
     });
 
-    const data = [...studentsById.values()]
-      .filter(({ entry }) => entry.requirements.documents.length > 0)
-      .map(({ entry }) => ({
+    const roster = [...studentsById.values()];
+    const sportBatchStatuses = new Map();
+    const allCoachSports = new Map();
+    roster.forEach((athlete) => athlete.matchedSports.forEach((sport) => {
+      allCoachSports.set(normalizeScopeValue(sport), sport);
+    }));
+
+    allCoachSports.forEach((sport, sportKey) => {
+      const sportRoster = roster
+        .filter((athlete) => athlete.matchedSports.some((matchedSport) => normalizeScopeValue(matchedSport) === sportKey));
+      const ready = isCoachApprovedSportGroup(
+        sportRoster.map(({ student }) => student),
+        submissions,
+        sport
+      );
+      const approvedAthletes = sportRoster.filter(({ entry }) => (
+        isCoachApprovedSportGroup([entry], submissions, sport)
+      )).length;
+      sportBatchStatuses.set(sportKey, {
+        sport,
+        ready,
+        approvedAthletes,
+        totalAthletes: sportRoster.length,
+      });
+    });
+
+    const data = roster.map(({ entry }) => {
+      const batchStatusBySport = entry.sports.map((sport) => (
+        sportBatchStatuses.get(normalizeScopeValue(sport))
+      )).filter(Boolean);
+      const allCoachDocumentsApproved = entry.requirements.documents
+        .every((document) => document.status === 'approved');
+      const overallStatus = deriveOverallStatus(entry.requirements) === 'Completed' && allCoachDocumentsApproved
+        ? 'Coach-Approved'
+        : 'Incomplete';
+      return {
         ...entry,
-        overallStatus: deriveOverallStatus(entry.requirements),
-      }));
+        batchStatusBySport,
+        overallStatus,
+      };
+    });
 
     return res.json({ success: true, count: data.length, data });
   } catch (error) {
@@ -749,19 +898,21 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
 // @desc    Mark a resubmitted requirement as viewed by the screener
 // @route   PUT /api/v1/screener/requirements/:id/viewed
 // @access  Private/Screener
-router.put('/screener/requirements/:id/viewed', protect, authorize('admin'), async (req, res) => {
+router.put('/screener/requirements/:id/viewed', protect, authorize('admin', 'screener'), async (req, res) => {
   try {
-    if (String(req.user?.role || '').toLowerCase() !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Student requirement screening has moved to the Coach Portal.' });
-    }
-
     const { id } = req.params;
     const RequirementModel = getStudentRequirementModel(req.body?.participationType);
     const submission = await RequirementModel.findById(id);
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Submission not found' });
     }
-    if (await denyOwnDepartmentAccess(req, res, submission)) return;
+    if (await denyScreenerDepartmentMismatch(req, res, submission)) return;
+    if (String(req.user?.role || '').toLowerCase() === 'screener' && submission.coachStatus !== 'approved') {
+      return res.status(409).json({
+        success: false,
+        message: 'This requirement is not available until its sport group is approved by the coach.'
+      });
+    }
 
     submission.resubmitted = false;
     await submission.save();
@@ -802,12 +953,8 @@ router.put('/coach/requirements/:id/viewed', protect, authorize('coach'), async 
 // @desc    Review a student requirement submission
 // @route   PUT /api/v1/screener/requirements/:id/review
 // @access  Private/Screener
-router.put('/screener/requirements/:id/review', protect, authorize('admin'), async (req, res) => {
+router.put('/screener/requirements/:id/review', protect, authorize('admin', 'screener'), async (req, res) => {
   try {
-    if (String(req.user?.role || '').toLowerCase() !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Student requirement screening has moved to the Coach Portal.' });
-    }
-
     const { id } = req.params;
     const { status, feedback = '', remarks = '', studentId, participationType } = req.body;
     const normalizedStatus = String(status || '').toLowerCase();
@@ -835,7 +982,13 @@ router.put('/screener/requirements/:id/review', protect, authorize('admin'), asy
       });
     }
 
-    if (await denyOwnDepartmentAccess(req, res, submission)) return;
+    if (await denyScreenerDepartmentMismatch(req, res, submission)) return;
+    if (String(req.user?.role || '').toLowerCase() === 'screener' && submission.coachStatus !== 'approved') {
+      return res.status(409).json({
+        success: false,
+        message: 'This requirement is not available until its sport group is approved by the coach.'
+      });
+    }
 
     if (studentId && String(submission.studentId) !== String(studentId)) {
       return res.status(403).json({
@@ -926,14 +1079,19 @@ router.put('/coach/requirements/:id/review', protect, authorize('coach'), async 
       });
     }
 
-    submission.status = normalizedStatus;
-    submission.remarks = [feedback, remarks].filter(Boolean).join(' — ');
-    submission.reviewedAt = new Date();
-    submission.reviewedBy = req.user?._id || req.user?.id || null;
-    submission.notificationReadAt = null;
-    if (normalizedStatus === 'approved') {
-      submission.approvedBy = req.user?._id || req.user?.id || null;
-      submission.approvalDate = new Date();
+    submission.coachStatus = normalizedStatus;
+    submission.coachRemarks = [feedback, remarks].filter(Boolean).join(' — ');
+    submission.coachReviewedAt = new Date();
+    submission.coachReviewedBy = req.user?._id || req.user?.id || null;
+    if (normalizedStatus === 'rejected') {
+      submission.status = 'rejected';
+      submission.remarks = submission.coachRemarks;
+      submission.reviewedAt = submission.coachReviewedAt;
+      submission.reviewedBy = submission.coachReviewedBy;
+      submission.notificationReadAt = null;
+    } else if (normalizedStatus === 'pending') {
+      submission.status = 'pending';
+      submission.remarks = submission.coachRemarks;
     }
     submission.resubmitted = false;
     await submission.save();
@@ -946,8 +1104,9 @@ router.put('/coach/requirements/:id/review', protect, authorize('coach'), async 
       data: {
         id: submission._id,
         status: submission.status,
+        coachStatus: submission.coachStatus,
         remarks: submission.remarks,
-        reviewedAt: submission.reviewedAt,
+        reviewedAt: submission.coachReviewedAt,
       },
     });
   } catch (error) {

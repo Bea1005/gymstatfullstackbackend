@@ -2,6 +2,7 @@ const express = require('express');
 const request = require('supertest');
 const { createRequirement } = require('../../src/controllers/requirementController');
 const requirementRoutes = require('../../src/routes/requirementRoutes');
+const { authorize } = require('../../src/middleware/auth');
 
 jest.mock('../../src/middleware/auth', () => ({
   protect: jest.fn((req, res, next) => next()),
@@ -34,9 +35,13 @@ describe('Admin requirement multipart upload route', () => {
   let app;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    createRequirement.mockClear();
     app = express();
     app.use('/api/v1/requirements', requirementRoutes);
+  });
+
+  it('allows coaches and screeners to fetch published requirement definitions', () => {
+    expect(authorize.mock.calls).toContainEqual(['student', 'coach', 'screener']);
   });
 
   it.each([

@@ -28,7 +28,7 @@ const {
 router.get('/admin/submissions', protect, authorize('admin'), getAllSubmissions);
 
 // Get all published requirements (Student view)
-router.get('/published', protect, authorize('student'), getPublishedRequirements);
+router.get('/published', protect, authorize('student', 'coach', 'screener'), getPublishedRequirements);
 
 // Get my submissions (BEFORE :id route)
 router.get('/my/submissions', protect, authorize('student'), getMySubmissions);
