@@ -3,8 +3,8 @@ const bcrypt = require('bcryptjs');
 
 const BCRYPT_COST = 12;
 const BCRYPT_HASH_PATTERN = /^\$2[aby]\$\d{2}\$/;
-const PASSWORD_PATTERN = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>_\-]).{8,}$/;
-const PASSWORD_POLICY_MESSAGE = 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.';
+const PASSWORD_PATTERN = /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>_\-]).{10,}$/;
+const PASSWORD_POLICY_MESSAGE = 'Password must be at least 10 characters and include uppercase, lowercase, number, and special character.';
 
 const isPasswordValid = (password) => PASSWORD_PATTERN.test(String(password || ''));
 

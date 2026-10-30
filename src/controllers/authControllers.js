@@ -34,7 +34,68 @@ const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a differ
 const DUPLICATE_EMAIL_MESSAGE = 'This email is already registered. Please use a different email address.';
 const GENERIC_REGISTRATION_OTP_MESSAGE = 'If a pending registration is associated with that email, a verification code can be sent.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const FULL_NAME_PATTERN = /^[\p{L}\p{M}]+(?:[\s'’.-][\p{L}\p{M}]+)*$/u;
+const DUMMY_FULL_NAME_VALUES = new Set([
+  'test', 'user', 'admin', 'guest', 'student', 'coach', 'example', 'sample',
+  'placeholder', 'dummy', 'demo', 'fake', 'null', 'undefined', 'n/a', 'na',
+  'asdf', 'qwerty', 'lorem', 'ipsum', 'foo', 'bar'
+]);
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', 'dispostable.com', 'temp-mail.org',
+  '10minutemail.com', 'throwawaymail.com', 'yopmail.com', 'yomail.info',
+  'trashmail.com', 'maildrop.cc'
+]);
+const DUMMY_EMAIL_PREFIXES = new Set([
+  'test', 'dummy', 'demo', 'sample', 'placeholder', 'guest', 'fake', 'invalid',
+  'noreply', 'no-reply', 'asdf', 'qwerty', 'lorem', 'ipsum'
+]);
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const isValidFullName = (value) => {
+  const trimmedValue = String(value || '').trim();
+  if (!trimmedValue || trimmedValue.length < 2) return false;
+  if (!/[\p{L}]/u.test(trimmedValue)) return false;
+  if (/\s{2,}/.test(trimmedValue) || /[\u0000-\u001F\u007F]/.test(trimmedValue)) return false;
+
+  const sanitizedLetters = trimmedValue.replace(/[\s'’.-]/g, '');
+  if (sanitizedLetters.length < 2) return false;
+  if (/(.)\1{4,}/u.test(sanitizedLetters)) return false;
+
+  const normalizedValue = trimmedValue.toLowerCase().replace(/[\s'’.-]+/g, ' ').trim();
+  if (DUMMY_FULL_NAME_VALUES.has(normalizedValue)) return false;
+  if (/^(?:test|user|guest|admin|student|coach|example|sample|dummy|demo|placeholder|fake|null|undefined|n\/a|na|asdf|qwerty|lorem|ipsum|foo|bar)$/i.test(normalizedValue)) {
+    return false;
+  }
+
+  const lettersOnly = sanitizedLetters.replace(/[^\p{L}]/gu, '');
+  const vowelCount = (lettersOnly.match(/[AEIOUaeiou]/g) || []).length;
+  const consonantRatio = lettersOnly.length ? (lettersOnly.length - vowelCount) / lettersOnly.length : 0;
+  if (lettersOnly.length >= 10 && consonantRatio >= 0.7 && !/\s/.test(trimmedValue)) {
+    return false;
+  }
+
+  return FULL_NAME_PATTERN.test(trimmedValue);
+};
+
+const isDummyEmailAddress = (email) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail || !EMAIL_PATTERN.test(normalizedEmail)) {
+    return false;
+  }
+
+  const [localPart, domain] = normalizedEmail.split('@');
+  if (!localPart || !domain) return false;
+  if (DISPOSABLE_EMAIL_DOMAINS.has(domain)) return true;
+  if (domain.includes('mailinator') || domain.includes('guerrillamail') || domain.includes('tempmail')) return true;
+
+  const normalizedLocalPart = localPart.replace(/[._+-]+/g, '').toLowerCase();
+  if (DUMMY_EMAIL_PREFIXES.has(normalizedLocalPart)) return true;
+  if (normalizedLocalPart.startsWith('test') || normalizedLocalPart.startsWith('dummy') || normalizedLocalPart.startsWith('sample') || normalizedLocalPart.startsWith('placeholder')) {
+    return true;
+  }
+
+  return false;
+};
 
 const respondWithPendingRegistration = (res, user) => {
   const now = Date.now();
@@ -122,10 +183,14 @@ const issueLoginOtpForScreener = async (user) => {
 
 const isValidId = (id) => {
   const trimmedId = String(id || '').trim();
+  if (!trimmedId || /\s/.test(trimmedId)) return false;
+
+  if (/^\d{4}-\d{4}$/.test(trimmedId)) {
+    return true;
+  }
+
   return Boolean(
-    trimmedId &&
     trimmedId.length >= 7 &&
-    !/\s/.test(trimmedId) &&
     /^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)
   );
 };
@@ -542,8 +607,20 @@ exports.register = async (req, res) => {
         message: 'Please provide all required fields: fullname, email, password, and ID'
       });
     }
-    if (!EMAIL_PATTERN.test(normalizedEmail)) {
-      return res.status(400).json({ success: false, message: 'Please provide a valid email address.' });
+
+    const trimmedFullName = String(fullname).trim();
+    if (!isValidFullName(trimmedFullName)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter a valid full name using letters and common name punctuation. Do not use placeholder or dummy names.'
+      });
+    }
+
+    if (!EMAIL_PATTERN.test(normalizedEmail) || isDummyEmailAddress(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please use a real email address that you regularly access.'
+      });
     }
 
     if (!isPasswordValid(password)) {
@@ -554,7 +631,7 @@ exports.register = async (req, res) => {
     if (!isValidId(trimmedId)) {
       return res.status(400).json({
         success: false,
-        message: 'ID must be at least 7 characters long and contain only letters, numbers, or common special characters.'
+        message: 'The ID number format is invalid. Coach IDs must use the format 0000-0000; student IDs must be at least 7 characters and use letters, numbers, or common special characters only.'
       });
     }
 
@@ -597,7 +674,7 @@ exports.register = async (req, res) => {
     const otp = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     const otpHash = hashResetValue(otp);
     const userPayload = {
-      fullname,
+      fullname: trimmedFullName,
       email: normalizedEmail,
       emailNormalized: normalizedEmail,
       emailVerified: false,
