@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../../src/models/User');
+const PendingRegistration = require('../../src/models/PendingRegistration');
 const RefreshSession = require('../../src/models/RefreshSession');
 const { getJWTSecret } = require('../../src/config/security');
 const { hashRefreshToken } = require('../../src/config/authTokens');
@@ -19,6 +20,13 @@ const {
 } = require('../../src/controllers/authControllers');
 
 jest.mock('../../src/models/User');
+jest.mock('../../src/models/PendingRegistration', () => ({
+  findOne: jest.fn(),
+  findOneAndUpdate: jest.fn(),
+  create: jest.fn(),
+  deleteOne: jest.fn(),
+  updateOne: jest.fn(),
+}));
 jest.mock('../../src/models/RefreshSession', () => ({
   create: jest.fn().mockResolvedValue({}),
   findOne: jest.fn(),
@@ -52,6 +60,11 @@ describe('Auth Controllers', () => {
     User.hasRegisteredId = jest.fn().mockResolvedValue(false);
     User.hasRegisteredEmail = jest.fn().mockResolvedValue(false);
     User.ensureEmailIndex = jest.fn().mockResolvedValue('emailNormalized_1');
+    PendingRegistration.findOne.mockResolvedValue(null);
+    PendingRegistration.findOneAndUpdate.mockResolvedValue(null);
+    PendingRegistration.create.mockImplementation(async (pending) => ({ _id: 'pending123', ...pending }));
+    PendingRegistration.deleteOne.mockResolvedValue({ deletedCount: 1 });
+    PendingRegistration.updateOne.mockResolvedValue({ ok: 1 });
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
