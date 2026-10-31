@@ -591,11 +591,11 @@ app.use((err, req, res, next) => {
     });
   }
 
-  if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.message === 'Unsupported schedule request file') {
+  if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.message === 'Unsupported schedule request file type') {
     return res.status(400).json({
       success: false,
-      message: err.message === 'Unsupported schedule request file'
-        ? 'The uploaded request letter is invalid.'
+      message: err.message === 'Unsupported schedule request file type'
+        ? 'Only PDF, PNG, and JPEG attachments are allowed.'
         : 'The uploaded file is invalid.'
     });
   }

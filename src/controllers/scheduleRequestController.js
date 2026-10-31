@@ -1,6 +1,7 @@
 const ScheduleRequest = require('../models/ScheduleRequest');
 const Schedule = require('../models/Schedule');
 const mongoose = require('mongoose');
+const path = require('path');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
 const { getScheduleClientType } = require('../utils/scheduleClientType');
@@ -93,15 +94,15 @@ exports.getPublicCalendarScheduleRequests = async (req, res) => {
 
 const isValidScheduleRequestFile = (file) => {
   if (!Buffer.isBuffer(file?.buffer)) return false;
-  const fileHeader = file.buffer.subarray(0, 4);
-  const bytesRead = fileHeader.length;
-
-  if (file.mimetype === 'application/pdf') return bytesRead >= 4 && fileHeader.toString('ascii', 0, 4) === '%PDF';
-  if (file.mimetype === 'application/msword') return bytesRead >= 4 && fileHeader.equals(Buffer.from([0xD0, 0xCF, 0x11, 0xE0]));
-  if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-    return bytesRead >= 4 && fileHeader[0] === 0x50 && fileHeader[1] === 0x4B;
-  }
-  return false;
+  const extension = path.extname(String(file.originalname || '')).toLowerCase();
+  const fileTypes = new Map([
+    ['.pdf', { mimeType: 'application/pdf', matches: (buffer) => buffer.length >= 5 && buffer.subarray(0, 5).toString('ascii') === '%PDF-' }],
+    ['.png', { mimeType: 'image/png', matches: (buffer) => buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) }],
+    ['.jpg', { mimeType: 'image/jpeg', matches: (buffer) => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff }],
+    ['.jpeg', { mimeType: 'image/jpeg', matches: (buffer) => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff }],
+  ]);
+  const type = fileTypes.get(extension);
+  return Boolean(type && file.mimetype === type.mimeType && type.matches(file.buffer));
 };
 
 // Create a new schedule request
@@ -109,7 +110,10 @@ exports.createScheduleRequest = async (req, res) => {
   let storedFileReference;
   try {
     if (!isValidScheduleRequestFile(req.file)) {
-      return res.status(400).json({ success: false, message: 'The uploaded request letter could not be verified.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Only valid PDF, PNG, and JPEG attachments are supported.'
+      });
     }
 
     const requestData = {
@@ -206,6 +210,7 @@ exports.downloadScheduleRequestFile = async (req, res) => {
       if (!fileBuffer.length) return res.status(404).json({ success: false, message: 'File not found' });
 
       res.setHeader('Content-Type', request.file.mimetype || 'application/octet-stream');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       return res.attachment(request.file.originalname || request.file.filename || 'request-letter').send(fileBuffer);
     }
     if (!storageKey) return res.status(404).json({ success: false, message: 'File not found' });
@@ -214,6 +219,7 @@ exports.downloadScheduleRequestFile = async (req, res) => {
       filename: request.file.originalname || 'request-letter',
       contentType: request.file.mimetype || 'application/octet-stream',
       fallbackFilename: request.file.filename,
+      disposition: 'inline',
     });
     if (!streamed) return res.status(404).json({ success: false, message: 'File not found' });
     return res;
@@ -501,3 +507,5 @@ exports.getRequestsByStatus = async (req, res) => {
     });
   }
 };
+
+exports.isValidScheduleRequestFile = isValidScheduleRequestFile;

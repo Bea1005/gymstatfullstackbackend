@@ -89,6 +89,7 @@ describe('getPublicCalendarScheduleRequests', () => {
       const requests = [{
         _id: 'request-id',
         eventName: 'Campus Event',
+        requesterPhone: '09171234567',
         file: {
           filename: 'request.pdf',
           originalname: 'request.pdf',
@@ -111,6 +112,7 @@ describe('getPublicCalendarScheduleRequests', () => {
       expect(res.statusCode).toBe(200);
       expect(res._getJSONData().data[0]).toMatchObject({
         eventName: 'Campus Event',
+        requesterPhone: '09171234567',
         file: { originalname: 'request.pdf', storageKey: 'gridfs://file-id' }
       });
     });
@@ -125,6 +127,7 @@ describe('getPublicCalendarScheduleRequests', () => {
         status: 'pending',
         requesterName: 'Requester',
         requesterEmail: 'requester@example.com',
+        requesterPhone: '09171234567',
         eventName: 'Campus Event',
         startDate: '2026-11-01',
         endDate: '2026-11-01',

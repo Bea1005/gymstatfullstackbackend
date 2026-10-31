@@ -417,6 +417,133 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
+
+const SMS_RESET_OTP_TTL_MS_CONST = 5 * 60 * 1000;
+const SMS_RESET_OTP_COOLDOWN_MS_CONST = 60 * 1000;
+const SMS_RESET_OTP_MAX_ATTEMPTS_CONST = 5;
+const GENERIC_SMS_RESET_MESSAGE = 'If a registered contact number is associated with that account, a verification code has been sent.';
+
+exports.requestPasswordResetBySms = async (req, res) => {
+  try {
+    const rawPhone = String(req.body && req.body.phoneNumber || '').trim();
+    const normalizedPhone = normalizePhoneNumber(rawPhone);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid Philippine mobile number in the format 09XXXXXXXXX or +639XXXXXXXXX.'
+      });
+    }
+
+    const user = await User.findOne({ contactNumber: normalizedPhone })
+      .select('+passwordResetSmsOtpHash +passwordResetSmsOtpExpiresAt +passwordResetSmsOtpAttempts +passwordResetSmsLastSentAt');
+    if (!user) return res.status(202).json({ success: true, message: GENERIC_SMS_RESET_MESSAGE });
+
+    const now = Date.now();
+    if (user.passwordResetSmsLastSentAt && now - new Date(user.passwordResetSmsLastSentAt).getTime() < SMS_RESET_OTP_COOLDOWN_MS_CONST) {
+      return res.status(202).json({ success: true, message: GENERIC_SMS_RESET_MESSAGE });
+    }
+
+    const otp = String(crypto.randomInt(100000, 1000000));
+    user.passwordResetSmsOtpHash = hashResetValue(otp);
+    user.passwordResetSmsOtpExpiresAt = new Date(now + SMS_RESET_OTP_TTL_MS_CONST);
+    user.passwordResetSmsOtpAttempts = 0;
+    user.passwordResetSmsLastSentAt = new Date(now);
+    await user.save();
+
+    try {
+      const { sendContactVerificationOtp } = require('../config/sms');
+      await sendContactVerificationOtp(normalizedPhone, otp, SMS_RESET_OTP_TTL_MS_CONST / 60000);
+    } catch (smsError) {
+      user.passwordResetSmsOtpHash = null;
+      user.passwordResetSmsOtpExpiresAt = null;
+      user.passwordResetSmsOtpAttempts = 0;
+      user.passwordResetSmsLastSentAt = null;
+      await user.save();
+      console.error('Password reset SMS delivery failed:', smsError && smsError.code || 'unknown');
+      return res.status(503).json({
+        success: false,
+        message: smsError && smsError.message || 'The SMS verification code could not be sent. Please use the email recovery option or try again later.'
+      });
+    }
+
+    return res.status(202).json({ success: true, message: GENERIC_SMS_RESET_MESSAGE });
+  } catch (error) {
+    console.error('SMS password reset request failed:', error && error.message || error);
+    return res.status(500).json({ success: false, message: 'Unable to process the request. Please try again later.' });
+  }
+};
+
+exports.verifyPasswordResetSmsOtp = async (req, res) => {
+  try {
+    const rawPhone = String(req.body && req.body.phoneNumber || '').trim();
+    const otp = String(req.body && req.body.otp || '').trim();
+    const normalizedPhone = normalizePhoneNumber(rawPhone);
+
+    if (!normalizedPhone) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid Philippine mobile number.' });
+    }
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    const user = await User.findOne({ contactNumber: normalizedPhone })
+      .select('+passwordResetSmsOtpHash +passwordResetSmsOtpExpiresAt +passwordResetSmsOtpAttempts +passwordResetTokenHash +passwordResetTokenExpiresAt +passwordResetTokenConsumedAt');
+    const now = Date.now();
+
+    if (!user || !user.passwordResetSmsOtpHash || !user.passwordResetSmsOtpExpiresAt || new Date(user.passwordResetSmsOtpExpiresAt).getTime() <= now) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    if ((user.passwordResetSmsOtpAttempts || 0) >= SMS_RESET_OTP_MAX_ATTEMPTS_CONST) {
+      user.passwordResetSmsOtpHash = null;
+      user.passwordResetSmsOtpExpiresAt = null;
+      user.passwordResetSmsOtpAttempts = 0;
+      user.passwordResetSmsLastSentAt = null;
+      await user.save();
+      return res.status(429).json({ success: false, message: 'Too many verification attempts. Please request a new code.' });
+    }
+
+    user.passwordResetSmsOtpAttempts = (user.passwordResetSmsOtpAttempts || 0) + 1;
+    if (!resetValueMatches(otp, user.passwordResetSmsOtpHash)) {
+      await user.save();
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('base64url');
+    const resetTokenUpdate = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        contactNumber: normalizedPhone,
+        passwordResetSmsOtpHash: user.passwordResetSmsOtpHash,
+        passwordResetSmsOtpExpiresAt: { $gt: new Date(now) },
+      },
+      {
+        $set: {
+          passwordResetSmsOtpHash: null,
+          passwordResetSmsOtpExpiresAt: null,
+          passwordResetSmsOtpAttempts: 0,
+          passwordResetTokenHash: hashResetValue(resetToken),
+          passwordResetTokenExpiresAt: new Date(now + RESET_TOKEN_TTL_MS),
+          passwordResetTokenConsumedAt: null,
+        },
+      },
+      { new: true }
+    );
+
+    if (!resetTokenUpdate) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+    }
+
+    const maskedEmail = user.email
+      ? user.email.replace(/^(.{2}).+(@.+)$/, '$1***$2')
+      : '';
+    return res.json({ success: true, message: 'Verification successful.', resetToken, email: user.email || '', maskedEmail });
+  } catch (error) {
+    console.error('SMS password reset verification failed:', error && error.message || error);
+    return res.status(500).json({ success: false, message: 'Unable to verify the code. Please try again later.' });
+  }
+};
+
 exports.verifyRegistrationOtp = async (req, res) => {
   try {
     const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();

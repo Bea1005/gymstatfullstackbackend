@@ -11,7 +11,9 @@ const {
   logout,
   requestPasswordReset,
   verifyPasswordResetOtp,
-  resetPassword
+  resetPassword,
+  requestPasswordResetBySms,
+  verifyPasswordResetSmsOtp
 } = require('../controllers/authControllers');
 const {
   loginRateLimiter,
@@ -34,5 +36,7 @@ router.post('/logout', csrfProtection, logout);
 router.post('/forgot-password/request', passwordResetRateLimiter, requestPasswordReset);
 router.post('/forgot-password/verify', passwordResetRateLimiter, verifyPasswordResetOtp);
 router.post('/forgot-password/reset', passwordResetRateLimiter, resetPassword);
+router.post('/forgot-password/request-sms', passwordResetRateLimiter, requestPasswordResetBySms);
+router.post('/forgot-password/verify-sms', passwordResetRateLimiter, verifyPasswordResetSmsOtp);
 
 module.exports = router;

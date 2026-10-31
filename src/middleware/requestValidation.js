@@ -35,7 +35,7 @@ const KNOWN_FIELDS = new Set([
   'startDate', 'startTime', 'endDate', 'endTime', 'prepDays', 'status', 'rejectionReason', 'fromRequest',
   'Name', 'contactNo', 'facebookAccount', 'equipment', 'quantity', 'qty', 'referenceIds', 'referenceConditions',
   'borrowTimestamp', 'returnedTimestamp', 'returnedAt', 'condition', 'name', 'type', 'referenceId', 'category',
-  'totalStock', 'onLoan', 'equipmentType', 'notifications', 'contactNumber', 'dateOfBirth', 'dob', 'branchCampus',
+  'totalStock', 'onLoan', 'equipmentType', 'notifications', 'contactNumber', 'phoneNumber', 'dateOfBirth', 'dob', 'branchCampus',
   'graduationYear', 'athleteStatus', 'profilePhoto', 'sportParticipation', 'coachPosition', 'staffMembers',
   'studentId', 'course', 'location', 'photo', 'requirementType', 'participationType', 'requirementId', 'verificationMethod',
   'replacementSubmissionId', 'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',

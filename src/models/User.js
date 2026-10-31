@@ -221,6 +221,26 @@ const baseUserSchema = new mongoose.Schema({
     default: null,
     select: false
   },
+  passwordResetSmsOtpHash: {
+    type: String,
+    default: null,
+    select: false
+  },
+  passwordResetSmsOtpExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  passwordResetSmsOtpAttempts: {
+    type: Number,
+    default: 0,
+    select: false
+  },
+  passwordResetSmsLastSentAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
   passwordResetTokenHash: {
     type: String,
     default: null,

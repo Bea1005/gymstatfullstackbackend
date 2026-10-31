@@ -56,6 +56,7 @@ describe('Public schedule-request calendar route', () => {
       endTime: '12:00 PM',
       prepDays: 1,
       status: 'pending',
+      clientType: 'External Client',
     });
     expect(protect).not.toHaveBeenCalled();
     expect(authorize).toHaveBeenCalledTimes(adminAuthorizationSetupCount);
