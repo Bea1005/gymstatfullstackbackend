@@ -9,7 +9,7 @@ const SPORTS_EQUIPMENT_OPTIONS = [
   'Water Jug', 'Scoreboard', 'Spalding Ball', 'Volleyball Mikasa', 'Racket'
 ];
 
-const VALID_CONDITIONS = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'];
+const VALID_CONDITIONS = ['Good', 'Damaged', 'Lost', 'Repair', 'Under Repair', 'Fair', 'Poor'];
 const VALID_CATEGORIES = ['Balls', 'Rackets', 'Net', 'General', 'Sports Equipment'];
 const VALID_STATUSES = ['Available', 'Low Stock', 'Out of Stock'];
 

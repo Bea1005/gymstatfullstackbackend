@@ -432,7 +432,7 @@ describe('Borrowing Controller Unit Tests', () => {
   describe('PUT /admin/borrowing/:id (updateBorrowingRecord)', () => {
     it('should update matching equipment conditions by reference ID when conditions change', async () => {
       req.params = { id: 'borrow-123' };
-      req.body = { referenceConditions: ['Damaged', 'Good'] };
+      req.body = { referenceConditions: ['Damaged', 'Repair'] };
 
       const fakeBorrowing = {
         _id: 'borrow-123',
@@ -469,7 +469,7 @@ describe('Borrowing Controller Unit Tests', () => {
       Borrowing.findById.mockResolvedValue(fakeBorrowing);
       Borrowing.findByIdAndUpdate.mockResolvedValue({
         ...fakeBorrowing,
-        referenceConditions: ['Damaged', 'Good']
+        referenceConditions: ['Damaged', 'Repair']
       });
       Equipment.findOne
         .mockResolvedValueOnce(firstEquipment)
@@ -480,9 +480,9 @@ describe('Borrowing Controller Unit Tests', () => {
       expect(Equipment.findOne).toHaveBeenNthCalledWith(1, { referenceId: 'BB-001' });
       expect(Equipment.findOne).toHaveBeenNthCalledWith(2, { referenceId: 'BB-002' });
       expect(firstEquipment.condition).toBe('Damaged');
-      expect(secondEquipment.condition).toBe('Good');
+      expect(secondEquipment.condition).toBe('Repair');
       expect(firstEquipment.save).toHaveBeenCalled();
-      expect(secondEquipment.save).not.toHaveBeenCalled();
+      expect(secondEquipment.save).toHaveBeenCalled();
       expect(res.statusCode).toBe(200);
     });
 

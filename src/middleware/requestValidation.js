@@ -15,6 +15,19 @@ const COACH_RECORD_CONTENT_FIELDS = new Set([
 ]);
 const FORMATTED_TEXT_FIELDS = COACH_RECORD_CONTENT_FIELDS;
 const BORROWING_CREATE_FIELDS = new Set(['equipmentItems']);
+const REGISTRATION_FIELDS = new Set([
+  'fullname',
+  'email',
+  'password',
+  'department',
+  'yearLevel',
+  'sport',
+  'sports',
+  'id',
+  'role',
+  'contactNumber',
+  'verificationMethod',
+]);
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
   'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
@@ -24,7 +37,7 @@ const KNOWN_FIELDS = new Set([
   'borrowTimestamp', 'returnedTimestamp', 'returnedAt', 'condition', 'name', 'type', 'referenceId', 'category',
   'totalStock', 'onLoan', 'equipmentType', 'notifications', 'contactNumber', 'dateOfBirth', 'dob', 'branchCampus',
   'graduationYear', 'athleteStatus', 'profilePhoto', 'sportParticipation', 'coachPosition', 'staffMembers',
-  'studentId', 'course', 'location', 'photo', 'requirementType', 'participationType', 'requirementId',
+  'studentId', 'course', 'location', 'photo', 'requirementType', 'participationType', 'requirementId', 'verificationMethod',
   'replacementSubmissionId', 'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',
   'targetStudents', 'sports', 'file', 'filename', 'originalname', 'mimetype', 'size', 'path', 'data', 'remarks', 'feedback',
   'grade', 'ids', 'createdBy', 'reviewedAt', 'reviewedBy'
@@ -35,7 +48,8 @@ const allowedValues = {
   status: new Set(['active', 'cancelled', 'completed', 'pending', 'approved', 'rejected', 'returned', 'out now', 'out']),
   yearLevel: new Set(['', 'I', 'II', 'III', 'IV']),
   branchCampus: new Set(['', 'Boac Main', 'Santa Cruz', 'Gasan', 'Torrijos']),
-  condition: new Set(['Good', 'Fair', 'Damaged', 'Lost', 'Returned']),
+  verificationMethod: new Set(['email', 'sms']),
+  condition: new Set(['Good', 'Fair', 'Damaged', 'Lost', 'Repair', 'Under Repair', 'Returned']),
   priority: new Set(['low', 'medium', 'high']),
   targetStudents: new Set(['all', 'student', 'student-athlete', 'sport-specific'])
 };
@@ -150,6 +164,8 @@ const validateRequestBody = (req, res, next) => {
       && /(?:^|\/)coach\/record-content\/(?:form-header|eligibility|director)\/?$/.test(req.path);
     const isBorrowingCreate = req.method === 'POST'
       && /(?:^|\/)admin\/borrowing\/?$/.test(req.path);
+    const isRegistration = req.method === 'POST'
+      && /(?:^|\/)register\/?$/.test(req.path);
     req.body = normalizeKeyValue(
       'body',
       req.body,
@@ -164,9 +180,10 @@ const validateRequestBody = (req, res, next) => {
         ? COACH_RECORD_CONTENT_FIELDS
         : isBorrowingCreate
           ? BORROWING_CREATE_FIELDS
+          : isRegistration
+            ? REGISTRATION_FIELDS
           : undefined
     );
-    const isRegistration = /\/register$/.test(req.path);
     const passwordValue = isRegistration ? req.body.password : req.body.newPassword;
     if (passwordValue !== undefined && !isPasswordValid(passwordValue)) {
       return res.status(400).json({ success: false, message: PASSWORD_POLICY_MESSAGE });

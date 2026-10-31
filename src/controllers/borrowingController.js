@@ -1,7 +1,7 @@
 const Borrowing = require('../models/Borrowing');
 const Equipment = require('../models/Equipment');
 
-const VALID_CONDITION_VALUES = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'];
+const VALID_CONDITION_VALUES = ['Good', 'Damaged', 'Lost', 'Repair', 'Under Repair', 'Fair', 'Poor'];
 
 const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');

@@ -442,11 +442,61 @@ const sendScreenerAuthorizationEmail = async (email, screenerName, confirmUrl) =
     throw createEmailError('SMTP email delivery failed.', code);
   }
 };
+// Delivers a contact-number OTP via email when SMS is not available.
+// Uses the existing Brevo email channel -- no SMS credits required.
+// The OTP is the same secure 6-digit code used for contact verification;
+// only the delivery channel changes from SMS to email.
+const sendContactOtpViaEmail = async (email, contactNumber, otp, expiresInMinutes) => {
+  const maskedContact = String(contactNumber || '').replace(/(.{3}).+(.{3})$/, '$1****$2');
+  const subject = 'GYMSTAT contact number verification code';
+  const text = [
+    'GYMSTAT contact number verification',
+    '',
+    'You requested OTP verification for contact number ' + maskedContact + '.',
+    'Your verification code is ' + otp + '.',
+    'This code expires in ' + expiresInMinutes + ' minutes.',
+    '',
+    'If you did not request this, you can ignore this email.'
+  ].join('\n');
+  const html = [
+    '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#333">',
+    '<h2 style="color:#7a0a0a">GYMSTAT contact number verification</h2>',
+    '<p>You requested OTP verification for contact number <strong>' + escapeEmailHtml(maskedContact) + '</strong>.</p>',
+    '<p>Use this code to complete your registration:</p>',
+    '<p style="font-size:28px;font-weight:700;letter-spacing:6px;color:#7a0a0a">' + otp + '</p>',
+    '<p>This code expires in ' + expiresInMinutes + ' minutes.</p>',
+    '<p>If you did not request this, you can ignore this email.</p>',
+    '</div>'
+  ].join('');
+
+  if (getSetting('BREVO_API_KEY')) {
+    try {
+      return await sendViaBrevo(email, subject, text, html);
+    } catch (brevoError) {
+      if (!hasSmtpConfiguration()) throw brevoError;
+      console.warn('Brevo contact OTP email failed [' + (brevoError && brevoError.code || 'unknown') + ']; trying SMTP fallback.');
+    }
+  }
+
+  try {
+    const transporter = getEmailTransport();
+    await transporter.sendMail({
+      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
+      to: email, subject, text, html
+    });
+  } catch (error) {
+    if (error && error.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
+    const code = error && error.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
+    throw createEmailError('SMTP email delivery failed.', code);
+  }
+};
+
 module.exports = {
   getEmailConfigurationStatus,
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
   sendRegistrationVerificationOtp,
+  sendContactOtpViaEmail,
   sendScreenerAccountCreatedEmail,
   sendScheduleRequestStatusEmail,
   sendScreenerAuthorizationEmail

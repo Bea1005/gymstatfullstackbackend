@@ -152,6 +152,24 @@ describe('Auth Middleware Tests', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
+    it('allows a verified contact-number account to access protected routes', async () => {
+      req.headers = { authorization: 'Bearer sms-access-token' };
+      jwt.verify.mockReturnValue({ id: 'sms-user', role: 'student' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({
+          _id: 'sms-user',
+          role: 'student',
+          emailVerified: false,
+          contactNumberVerified: true,
+        })
+      });
+
+      await protect(req, res, next);
+
+      expect(res.statusCode).toBe(200);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
     it('should reject an access token issued before the password was reset', async () => {
       req.headers = { authorization: 'Bearer old_access_token' };
       const passwordChangedAt = new Date(Date.now() - 5_000);

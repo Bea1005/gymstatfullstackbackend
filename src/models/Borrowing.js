@@ -69,7 +69,7 @@ const borrowingSchema = new mongoose.Schema({
   },
   condition: {
     type: String,
-    enum: ['Good', 'Damaged', 'Lost', 'Under Repair', null],
+    enum: ['Good', 'Damaged', 'Lost', 'Repair', 'Under Repair', null],
     default: null
   },
   borrowTimestamp: {

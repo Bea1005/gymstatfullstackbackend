@@ -540,7 +540,7 @@ describe('Equipment Controller Unit Tests', () => {
   });
 
   describe('PUT /admin/equipment/:id (updateEquipment)', () => {
-    it.each(['Good', 'Damaged', 'Lost'])('saves the selected %s condition without changing other equipment fields', async (condition) => {
+    it.each(['Good', 'Damaged', 'Lost', 'Repair'])('saves the selected %s condition without changing other equipment fields', async (condition) => {
       req.params = { id: '12345' };
       req.body = { condition };
       const existingEquipment = {

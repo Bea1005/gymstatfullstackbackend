@@ -68,10 +68,10 @@ exports.protect = async (req, res, next) => {
       });
     }
 
-    if (user.emailVerified === false) {
+    if (user.emailVerified === false && user.contactNumberVerified !== true) {
       return res.status(403).json({
         success: false,
-        message: 'Email verification is required before accessing this account.'
+        message: 'Email verification is required unless your contact number has been verified.'
       });
     }
 

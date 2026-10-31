@@ -112,7 +112,7 @@ const syncReferenceConditionsToEquipment = async (borrowing) => {
   const fallbackConditions = Array.isArray(borrowing.referenceConditions)
     ? borrowing.referenceConditions
     : [];
-  const fallbackCondition = ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(borrowing.condition)
+  const fallbackCondition = ['Good', 'Damaged', 'Lost', 'Repair', 'Under Repair', 'Fair', 'Poor'].includes(borrowing.condition)
     ? borrowing.condition
     : null;
   let flattenedIndex = 0;
@@ -129,7 +129,7 @@ const syncReferenceConditionsToEquipment = async (borrowing) => {
       const legacyCondition = fallbackConditions[flattenedIndex]
         || (fallbackConditions.length === 1 ? fallbackConditions[0] : null);
       const resolvedCondition = [legacyCondition, groupCondition, fallbackCondition]
-        .find((value) => ['Good', 'Damaged', 'Lost', 'Under Repair', 'Fair', 'Poor'].includes(value))
+        .find((value) => ['Good', 'Damaged', 'Lost', 'Repair', 'Under Repair', 'Fair', 'Poor'].includes(value))
         || 'Good';
 
       if (equipmentItem.condition !== resolvedCondition) {
@@ -456,7 +456,7 @@ router.put('/admin/borrowing/:id/return', protect, authorize('admin'), async (re
       return res.status(400).json({ error: 'Item already returned' });
     }
 
-    const validConditions = ['Good', 'Damaged', 'Lost'];
+    const validConditions = ['Good', 'Damaged', 'Lost', 'Repair', 'Under Repair'];
     const requestedReferenceIds = Array.isArray(req.body.referenceIds) && req.body.referenceIds.length > 0
       ? req.body.referenceIds.filter(Boolean)
       : (Array.isArray(borrowing.referenceIds) ? borrowing.referenceIds.filter(Boolean) : []);

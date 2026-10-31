@@ -23,6 +23,15 @@ const baseUserSchema = new mongoose.Schema({
   emailVerified: {
     type: Boolean
   },
+  verificationMethod: {
+    type: String,
+    enum: ['email', 'sms'],
+    default: undefined
+  },
+  contactNumberVerified: {
+    type: Boolean,
+    default: false
+  },
   registrationOtpHash: {
     type: String,
     default: null,

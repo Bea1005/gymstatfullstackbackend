@@ -2,6 +2,75 @@ const httpMocks = require('node-mocks-http');
 const { validateRequestBody } = require('../../src/middleware/requestValidation');
 
 describe('validateRequestBody requirement upload fields', () => {
+  it('accepts the complete registration payload including phone verification fields', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/register',
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@gmail.com',
+        password: 'Password1!',
+        department: 'CICS',
+        sport: 'Basketball',
+        sports: ['Basketball'],
+        id: '23B1509',
+        contactNumber: '09171234567',
+        verificationMethod: 'sms',
+        role: 'student',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body).toEqual(expect.objectContaining({
+      contactNumber: '09171234567',
+      verificationMethod: 'sms',
+      role: 'student',
+      sports: ['Basketball'],
+    }));
+  });
+
+  it('continues rejecting unknown fields on registration requests', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/register',
+      body: {
+        fullname: 'Jane Doe',
+        email: 'jane@gmail.com',
+        password: 'Password1!',
+        contactNumber: '09171234567',
+        verificationMethod: 'sms',
+        extraField: 'not allowed',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
+  it('accepts Repair as an equipment condition', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/admin/equipment/eq-123',
+      body: { condition: 'Repair' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.condition).toBe('Repair');
+  });
+
   it('accepts grouped equipment fields when creating an Admin borrowing', () => {
     const req = httpMocks.createRequest({
       method: 'POST',

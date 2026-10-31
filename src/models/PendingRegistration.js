@@ -20,6 +20,16 @@ const pendingRegistrationSchema = new mongoose.Schema({
     unique: true,
     sparse: true
   },
+  contactNumber: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  verificationMethod: {
+    type: String,
+    enum: ['email', 'sms'],
+    default: 'email'
+  },
   password: {
     type: String,
     required: true
@@ -77,6 +87,31 @@ const pendingRegistrationSchema = new mongoose.Schema({
     default: 0,
     select: false
   },
+  contactOtpHash: {
+    type: String,
+    default: null,
+    select: false
+  },
+  contactOtpExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  contactOtpAttempts: {
+    type: Number,
+    default: 0,
+    select: false
+  },
+  contactOtpLastSentAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  contactOtpResendCount: {
+    type: Number,
+    default: 0,
+    select: false
+  },
   emailVerified: {
     type: Boolean,
     default: false
@@ -96,5 +131,9 @@ const pendingRegistrationSchema = new mongoose.Schema({
 
 pendingRegistrationSchema.index({ emailNormalized: 1 }, { unique: true, sparse: true });
 pendingRegistrationSchema.index({ id: 1 }, { unique: true, sparse: true });
+pendingRegistrationSchema.index(
+  { contactNumber: 1 },
+  { unique: true, partialFilterExpression: { contactNumber: { $type: 'string', $gt: '' } } }
+);
 
 module.exports = mongoose.model('PendingRegistration', pendingRegistrationSchema, 'pending_registrations');
