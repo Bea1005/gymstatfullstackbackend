@@ -481,7 +481,14 @@ exports.markRequirementNotificationRead = async (req, res) => {
 
     const RequirementModel = getStudentRequirementModel(req.body?.participationType);
     const requirement = await RequirementModel.findOneAndUpdate(
-      { _id: req.params.id, studentId, status: { $in: ['approved', 'rejected'] } },
+      {
+        _id: req.params.id,
+        studentId,
+        $or: [
+          { status: { $in: ['approved', 'rejected'] } },
+          { coachStatus: { $in: ['approved', 'rejected'] } }
+        ]
+      },
       { notificationReadAt: new Date() },
       { new: true }
     ).select('_id notificationReadAt');

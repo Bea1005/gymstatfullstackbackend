@@ -9,6 +9,7 @@ const { getJWTSecret } = require('../../src/config/security');
 const { hashRefreshToken } = require('../../src/config/authTokens');
 const {
   register,
+  checkStudentIdAvailability,
   verifyRegistrationOtp,
   resendRegistrationOtp,
   login,
@@ -81,6 +82,7 @@ describe('Auth Controllers', () => {
         username: 'janedoe',
         email: 'jane@example.com',
         password: 'Password1!',
+        contactNumber: '09171234567',
         role: 'coach',
         department: 'CICS',
         id: '23B1509'
@@ -124,6 +126,7 @@ describe('Auth Controllers', () => {
         fullname: 'Jane Doe',
         email: 'jane@example.com',
         password: 'Password1!',
+        contactNumber: '09171234567',
         id: '23B1509'
       }
     });
@@ -452,6 +455,7 @@ describe('Auth Controllers', () => {
         username: 'janedoe',
         email: 'jane@example.com',
         password: 'Password1!',
+        contactNumber: '09171234567',
         role: 'student',
         id: 'ABC12'
       }
@@ -464,6 +468,51 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().message).toContain('7');
   });
 
+  it.each(['23B149', '23B14960', '23A1509', '24B1509', '23B15A9', 'B231496'])(
+    'rejects student ID %s that does not match the required format',
+    async (id) => {
+      const req = httpMocks.createRequest({
+        body: {
+          fullname: 'Jane Doe',
+          email: 'jane@example.com',
+          password: 'Password1!',
+          contactNumber: '09171234567',
+          id
+        }
+      });
+      const res = httpMocks.createResponse();
+
+      await register(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res._getJSONData().message).toContain('23 followed by B, G, S, or T and four digits');
+      expect(PendingRegistration.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it('checks whether a valid student ID is already associated with an account', async () => {
+    User.findOne.mockResolvedValue({ id: '23B1496' });
+    const res = httpMocks.createResponse();
+
+    await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23B1496' } }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toEqual({
+      success: true,
+      available: false,
+      message: 'This ID is already registered. Please use a different ID.'
+    });
+  });
+
+  it('rejects malformed student IDs in the availability check', async () => {
+    const res = httpMocks.createResponse();
+
+    await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23A1509' } }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(User.findOne).not.toHaveBeenCalled();
+  });
+
   it('rejects duplicate IDs during registration', async () => {
     const req = httpMocks.createRequest({
       body: {
@@ -471,13 +520,14 @@ describe('Auth Controllers', () => {
         username: 'janedoe',
         email: 'jane@example.com',
         password: 'Password1!',
+        contactNumber: '09171234567',
         role: 'student',
         id: '23B1509'
       }
     });
     const res = httpMocks.createResponse();
 
-    User.hasRegisteredId.mockResolvedValue(true);
+    User.findOne.mockResolvedValue({ id: '23B1509' });
 
     await register(req, res);
 
@@ -604,15 +654,16 @@ describe('Auth Controllers', () => {
     expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
   });
 
-  it('keeps the default student role for a valid long ID during registration', async () => {
+  it('keeps the default student role for a valid student ID during registration', async () => {
     const req = httpMocks.createRequest({
       body: {
         fullname: 'Coach User',
         username: 'coachuser',
         email: 'coach@example.com',
         password: 'Password1!',
+        contactNumber: '09171234567',
         role: 'coach',
-        id: 'A1234567'
+        id: '23G1509'
       }
     });
     const res = httpMocks.createResponse();
@@ -628,7 +679,7 @@ describe('Auth Controllers', () => {
       role: 'student',
       department: '',
       sport: '',
-      id: 'A1234567'
+      id: '23G1509'
     });
 
     await register(req, res);

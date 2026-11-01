@@ -4,6 +4,10 @@ const mongoose = require('mongoose');
 const Borrowing = require('../models/Borrowing');
 const Equipment = require('../models/Equipment');
 const { protect, authorize } = require('../middleware/auth');
+const {
+  getCurrentManilaBorrowingDateTime,
+  validateBorrowingDateTime,
+} = require('../utils/borrowingDateTime');
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -89,6 +93,8 @@ const buildBorrowingResponse = (borrowing) => {
     fullname: borrowing.Name || borrowing.fullname || '',
     contactNo: borrowing.contactNo || '',
     facebookAccount: borrowing.facebookAccount || '',
+    borrowerType: borrowing.borrowerType || '',
+    borrowerTypeOther: borrowing.borrowerTypeOther || '',
     equipment: borrowing.equipment || '',
     equipmentItems,
     referenceIds: borrowing.referenceIds || [],
@@ -231,6 +237,8 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       fullname,
       contactNo,
       facebookAccount,
+      borrowerType,
+      borrowerTypeOther,
       equipmentItems,
       equipment,
       quantity,
@@ -244,10 +252,15 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       condition
     } = req.body;
     const borrowerName = normalizeText(Name || fullname);
+    const normalizedBorrowerType = normalizeText(borrowerType);
+    const normalizedBorrowerTypeOther = normalizeText(borrowerTypeOther);
     const normalizedBorrowTimestamp = normalizeTimestampObject(borrowTimestamp);
     const normalizedReturnedTimestamp = returnedTimestamp && typeof returnedTimestamp === 'object'
       ? normalizeTimestampObject(returnedTimestamp)
       : null;
+    const borrowingDateTime = normalizedBorrowTimestamp.date || normalizedBorrowTimestamp.time
+      ? validateBorrowingDateTime(normalizedBorrowTimestamp.date, normalizedBorrowTimestamp.time)
+      : getCurrentManilaBorrowingDateTime();
     const itemGroups = normalizeEquipmentItems(equipmentItems, {
       equipment,
       quantity,
@@ -258,6 +271,16 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
 
     if (!borrowerName || itemGroups.length === 0) {
       return res.status(400).json({ error: 'Borrower and equipment are required.' });
+    }
+    const validBorrowerTypes = ['Student', 'Faculty', 'Coach/Trainer', 'Others (Office/Agency)'];
+    if (normalizedBorrowerType && !validBorrowerTypes.includes(normalizedBorrowerType)) {
+      return res.status(400).json({ error: 'Select a valid borrower type.' });
+    }
+    if (normalizedBorrowerType === 'Others (Office/Agency)' && !normalizedBorrowerTypeOther) {
+      return res.status(400).json({ error: 'Enter the office or agency name for this borrower type.' });
+    }
+    if (borrowingDateTime.error) {
+      return res.status(400).json({ error: borrowingDateTime.error });
     }
     if (itemGroups.some((item) => (
       !item.equipment
@@ -289,7 +312,6 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       }
     }
 
-    const borrowDate = new Date();
     let borrowing;
     const session = await mongoose.startSession();
     try {
@@ -330,9 +352,6 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
           await referenceItem.save({ session });
         }
 
-        const borrowTimestampValue = normalizedBorrowTimestamp.date
-          ? new Date(`${normalizedBorrowTimestamp.date} ${normalizedBorrowTimestamp.time || '09:00 AM'}`)
-          : borrowDate;
         const savedEquipmentItems = itemGroups.map((item) => ({
           equipment: item.equipment,
           referenceIds: item.referenceIds,
@@ -349,20 +368,25 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
           fullname: borrowerName,
           contactNo: normalizeText(contactNo),
           facebookAccount: normalizeText(facebookAccount),
+          borrowerType: normalizedBorrowerType,
+          borrowerTypeOther: normalizedBorrowerType === 'Others (Office/Agency)'
+            ? normalizedBorrowerTypeOther
+            : '',
           equipment: selectedEquipmentNames.join(', '),
           equipmentItems: savedEquipmentItems,
           referenceIds: selectedReferenceIds,
           referenceConditions: savedEquipmentItems.flatMap((item) => item.referenceConditions),
           quantity: selectedQuantity,
           qty: selectedQuantity,
-          borrowTimestamp: normalizedBorrowTimestamp.date || normalizedBorrowTimestamp.time
-            ? normalizedBorrowTimestamp
-            : formatBorrowTimestamp(borrowDate),
+          borrowTimestamp: {
+            date: borrowingDateTime.date,
+            time: borrowingDateTime.time,
+          },
           endTime: normalizeText(endTime),
           returnedTimestamp: normalizedReturnedTimestamp,
           status: status || 'Out Now',
           condition: condition || null,
-          borrowDate: borrowTimestampValue,
+          borrowDate: borrowingDateTime.borrowDate,
           borrowedBy: normalizeBorrowedBy(req.user?.id || req.user?._id)
         }], { session });
       });

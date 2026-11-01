@@ -14,7 +14,11 @@ const COACH_RECORD_CONTENT_FIELDS = new Set([
   'directorTitle',
 ]);
 const FORMATTED_TEXT_FIELDS = COACH_RECORD_CONTENT_FIELDS;
-const BORROWING_CREATE_FIELDS = new Set(['equipmentItems']);
+const BORROWING_CREATE_FIELDS = new Set([
+  'equipmentItems',
+  'borrowerType',
+  'borrowerTypeOther',
+]);
 const REGISTRATION_FIELDS = new Set([
   'fullname',
   'email',

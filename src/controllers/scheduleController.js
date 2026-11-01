@@ -2,6 +2,7 @@ const Schedule = require('../models/Schedule');
 const { getScheduleClientType } = require('../utils/scheduleClientType');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
+const { getPastScheduleError } = require('../utils/scheduleDateTime');
 
 const isValidCalendarDate = (value) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
@@ -21,6 +22,11 @@ exports.createSchedule = async (req, res) => {
       ...req.body,
       createdBy: req.user ? req.user._id : null
     };
+
+    const pastScheduleError = getPastScheduleError(scheduleData);
+    if (pastScheduleError) {
+      return res.status(400).json({ success: false, message: pastScheduleError });
+    }
 
     releaseLock = await acquireScheduleConflictLock();
     const conflict = await findScheduleConflict(Schedule, scheduleData);
@@ -144,6 +150,11 @@ exports.updateSchedule = async (req, res) => {
     const scheduleData = { ...currentData, ...req.body };
 
     if (scheduleData.status === 'active') {
+      const pastScheduleError = getPastScheduleError(scheduleData);
+      if (pastScheduleError) {
+        return res.status(400).json({ success: false, message: pastScheduleError });
+      }
+
       const conflict = await findScheduleConflict(Schedule, scheduleData, id);
       if (conflict) {
         return res.status(409).json({

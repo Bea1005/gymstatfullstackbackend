@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Borrowing = require('../../src/models/Borrowing');
 const Equipment = require('../../src/models/Equipment');
 const borrowingRoutes = require('../../src/routes/borrowingRoutes');
+const { getCurrentManilaBorrowingDateTime } = require('../../src/utils/borrowingDateTime');
 
 jest.mock('../../src/models/Borrowing', () => ({
   find: jest.fn(), create: jest.fn(), findById: jest.fn(),
@@ -43,6 +44,32 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('multi-equipment borrowing transaction routes', () => {
+  test('rejects a past borrowing date before touching equipment inventory', async () => {
+    const today = getCurrentManilaBorrowingDateTime().date;
+    const yesterday = new Date(`${today}T00:00:00.000Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      body: {
+        fullname: 'Student Athlete',
+        equipmentItems: [{ equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 }],
+        borrowTimestamp: {
+          date: yesterday.toISOString().slice(0, 10),
+          time: '09:00 AM',
+        },
+      },
+    });
+    const res = httpMocks.createResponse();
+
+    await getHandler('post', '/admin/borrowing')(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().error).toBe('Past borrowing dates are not allowed.');
+    expect(Equipment.findOne).not.toHaveBeenCalled();
+    expect(Equipment.find).not.toHaveBeenCalled();
+    expect(Borrowing.create).not.toHaveBeenCalled();
+  });
+
   test('creates one transaction with distinct equipment groups and updates each selected unit', async () => {
     const volleyball = createEquipment('Volleyball', 'VB-001');
     const volleyballSecond = createEquipment('Volleyball', 'VB-002');
@@ -63,6 +90,8 @@ describe('multi-equipment borrowing transaction routes', () => {
       method: 'POST', user: { id: 'admin-id' },
       body: {
         fullname: 'Student Athlete',
+        borrowerType: 'Others (Office/Agency)',
+        borrowerTypeOther: 'Office of Student Affairs',
         equipmentItems: [
           { equipment: 'Volleyball', referenceIds: ['VB-001', 'VB-002'], referenceConditions: ['Good', 'Good'], quantity: 2 },
           { equipment: 'Baseball', referenceIds: ['BB-001'], referenceConditions: ['Good'], quantity: 1 },
@@ -76,13 +105,57 @@ describe('multi-equipment borrowing transaction routes', () => {
     expect(volleyballSecond.onLoan).toBe(1);
     expect(baseball.onLoan).toBe(1);
     expect(Borrowing.create.mock.calls[0][0][0]).toMatchObject({
+      borrowerType: 'Others (Office/Agency)',
+      borrowerTypeOther: 'Office of Student Affairs',
       equipment: 'Volleyball, Baseball',
       equipmentItems: [
         { equipment: 'Volleyball', referenceIds: ['VB-001', 'VB-002'], quantity: 2 },
         { equipment: 'Baseball', referenceIds: ['BB-001'], quantity: 1 },
       ], referenceIds: ['VB-001', 'VB-002', 'BB-001'], quantity: 3,
     });
+    expect(res._getJSONData()).toMatchObject({
+      borrowerType: 'Others (Office/Agency)',
+      borrowerTypeOther: 'Office of Student Affairs',
+    });
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  test('requires an office or agency name for the Others borrower type', async () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      body: {
+        fullname: 'Student Athlete',
+        borrowerType: 'Others (Office/Agency)',
+        equipmentItems: [{ equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 }],
+      },
+    });
+    const res = httpMocks.createResponse();
+
+    await getHandler('post', '/admin/borrowing')(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().error).toBe('Enter the office or agency name for this borrower type.');
+    expect(Equipment.findOne).not.toHaveBeenCalled();
+    expect(Borrowing.create).not.toHaveBeenCalled();
+  });
+
+  test('rejects unknown borrower types', async () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      body: {
+        fullname: 'Student Athlete',
+        borrowerType: 'Visitor',
+        equipmentItems: [{ equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 }],
+      },
+    });
+    const res = httpMocks.createResponse();
+
+    await getHandler('post', '/admin/borrowing')(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().error).toBe('Select a valid borrower type.');
+    expect(Equipment.findOne).not.toHaveBeenCalled();
+    expect(Borrowing.create).not.toHaveBeenCalled();
   });
 
   test('keeps accepting a legacy single-equipment request', async () => {

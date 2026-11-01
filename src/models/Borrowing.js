@@ -21,6 +21,16 @@ const borrowingSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  borrowerType: {
+    type: String,
+    enum: ['Student', 'Faculty', 'Coach/Trainer', 'Others (Office/Agency)', ''],
+    default: ''
+  },
+  borrowerTypeOther: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   equipment: {
     type: String,
     required: true,

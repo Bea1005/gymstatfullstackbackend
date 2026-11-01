@@ -71,12 +71,14 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(req.body.condition).toBe('Repair');
   });
 
-  it('accepts grouped equipment fields when creating an Admin borrowing', () => {
+  it('accepts grouped equipment and borrower type fields when creating an Admin borrowing', () => {
     const req = httpMocks.createRequest({
       method: 'POST',
       path: '/api/v1/admin/borrowing',
       body: {
         fullname: 'Student Athlete',
+        borrowerType: 'Others (Office/Agency)',
+        borrowerTypeOther: 'Office of Student Affairs',
         equipmentItems: [
           { equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 },
           { equipment: 'Baseball', referenceIds: ['BB-001'], quantity: 1 },
@@ -90,6 +92,29 @@ describe('validateRequestBody requirement upload fields', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.body.equipmentItems).toHaveLength(2);
+    expect(req.body.borrowerType).toBe('Others (Office/Agency)');
+    expect(req.body.borrowerTypeOther).toBe('Office of Student Affairs');
+  });
+
+  it('continues rejecting unrelated fields on borrowing creation requests', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/admin/borrowing',
+      body: {
+        fullname: 'Student Athlete',
+        borrowerType: 'Student',
+        equipmentItems: [],
+        unexpectedField: 'not allowed',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
   });
 
   it('does not allow grouped equipment fields on unrelated endpoints', () => {

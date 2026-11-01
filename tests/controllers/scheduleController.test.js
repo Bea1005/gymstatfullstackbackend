@@ -2,7 +2,7 @@ const httpMocks = require('node-mocks-http');
 const Schedule = require('../../src/models/Schedule');
 const { findScheduleConflict } = require('../../src/utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../../src/utils/withScheduleConflictLock');
-const { updateSchedule } = require('../../src/controllers/scheduleController');
+const { createSchedule, updateSchedule } = require('../../src/controllers/scheduleController');
 
 jest.mock('../../src/models/Schedule', () => ({
   findById: jest.fn(),
@@ -16,13 +16,39 @@ jest.mock('../../src/utils/withScheduleConflictLock', () => ({
   acquireScheduleConflictLock: jest.fn()
 }));
 
+describe('createSchedule date/time validation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('rejects a past date before checking conflicts or saving', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        event: 'Past Schedule',
+        startDate: '2000-01-01',
+        endDate: '2000-01-01',
+        startTime: '8:00 AM',
+        endTime: '10:00 AM',
+      }
+    });
+    const res = httpMocks.createResponse();
+
+    await createSchedule(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toContain('Past dates');
+    expect(acquireScheduleConflictLock).not.toHaveBeenCalled();
+    expect(findScheduleConflict).not.toHaveBeenCalled();
+  });
+});
+
 describe('updateSchedule', () => {
   const scheduleId = '507f1f77bcf86cd799439011';
   const currentSchedule = {
     _id: scheduleId,
     event: 'Practice A',
-    startDate: '2026-10-01',
-    endDate: '2026-10-01',
+    startDate: '2099-10-01',
+    endDate: '2099-10-01',
     startTime: '8:00 AM',
     endTime: '10:00 AM',
     prepDays: 0,
@@ -70,6 +96,21 @@ describe('updateSchedule', () => {
 
     expect(res.statusCode).toBe(409);
     expect(res._getJSONData().message).toContain('overlaps');
+    expect(Schedule.findByIdAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects an active edit whose date is in the past', async () => {
+    const req = httpMocks.createRequest({
+      params: { id: scheduleId },
+      body: { startDate: '2000-01-01', endDate: '2000-01-01' }
+    });
+    const res = httpMocks.createResponse();
+
+    await updateSchedule(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toContain('Past dates');
+    expect(findScheduleConflict).not.toHaveBeenCalled();
     expect(Schedule.findByIdAndUpdate).not.toHaveBeenCalled();
   });
 

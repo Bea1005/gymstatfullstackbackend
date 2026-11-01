@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { getPastScheduleError } = require('../utils/scheduleDateTime');
 
 const MAX_LENGTHS = {
   eventName: 120,
@@ -89,6 +90,8 @@ const validateScheduleRequest = (req, res, next) => {
       normalized.endDate === normalized.startDate
       && toMinutes(normalized.endTime) <= toMinutes(normalized.startTime)
     )) throw invalid('The requested end must be after the start.');
+    const pastScheduleError = getPastScheduleError(normalized);
+    if (pastScheduleError) throw invalid(pastScheduleError);
 
     const prepDays = normalized.prepDays === undefined || normalized.prepDays === ''
       ? 0

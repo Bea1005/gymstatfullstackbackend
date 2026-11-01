@@ -3,10 +3,13 @@ const mongoose = require('mongoose');
 const {
   uploadRequirement,
   buildRequirementLifecycleState,
+  getStudentRequirements,
+  markRequirementNotificationRead,
   getStudentRequirementAnnouncements,
   markStudentAnnouncementRead
 } = require('../../src/controllers/studentController');
 const StudentRequirement = require('../../src/models/StudentRequirement');
+const StudentRequirementStrasuc = require('../../src/models/StudentRequirementStrasuc');
 const Announcement = require('../../src/models/Announcement');
 const User = require('../../src/models/User');
 const RequirementDefinition = require('../../src/models/Requirement');
@@ -28,9 +31,14 @@ jest.mock('../../src/models/StudentRequirement', () => {
   MockStudentRequirement.find = jest.fn(() => mockQuery([]));
   MockStudentRequirement.deleteMany = jest.fn().mockResolvedValue({ deletedCount: 0 });
   MockStudentRequirement.findByIdAndUpdate = jest.fn().mockResolvedValue(null);
+  MockStudentRequirement.findOneAndUpdate = jest.fn().mockResolvedValue(null);
 
   return MockStudentRequirement;
 });
+
+jest.mock('../../src/models/StudentRequirementStrasuc', () => ({
+  find: jest.fn(() => mockQuery([]))
+}));
 
 jest.mock('../../src/models/Requirement', () => ({
   findOne: jest.fn()
@@ -44,7 +52,68 @@ describe('Student controller uploads', () => {
     StudentRequirement.find.mockImplementation(() => mockQuery([]));
     StudentRequirement.deleteMany.mockResolvedValue({ deletedCount: 0 });
     StudentRequirement.findByIdAndUpdate.mockResolvedValue(null);
+    StudentRequirement.findOneAndUpdate.mockResolvedValue(null);
+    StudentRequirementStrasuc.find.mockImplementation(() => mockQuery([]));
     RequirementDefinition.findOne.mockResolvedValue(null);
+  });
+
+  it('loads document notifications using only the authenticated student ID', async () => {
+    const studentId = new mongoose.Types.ObjectId();
+    const createRequirementQuery = () => {
+      const query = {
+        sort: jest.fn().mockReturnThis(),
+        populate: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue([])
+      };
+      query.then = (resolve, reject) => Promise.resolve([]).then(resolve, reject);
+      return query;
+    };
+    StudentRequirement.find.mockImplementation(createRequirementQuery);
+    StudentRequirementStrasuc.find.mockImplementation(createRequirementQuery);
+    const req = httpMocks.createRequest();
+    req.user = { _id: studentId, role: 'student' };
+    const res = httpMocks.createResponse();
+
+    await getStudentRequirements(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(StudentRequirement.find).toHaveBeenCalledWith({ studentId });
+    expect(StudentRequirementStrasuc.find).toHaveBeenCalledWith({ studentId });
+  });
+
+  it('marks a reviewed notification read only for its owning student', async () => {
+    const studentId = new mongoose.Types.ObjectId();
+    const updatedRequirement = {
+      _id: 'owned-document',
+      notificationReadAt: new Date()
+    };
+    const updateQuery = {
+      select: jest.fn().mockReturnThis(),
+      then: (resolve, reject) => Promise.resolve(updatedRequirement).then(resolve, reject)
+    };
+    StudentRequirement.findOneAndUpdate.mockReturnValue(updateQuery);
+    const req = httpMocks.createRequest({
+      params: { id: 'owned-document' },
+      body: { participationType: 'Intrams' }
+    });
+    req.user = { _id: studentId, role: 'student' };
+    const res = httpMocks.createResponse();
+
+    await markRequirementNotificationRead(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(StudentRequirement.findOneAndUpdate).toHaveBeenCalledWith(
+      {
+        _id: 'owned-document',
+        studentId,
+        $or: [
+          { status: { $in: ['approved', 'rejected'] } },
+          { coachStatus: { $in: ['approved', 'rejected'] } }
+        ]
+      },
+      { notificationReadAt: expect.any(Date) },
+      { new: true }
+    );
   });
 
   it('stores uploads using the authenticated Mongo ObjectId for the student', async () => {

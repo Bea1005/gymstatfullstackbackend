@@ -6,6 +6,7 @@ const User = require('../../src/models/User');
 const PendingRegistration = require('../../src/models/PendingRegistration');
 const {
   register,
+  checkStudentIdAvailability,
   resendRegistrationOtp,
   verifyRegistrationOtp,
 } = require('../../src/controllers/authControllers');
@@ -37,7 +38,10 @@ jest.mock('../../src/config/passwords', () => ({
   PASSWORD_POLICY_MESSAGE: 'Password is invalid.',
 }));
 jest.mock('../../src/config/email', () => ({
-  getRegistrationEmailFailure: jest.fn(),
+  getRegistrationEmailFailure: jest.fn().mockReturnValue({
+    code: 'delivery-failed',
+    message: 'The verification email could not be sent.',
+  }),
   sendPasswordResetOtp: jest.fn(),
   sendRegistrationVerificationOtp: jest.fn().mockResolvedValue(true),
   sendScreenerAccountCreatedEmail: jest.fn(),
@@ -61,7 +65,6 @@ const validRegistration = (overrides = {}) => ({
   sport: 'Basketball',
   sports: ['Basketball'],
   id: '23B1509',
-  verificationMethod: 'sms',
   ...overrides,
 });
 
@@ -85,8 +88,10 @@ describe('registration identity verification', () => {
     PendingRegistration.updateOne.mockResolvedValue({ modifiedCount: 1 });
   });
 
-  it('stores a normalized contact number and sends only the selected SMS OTP', async () => {
-    const req = httpMocks.createRequest({ body: validRegistration() });
+  it('ignores SMS verification requests and sends registration codes by email', async () => {
+    const req = httpMocks.createRequest({
+      body: validRegistration({ verificationMethod: 'sms' }),
+    });
     const res = httpMocks.createResponse();
 
     await register(req, res);
@@ -94,32 +99,33 @@ describe('registration identity verification', () => {
     expect(res.statusCode).toBe(201);
     expect(PendingRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
       contactNumber: '+639171234567',
-      verificationMethod: 'sms',
-      registrationOtpHash: null,
-      contactOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      verificationMethod: 'email',
+      registrationOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      contactOtpHash: null,
       role: 'student',
     }));
-    expect(sendContactVerificationOtp).toHaveBeenCalledWith(
-      '+639171234567',
+    expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith(
+      'jane@example.com',
       expect.stringMatching(/^\d{6}$/),
-      5
+      10
     );
-    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
+    expect(sendContactVerificationOtp).not.toHaveBeenCalled();
     expect(res._getJSONData()).not.toHaveProperty('otp');
     expect(User.create).not.toHaveBeenCalled();
   });
 
-  it('sends email verification only when email is selected', async () => {
+  it('allows registration without a contact number', async () => {
     const req = httpMocks.createRequest({
-      body: validRegistration({ verificationMethod: 'email' }),
+      body: validRegistration({ contactNumber: undefined }),
     });
     const res = httpMocks.createResponse();
 
     await register(req, res);
 
     expect(res.statusCode).toBe(201);
-    expect(pendingDocument.contactNumber).toBe('+639171234567');
+    expect(pendingDocument.contactNumber).toBe('');
     expect(pendingDocument.contactOtpHash).toBeNull();
+    expect(pendingDocument.verificationMethod).toBe('email');
     expect(pendingDocument.registrationOtpHash).toMatch(/^[a-f0-9]{64}$/);
     expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith(
       'jane@example.com',
@@ -129,14 +135,61 @@ describe('registration identity verification', () => {
     expect(sendContactVerificationOtp).not.toHaveBeenCalled();
   });
 
-  it('does not retain an unverified registration when SMS delivery fails', async () => {
-    sendContactVerificationOtp.mockRejectedValueOnce(new Error('SMS provider unavailable'));
+  it.each(['23B1509', '23G1509', '23S1509', '23T1509', '23B1496'])(
+    'accepts student ID %s',
+    async (id) => {
+      const res = httpMocks.createResponse();
+
+      await register(httpMocks.createRequest({
+        body: validRegistration({ id, verificationMethod: 'email' }),
+      }), res);
+
+      expect(res.statusCode).toBe(201);
+      expect(PendingRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
+        id,
+        role: 'student',
+      }));
+    }
+  );
+
+  it('keeps the existing Coach ID format valid', async () => {
+    const res = httpMocks.createResponse();
+
+    await register(httpMocks.createRequest({
+      body: validRegistration({ id: '2024-1234', verificationMethod: 'email' }),
+    }), res);
+
+    expect(res.statusCode).toBe(201);
+    expect(PendingRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
+      id: '2024-1234',
+      role: 'coach',
+    }));
+  });
+
+  it('checks whether a valid student ID is already associated with an account', async () => {
+    User.findOne.mockResolvedValue({ id: '23B1496' });
+    const res = httpMocks.createResponse();
+
+    await checkStudentIdAvailability(httpMocks.createRequest({
+      query: { id: '23B1496' },
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: true,
+      available: false,
+      message: 'This ID is already registered. Please use a different ID.',
+    }));
+  });
+
+  it('does not retain an unverified registration when email delivery fails', async () => {
+    sendRegistrationVerificationOtp.mockRejectedValueOnce(new Error('Email provider unavailable'));
     const res = httpMocks.createResponse();
 
     await register(httpMocks.createRequest({ body: validRegistration() }), res);
 
     expect(res.statusCode).toBe(503);
-    expect(res._getJSONData().message).toContain('SMS provider unavailable');
+    expect(res._getJSONData().message).toBe('The verification email could not be sent.');
     expect(PendingRegistration.deleteOne).toHaveBeenCalledWith({ _id: 'pending-registration' });
     expect(User.create).not.toHaveBeenCalled();
   });
@@ -166,8 +219,8 @@ describe('registration identity verification', () => {
     expect(PendingRegistration.deleteOne).toHaveBeenCalledWith({ _id: 'pending-registration' });
   });
 
-  it.each(['0917123456', '08171234567', '+638171234567', '0917 123 4567', ''])(
-    'rejects invalid contact number %s before creating a pending registration',
+  it.each(['0917123456', '08171234567', '+638171234567', '0917 123 4567'])(
+    'rejects an invalid optional contact number %s',
     async (contactNumber) => {
       const req = httpMocks.createRequest({
         body: validRegistration({ contactNumber }),
@@ -183,10 +236,12 @@ describe('registration identity verification', () => {
     }
   );
 
-  it('creates one SMS-verified user with the saved contact number after a valid OTP', async () => {
+  it('creates an email-verified account even if the request selects SMS', async () => {
     const registrationRes = httpMocks.createResponse();
-    await register(httpMocks.createRequest({ body: validRegistration() }), registrationRes);
-    const otp = sendContactVerificationOtp.mock.calls[0][1];
+    await register(httpMocks.createRequest({
+      body: validRegistration({ verificationMethod: 'sms' }),
+    }), registrationRes);
+    const otp = sendRegistrationVerificationOtp.mock.calls[0][1];
     PendingRegistration.findOne.mockReturnValue({
       select: jest.fn().mockResolvedValue(pendingDocument),
     });
@@ -197,7 +252,6 @@ describe('registration identity verification', () => {
         email: 'jane@example.com',
         otp,
         verificationMethod: 'sms',
-        contactNumber: '+639000000000',
       },
     }), verifyRes);
 
@@ -205,14 +259,15 @@ describe('registration identity verification', () => {
     expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
       email: 'jane@example.com',
       contactNumber: '+639171234567',
-      emailVerified: false,
-      contactNumberVerified: true,
-      verificationMethod: 'sms',
+      emailVerified: true,
+      contactNumberVerified: false,
+      verificationMethod: 'email',
     }));
+    expect(sendContactVerificationOtp).not.toHaveBeenCalled();
     expect(PendingRegistration.deleteOne).toHaveBeenCalledWith({ _id: 'pending-registration' });
   });
 
-  it('does not create an account when a verification request selects the wrong method', async () => {
+  it('does not allow a legacy SMS OTP to verify a registration', async () => {
     pendingDocument = {
       _id: 'pending-registration',
       email: 'jane@example.com',
@@ -239,15 +294,15 @@ describe('registration identity verification', () => {
     expect(User.create).not.toHaveBeenCalled();
   });
 
-  it('deletes an expired OTP registration without creating a user', async () => {
+  it('deletes an expired email OTP registration without creating a user', async () => {
     const expiredRegistration = {
       _id: 'expired-registration',
       email: 'jane@example.com',
-      verificationMethod: 'sms',
+      verificationMethod: 'email',
       contactNumber: '+639171234567',
-      contactOtpHash: hashOtp('012345'),
-      contactOtpExpiresAt: new Date(Date.now() - 1),
-      contactOtpAttempts: 0,
+      registrationOtpHash: hashOtp('012345'),
+      registrationOtpExpiresAt: new Date(Date.now() - 1),
+      registrationOtpAttempts: 0,
     };
     PendingRegistration.findOne.mockReturnValue({
       select: jest.fn().mockResolvedValue(expiredRegistration),
@@ -255,7 +310,7 @@ describe('registration identity verification', () => {
     const res = httpMocks.createResponse();
 
     await verifyRegistrationOtp(httpMocks.createRequest({
-      body: { email: 'jane@example.com', otp: '012345', verificationMethod: 'sms' },
+      body: { email: 'jane@example.com', otp: '012345' },
     }), res);
 
     expect(res.statusCode).toBe(400);
@@ -264,15 +319,15 @@ describe('registration identity verification', () => {
     expect(User.create).not.toHaveBeenCalled();
   });
 
-  it('counts an incorrect SMS OTP attempt and does not create an account', async () => {
+  it('counts an incorrect email OTP attempt and does not create an account', async () => {
     const pending = {
       _id: 'pending-registration',
       email: 'jane@example.com',
-      verificationMethod: 'sms',
+      verificationMethod: 'email',
       contactNumber: '+639171234567',
-      contactOtpHash: hashOtp('123456'),
-      contactOtpExpiresAt: new Date(Date.now() + 60_000),
-      contactOtpAttempts: 0,
+      registrationOtpHash: hashOtp('123456'),
+      registrationOtpExpiresAt: new Date(Date.now() + 60_000),
+      registrationOtpAttempts: 0,
     };
     PendingRegistration.findOne.mockReturnValue({
       select: jest.fn().mockResolvedValue(pending),
@@ -280,26 +335,26 @@ describe('registration identity verification', () => {
     const res = httpMocks.createResponse();
 
     await verifyRegistrationOtp(httpMocks.createRequest({
-      body: { email: 'jane@example.com', otp: '000000', verificationMethod: 'sms' },
+      body: { email: 'jane@example.com', otp: '000000' },
     }), res);
 
     expect(res.statusCode).toBe(400);
     expect(PendingRegistration.findOneAndUpdate).toHaveBeenCalledWith(
       { _id: 'pending-registration' },
-      { $inc: { contactOtpAttempts: 1 } },
+      { $inc: { registrationOtpAttempts: 1 } },
       { new: true }
     );
     expect(User.create).not.toHaveBeenCalled();
   });
 
-  it('applies the SMS resend cooldown and does not send another OTP', async () => {
+  it('applies the email resend cooldown to legacy SMS registrations', async () => {
     const pending = {
       _id: 'pending-registration',
       email: 'jane@example.com',
       verificationMethod: 'sms',
       contactNumber: '+639171234567',
-      contactOtpLastSentAt: new Date(Date.now() - 30_000),
-      contactOtpResendCount: 0,
+      registrationOtpLastSentAt: new Date(Date.now() - 30_000),
+      registrationOtpResendCount: 0,
       registrationOtpResendCount: 0,
     };
     PendingRegistration.findOne.mockReturnValue({
@@ -308,12 +363,13 @@ describe('registration identity verification', () => {
     const res = httpMocks.createResponse();
 
     await resendRegistrationOtp(httpMocks.createRequest({
-      body: { email: 'jane@example.com', verificationMethod: 'sms' },
+      body: { email: 'jane@example.com' },
     }), res);
 
     expect(res.statusCode).toBe(429);
-    expect(res.getHeader('Retry-After')).toBeDefined();
+    expect(res._getJSONData().retryAfterSeconds).toBeDefined();
     expect(PendingRegistration.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
     expect(sendContactVerificationOtp).not.toHaveBeenCalled();
   });
 
@@ -363,11 +419,7 @@ describe('registration identity verification', () => {
     const res = httpMocks.createResponse();
 
     await resendRegistrationOtp(httpMocks.createRequest({
-      body: {
-        email: 'jane@example.com',
-        verificationMethod: 'email',
-        contactNumber: '+639000000000',
-      },
+      body: { email: 'jane@example.com' },
     }), res);
 
     expect(res.statusCode).toBe(202);
@@ -378,7 +430,6 @@ describe('registration identity verification', () => {
           verificationMethod: 'email',
           contactOtpHash: null,
           registrationOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-          contactOtpLastSentAt: pending.contactOtpLastSentAt,
         }),
       }),
       { new: true }
@@ -409,14 +460,14 @@ describe('registration identity verification', () => {
   it('does not create a second user when a successful verification is repeated', async () => {
     const registrationRes = httpMocks.createResponse();
     await register(httpMocks.createRequest({ body: validRegistration() }), registrationRes);
-    const otp = sendContactVerificationOtp.mock.calls[0][1];
+    const otp = sendRegistrationVerificationOtp.mock.calls[0][1];
     PendingRegistration.findOne
       .mockReturnValueOnce({ select: jest.fn().mockResolvedValue(pendingDocument) })
       .mockReturnValueOnce({ select: jest.fn().mockResolvedValue(null) });
     const firstRes = httpMocks.createResponse();
     const secondRes = httpMocks.createResponse();
     const verifyRequest = () => httpMocks.createRequest({
-      body: { email: 'jane@example.com', otp, verificationMethod: 'sms' },
+      body: { email: 'jane@example.com', otp },
     });
 
     await verifyRegistrationOtp(verifyRequest(), firstRes);
@@ -425,5 +476,27 @@ describe('registration identity verification', () => {
     expect(firstRes.statusCode).toBe(200);
     expect(secondRes.statusCode).toBe(400);
     expect(User.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a duplicate ID when the unique account index rejects a concurrent verification', async () => {
+    const registrationRes = httpMocks.createResponse();
+    await register(httpMocks.createRequest({
+      body: validRegistration({ verificationMethod: 'email' }),
+    }), registrationRes);
+    const otp = sendRegistrationVerificationOtp.mock.calls[0][1];
+    PendingRegistration.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue(pendingDocument),
+    });
+    User.create.mockRejectedValueOnce({ code: 11000, keyPattern: { id: 1 } });
+    const verifyRes = httpMocks.createResponse();
+
+    await verifyRegistrationOtp(httpMocks.createRequest({
+      body: { email: 'jane@example.com', otp, verificationMethod: 'email' },
+    }), verifyRes);
+
+    expect(verifyRes.statusCode).toBe(409);
+    expect(verifyRes._getJSONData().message).toBe(
+      'This ID is already registered. Please use a different ID.'
+    );
   });
 });

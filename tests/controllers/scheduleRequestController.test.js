@@ -129,8 +129,8 @@ describe('getPublicCalendarScheduleRequests', () => {
         requesterEmail: 'requester@example.com',
         requesterPhone: '09171234567',
         eventName: 'Campus Event',
-        startDate: '2026-11-01',
-        endDate: '2026-11-01',
+        startDate: '2099-11-01',
+        endDate: '2099-11-01',
         startTime: '08:00 AM',
         endTime: '12:00 PM',
         save: jest.fn().mockResolvedValue(undefined),
@@ -192,6 +192,26 @@ describe('getPublicCalendarScheduleRequests', () => {
         );
         expect(res.statusCode).toBe(200);
         expect(res._getJSONData()).toMatchObject({ success: true, requesterNotified: true });
+      });
+
+      it('does not approve a request for a past date', async () => {
+        const requestId = '507f1f77bcf86cd799439019';
+        const request = makePendingRequest(requestId);
+        request.startDate = '2000-01-01';
+        request.endDate = '2000-01-01';
+        ScheduleRequest.findById.mockResolvedValue(request);
+        const req = httpMocks.createRequest({
+          params: { id: requestId },
+          body: { status: 'approved' }
+        });
+        const res = httpMocks.createResponse();
+
+        await updateScheduleRequest(req, res);
+
+        expect(res.statusCode).toBe(400);
+        expect(res._getJSONData().message).toContain('Past dates');
+        expect(Schedule.findOne).not.toHaveBeenCalled();
+        expect(request.save).not.toHaveBeenCalled();
       });
 
       it('preserves a rejection if email delivery fails and reports the notification failure', async () => {

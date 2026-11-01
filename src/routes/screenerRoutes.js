@@ -1083,12 +1083,14 @@ router.put('/coach/requirements/:id/review', protect, authorize('coach'), async 
     submission.coachRemarks = [feedback, remarks].filter(Boolean).join(' — ');
     submission.coachReviewedAt = new Date();
     submission.coachReviewedBy = req.user?._id || req.user?.id || null;
+    if (['approved', 'rejected'].includes(normalizedStatus)) {
+      submission.notificationReadAt = null;
+    }
     if (normalizedStatus === 'rejected') {
       submission.status = 'rejected';
       submission.remarks = submission.coachRemarks;
       submission.reviewedAt = submission.coachReviewedAt;
       submission.reviewedBy = submission.coachReviewedBy;
-      submission.notificationReadAt = null;
     } else if (normalizedStatus === 'pending') {
       submission.status = 'pending';
       submission.remarks = submission.coachRemarks;

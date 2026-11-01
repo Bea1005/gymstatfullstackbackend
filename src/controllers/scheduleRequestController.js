@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const path = require('path');
 const { findScheduleConflict } = require('../utils/scheduleConflicts');
 const { acquireScheduleConflictLock } = require('../utils/withScheduleConflictLock');
+const { getPastScheduleError } = require('../utils/scheduleDateTime');
 const { getScheduleClientType } = require('../utils/scheduleClientType');
 const { sendScheduleRequestStatusEmail } = require('../config/email');
 const {
@@ -322,6 +323,11 @@ exports.updateScheduleRequest = async (req, res) => {
     }
 
     if (status === 'approved') {
+      const pastScheduleError = getPastScheduleError(request);
+      if (pastScheduleError) {
+        return res.status(400).json({ success: false, message: pastScheduleError });
+      }
+
       releaseLock = await acquireScheduleConflictLock();
       const existingSchedule = await Schedule.findOne({ fromRequest: request._id });
       if (existingSchedule) {

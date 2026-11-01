@@ -6,7 +6,6 @@ const {
   getRegistrationEmailFailure,
   sendPasswordResetOtp,
   sendRegistrationVerificationOtp,
-  sendContactOtpViaEmail,
   sendScreenerAccountCreatedEmail
 } = require('../config/email');
 const { normalizePhoneNumber } = require('../config/sms');
@@ -37,9 +36,6 @@ const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a differ
 const DUPLICATE_EMAIL_MESSAGE = 'This email is already registered. Please use a different email address.';
 const DUPLICATE_CONTACT_MESSAGE = 'This contact number is already registered. Please use a different mobile number.';
 const GENERIC_REGISTRATION_OTP_MESSAGE = 'If a pending registration is associated with that email, a verification code can be sent.';
-const CONTACT_OTP_TTL_MS = 5 * 60 * 1000;
-const CONTACT_OTP_COOLDOWN_MS = 60 * 1000;
-const CONTACT_OTP_MAX_ATTEMPTS = 5;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const FULL_NAME_PATTERN = /^[\p{L}\p{M}]+(?:[\s'’.-][\p{L}\p{M}]+)*$/u;
 const DUMMY_FULL_NAME_VALUES = new Set([
@@ -57,8 +53,6 @@ const DUMMY_EMAIL_PREFIXES = new Set([
   'noreply', 'no-reply', 'asdf', 'qwerty', 'lorem', 'ipsum'
 ]);
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const getVerificationMethod = (method) => String(method || '').trim().toLowerCase() === 'sms' ? 'sms' : 'email';
-
 const isValidFullName = (value) => {
   const trimmedValue = String(value || '').trim();
   if (!trimmedValue || trimmedValue.length < 2) return false;
@@ -107,16 +101,9 @@ const isDummyEmailAddress = (email) => {
 
 const respondWithPendingRegistration = (res, user) => {
   const now = Date.now();
-  const verificationMethod = getVerificationMethod(user.verificationMethod);
-  const lastSentAt = verificationMethod === 'sms'
-    ? user.contactOtpLastSentAt
-    : (user.registrationOtpLastSentAt || user.otpLastSentAt || null);
-  const otpHash = verificationMethod === 'sms'
-    ? user.contactOtpHash
-    : (user.registrationOtpHash || user.otpHash || null);
-  const otpExpiresAt = verificationMethod === 'sms'
-    ? user.contactOtpExpiresAt
-    : (user.registrationOtpExpiresAt || user.otpExpiresAt || null);
+  const lastSentAt = user.registrationOtpLastSentAt || user.otpLastSentAt || null;
+  const otpHash = user.registrationOtpHash || user.otpHash || null;
+  const otpExpiresAt = user.registrationOtpExpiresAt || user.otpExpiresAt || null;
   const retryAfterSeconds = lastSentAt
     ? Math.max(0, Math.ceil(
       (REGISTRATION_OTP_COOLDOWN_MS
@@ -132,14 +119,11 @@ const respondWithPendingRegistration = (res, user) => {
   return res.status(202).json({
     success: true,
     verificationRequired: true,
-    verificationMethod,
+    verificationMethod: 'email',
     codeSent,
-    emailSent: verificationMethod === 'email' && codeSent,
-    smsSent: verificationMethod === 'sms' && codeSent,
+    emailSent: codeSent,
     retryAfterSeconds,
-    message: verificationMethod === 'sms'
-      ? 'A registration is awaiting contact number verification. Enter the OTP or choose another verification method.'
-      : 'A registration is awaiting email verification. Enter the code or choose another verification method.'
+    message: 'A registration is awaiting email verification. Enter the code or request a new one.'
   });
 };
 
@@ -212,10 +196,36 @@ const isValidId = (id) => {
     return true;
   }
 
-  return Boolean(
-    trimmedId.length >= 7 &&
-    /^[A-Za-z0-9!@#$%^&*(),.?":{}|<>_-]+$/.test(trimmedId)
-  );
+  return /^23[BGST]\d{4}$/.test(trimmedId);
+};
+
+exports.checkStudentIdAvailability = async (req, res) => {
+  const id = String(req.query?.id || '').trim();
+  if (!/^23[BGST]\d{4}$/.test(id)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Student ID must be 7 characters: 23 followed by B, G, S, or T and four digits (for example, 23B1496).'
+    });
+  }
+
+  try {
+    const existingUser = await User.findOne({ id });
+    if (existingUser) {
+      return res.status(200).json({
+        success: true,
+        available: false,
+        message: DUPLICATE_ID_MESSAGE
+      });
+    }
+
+    return res.status(200).json({ success: true, available: true });
+  } catch (error) {
+    console.error('Student ID availability check failed:', error?.message || error);
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to verify this ID number right now. Please try again.'
+    });
+  }
 };
 
 const buildUserResponse = (user, roleOverride) => {
@@ -548,7 +558,6 @@ exports.verifyRegistrationOtp = async (req, res) => {
   try {
     const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
     const otp = String(req.body?.otp || '').trim();
-    const requestedMethod = getVerificationMethod(req.body?.verificationMethod);
 
     if (!EMAIL_PATTERN.test(normalizedEmail)) {
       return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
@@ -560,29 +569,16 @@ exports.verifyRegistrationOtp = async (req, res) => {
 
     const pendingRegistration = await PendingRegistration.findOne({
       emailNormalized: normalizedEmail,
-    }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts +contactOtpHash +contactOtpExpiresAt +contactOtpAttempts +contactNumber +verificationMethod');
+    }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts +contactNumber');
 
     const now = Date.now();
     if (!pendingRegistration) {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
     }
 
-    const selectedMethod = getVerificationMethod(pendingRegistration.verificationMethod || requestedMethod);
-    if (selectedMethod !== requestedMethod) {
-      return res.status(400).json({
-        success: false,
-        message: 'Choose the verification method currently selected for this registration.'
-      });
-    }
-    const otpHash = selectedMethod === 'sms'
-      ? pendingRegistration.contactOtpHash
-      : pendingRegistration.registrationOtpHash;
-    const otpExpiresAt = selectedMethod === 'sms'
-      ? pendingRegistration.contactOtpExpiresAt
-      : pendingRegistration.registrationOtpExpiresAt;
-    const otpAttempts = selectedMethod === 'sms'
-      ? pendingRegistration.contactOtpAttempts
-      : pendingRegistration.registrationOtpAttempts;
+    const otpHash = pendingRegistration.registrationOtpHash;
+    const otpExpiresAt = pendingRegistration.registrationOtpExpiresAt;
+    const otpAttempts = pendingRegistration.registrationOtpAttempts;
 
     if (!otpHash || !otpExpiresAt) {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
@@ -593,25 +589,22 @@ exports.verifyRegistrationOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'This verification code has expired. Request a new code.' });
     }
 
-    if (otpAttempts >= (selectedMethod === 'sms' ? CONTACT_OTP_MAX_ATTEMPTS : REGISTRATION_OTP_MAX_ATTEMPTS)) {
+    if (otpAttempts >= REGISTRATION_OTP_MAX_ATTEMPTS) {
       await PendingRegistration.deleteOne({ _id: pendingRegistration._id });
       return res.status(429).json({ success: false, message: 'Too many verification attempts. Request a new code.' });
     }
 
     const isMatch = resetValueMatches(otp, otpHash);
     if (!isMatch) {
-      const attemptKey = selectedMethod === 'sms' ? 'contactOtpAttempts' : 'registrationOtpAttempts';
       await PendingRegistration.findOneAndUpdate(
         { _id: pendingRegistration._id },
-        { $inc: { [attemptKey]: 1 } },
+        { $inc: { registrationOtpAttempts: 1 } },
         { new: true }
       );
 
-      const updatedAttemptCount = selectedMethod === 'sms'
-        ? (pendingRegistration.contactOtpAttempts || 0) + 1
-        : (pendingRegistration.registrationOtpAttempts || 0) + 1;
+      const updatedAttemptCount = (pendingRegistration.registrationOtpAttempts || 0) + 1;
 
-      if (updatedAttemptCount >= (selectedMethod === 'sms' ? CONTACT_OTP_MAX_ATTEMPTS : REGISTRATION_OTP_MAX_ATTEMPTS)) {
+      if (updatedAttemptCount >= REGISTRATION_OTP_MAX_ATTEMPTS) {
         await PendingRegistration.deleteOne({ _id: pendingRegistration._id });
         return res.status(429).json({ success: false, message: 'Too many verification attempts. Request a new code.' });
       }
@@ -630,7 +623,14 @@ exports.verifyRegistrationOtp = async (req, res) => {
     const existingUser = await User.findOne({ $or: duplicateFilters });
     if (existingUser) {
       await PendingRegistration.deleteOne({ _id: pendingRegistration._id });
-      return res.status(409).json({ success: false, message: existingUser.id === pendingRegistration.id ? DUPLICATE_ID_MESSAGE : (existingUser.contactNumber === (pendingRegistration.contactNumber || normalizedContact) ? DUPLICATE_CONTACT_MESSAGE : DUPLICATE_EMAIL_MESSAGE) });
+      return res.status(409).json({
+        success: false,
+        message: existingUser.id === pendingRegistration.id
+          ? DUPLICATE_ID_MESSAGE
+          : (pendingRegistration.contactNumber && existingUser.contactNumber === pendingRegistration.contactNumber
+            ? DUPLICATE_CONTACT_MESSAGE
+            : DUPLICATE_EMAIL_MESSAGE)
+      });
     }
 
     const userPayload = {
@@ -645,9 +645,9 @@ exports.verifyRegistrationOtp = async (req, res) => {
       sport: pendingRegistration.sport || '',
       sports: Array.isArray(pendingRegistration.sports) ? pendingRegistration.sports : [],
       id: pendingRegistration.id,
-      emailVerified: selectedMethod === 'email',
-      contactNumberVerified: selectedMethod === 'sms',
-      verificationMethod: selectedMethod,
+      emailVerified: true,
+      contactNumberVerified: false,
+      verificationMethod: 'email',
       status: 'Active',
       accountStatus: 'active'
     };
@@ -659,7 +659,7 @@ exports.verifyRegistrationOtp = async (req, res) => {
       console.log(`Registration verified and user created: ${createdUser.id} (${createdUser.role})`);
     }
 
-    return res.json({ success: true, message: selectedMethod === 'sms' ? 'Contact number verified successfully.' : 'Email verified successfully.' });
+    return res.json({ success: true, message: 'Email verified successfully.' });
   } catch (error) {
     console.error('Registration verification failed:', error?.message || error);
     if (error?.code === 11000) {
@@ -668,7 +668,9 @@ exports.verifyRegistrationOtp = async (req, res) => {
       });
       return res.status(409).json({
         success: false,
-        message: 'This account information is already registered.'
+        message: error.keyPattern?.id || error.keyValue?.id
+          ? DUPLICATE_ID_MESSAGE
+          : 'This account information is already registered.'
       });
     }
     return res.status(500).json({ success: false, message: 'Unable to verify your registration. Please try again later.' });
@@ -678,7 +680,6 @@ exports.verifyRegistrationOtp = async (req, res) => {
 exports.resendRegistrationOtp = async (req, res) => {
   try {
     const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
-    const selectedMethod = getVerificationMethod(req.body?.verificationMethod);
 
     if (!EMAIL_PATTERN.test(normalizedEmail)) {
       return res.status(400).json({ success: false, message: 'Please provide a valid email address.' });
@@ -686,20 +687,16 @@ exports.resendRegistrationOtp = async (req, res) => {
 
     const pendingRegistration = await PendingRegistration.findOne({
       emailNormalized: normalizedEmail,
-    }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts +registrationOtpLastSentAt +registrationOtpResendCount +contactOtpHash +contactOtpExpiresAt +contactOtpAttempts +contactOtpLastSentAt +contactOtpResendCount +contactNumber +verificationMethod');
+    }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts +registrationOtpLastSentAt +registrationOtpResendCount +contactOtpLastSentAt +contactOtpResendCount');
 
     if (!pendingRegistration) {
       return res.status(202).json({ success: true, message: GENERIC_REGISTRATION_OTP_MESSAGE });
     }
 
     const now = Date.now();
-    const isSms = selectedMethod === 'sms';
-    const lastSentAt = isSms
-      ? pendingRegistration.contactOtpLastSentAt
-      : pendingRegistration.registrationOtpLastSentAt;
-    const cooldownMs = isSms ? CONTACT_OTP_COOLDOWN_MS : REGISTRATION_OTP_COOLDOWN_MS;
+    const lastSentAt = pendingRegistration.registrationOtpLastSentAt;
     const cooldownRemaining = lastSentAt
-      ? cooldownMs - (now - new Date(lastSentAt).getTime())
+      ? REGISTRATION_OTP_COOLDOWN_MS - (now - new Date(lastSentAt).getTime())
       : 0;
     if (cooldownRemaining > 0) {
       const retryAfterSeconds = Math.ceil(cooldownRemaining / 1000);
@@ -723,45 +720,25 @@ exports.resendRegistrationOtp = async (req, res) => {
       });
     }
 
-    const targetContact = pendingRegistration.contactNumber;
-    if (selectedMethod === 'sms' && !normalizePhoneNumber(targetContact)) {
-      return res.status(400).json({
-        success: false,
-        message: 'A valid contact number is required for SMS verification. Return to registration and try again.'
-      });
-    }
-
     const otp = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     const otpHash = hashResetValue(otp);
     const expectedRegistrationSentAt = pendingRegistration.registrationOtpLastSentAt || null;
-    const expectedContactSentAt = pendingRegistration.contactOtpLastSentAt || null;
     const updatedPending = await PendingRegistration.findOneAndUpdate(
       {
         _id: pendingRegistration._id,
-        registrationOtpLastSentAt: expectedRegistrationSentAt,
-        contactOtpLastSentAt: expectedContactSentAt
+        registrationOtpLastSentAt: expectedRegistrationSentAt
       },
       {
         $set: {
-          registrationOtpHash: isSms ? null : otpHash,
-          registrationOtpExpiresAt: isSms ? null : new Date(now + REGISTRATION_OTP_TTL_MS),
+          registrationOtpHash: otpHash,
+          registrationOtpExpiresAt: new Date(now + REGISTRATION_OTP_TTL_MS),
           registrationOtpAttempts: 0,
-          registrationOtpLastSentAt: isSms
-            ? pendingRegistration.registrationOtpLastSentAt || null
-            : new Date(now),
-          registrationOtpResendCount: isSms
-            ? Number(pendingRegistration.registrationOtpResendCount || 0)
-            : Number(pendingRegistration.registrationOtpResendCount || 0) + 1,
-          contactOtpHash: isSms ? otpHash : null,
-          contactOtpExpiresAt: isSms ? new Date(now + CONTACT_OTP_TTL_MS) : null,
+          registrationOtpLastSentAt: new Date(now),
+          registrationOtpResendCount: Number(pendingRegistration.registrationOtpResendCount || 0) + 1,
+          contactOtpHash: null,
+          contactOtpExpiresAt: null,
           contactOtpAttempts: 0,
-          contactOtpLastSentAt: isSms
-            ? new Date(now)
-            : pendingRegistration.contactOtpLastSentAt || null,
-          contactOtpResendCount: isSms
-            ? Number(pendingRegistration.contactOtpResendCount || 0) + 1
-            : Number(pendingRegistration.contactOtpResendCount || 0),
-          verificationMethod: selectedMethod,
+          verificationMethod: 'email',
           expiresAt: new Date(now + REGISTRATION_OTP_TTL_MS)
         }
       },
@@ -777,47 +754,22 @@ exports.resendRegistrationOtp = async (req, res) => {
     }
 
     try {
-      if (isSms) {
-        await sendContactOtpViaEmail(normalizedEmail, targetContact, otp, CONTACT_OTP_TTL_MS / 60000);
-      } else {
-        await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
-      }
+      await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
     } catch (error) {
-      const otpFields = isSms
-        ? {
-          contactOtpHash: null,
-          contactOtpExpiresAt: null
-        }
-        : {
-          registrationOtpHash: null,
-          registrationOtpExpiresAt: null
-        };
       await PendingRegistration.updateOne(
-        { _id: pendingRegistration._id, verificationMethod: selectedMethod },
-        { $set: otpFields }
+        { _id: pendingRegistration._id, verificationMethod: 'email' },
+        { $set: { registrationOtpHash: null, registrationOtpExpiresAt: null } }
       );
-      if (isSms) {
-        console.error('Registration SMS delivery failed:', error?.code || error?.name || 'unknown');
-        return res.status(503).json({
-          success: false,
-          verificationRequired: true,
-          verificationMethod: 'sms',
-          message: error.message || 'The SMS verification code could not be sent. Check the backend SMS configuration.'
-        });
-      }
       return res.status(503).json(buildRegistrationEmailFailureResponse(error));
     }
 
     return res.status(202).json({
       success: true,
       verificationRequired: true,
-      verificationMethod: selectedMethod,
+      verificationMethod: 'email',
       codeSent: true,
-      emailSent: !isSms,
-      smsSent: isSms,
-      message: isSms
-        ? 'A new OTP has been sent to your contact number.'
-        : 'A new verification code was sent to your email.'
+      emailSent: true,
+      message: 'A new verification code was sent to your email.'
     });
   } catch (error) {
     console.error('Registration verification resend failed:', error?.message || error);
@@ -828,9 +780,8 @@ exports.resendRegistrationOtp = async (req, res) => {
 // Register Controller
 exports.register = async (req, res) => {
   try {
-    const { fullname, email, password, department, yearLevel, sport, sports, id, contactNumber, verificationMethod } = req.body;
+    const { fullname, email, password, department, yearLevel, sport, sports, id, contactNumber } = req.body;
     const normalizedEmail = String(email || '').trim().toLowerCase();
-    const selectedMethod = getVerificationMethod(verificationMethod);
     const normalizedContact = normalizePhoneNumber(contactNumber || '');
 
     if (!fullname || !password || !id || !normalizedEmail) {
@@ -840,7 +791,7 @@ exports.register = async (req, res) => {
       });
     }
 
-    if (!normalizedContact) {
+    if (contactNumber && !normalizedContact) {
       return res.status(400).json({
         success: false,
         message: 'Please provide a valid Philippine mobile number in the format 09XXXXXXXXX or +639XXXXXXXXX.'
@@ -870,22 +821,27 @@ exports.register = async (req, res) => {
     if (!isValidId(trimmedId)) {
       return res.status(400).json({
         success: false,
-        message: 'The ID number format is invalid. Coach IDs must use the format 0000-0000; student IDs must be at least 7 characters and use letters, numbers, or common special characters only.'
+        message: /^\d{4}-\d{4}$/.test(trimmedId || '')
+          ? 'Coach ID numbers must use the format 0000-0000.'
+          : 'Student ID must be 7 characters: 23 followed by B, G, S, or T and four digits (for example, 23B1496).'
       });
     }
 
-    const existingVerifiedUser = await User.findOne({
-      $or: [
-        { emailNormalized: normalizedEmail },
-        { email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' } },
-        { id: trimmedId },
-        { contactNumber: normalizedContact }
-      ]
-    });
+    const duplicateUserFilters = [
+      { emailNormalized: normalizedEmail },
+      { email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' } },
+      { id: trimmedId }
+    ];
+    if (normalizedContact) duplicateUserFilters.push({ contactNumber: normalizedContact });
+    const existingVerifiedUser = await User.findOne({ $or: duplicateUserFilters });
     if (existingVerifiedUser) {
       return res.status(409).json({
         success: false,
-        message: existingVerifiedUser.id === trimmedId ? DUPLICATE_ID_MESSAGE : (existingVerifiedUser.contactNumber === normalizedContact ? DUPLICATE_CONTACT_MESSAGE : DUPLICATE_EMAIL_MESSAGE)
+        message: existingVerifiedUser.id === trimmedId
+          ? DUPLICATE_ID_MESSAGE
+          : (normalizedContact && existingVerifiedUser.contactNumber === normalizedContact
+            ? DUPLICATE_CONTACT_MESSAGE
+            : DUPLICATE_EMAIL_MESSAGE)
       });
     }
 
@@ -901,9 +857,12 @@ exports.register = async (req, res) => {
       return respondWithPendingRegistration(res, pendingIdUser);
     }
 
-    const pendingContactUser = await PendingRegistration.findOne({ contactNumber: normalizedContact }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpLastSentAt +registrationOtpResendCount +contactOtpHash +contactOtpExpiresAt +contactOtpAttempts +contactOtpLastSentAt +contactNumber +verificationMethod');
-    if (pendingContactUser) {
-      return respondWithPendingRegistration(res, pendingContactUser);
+    if (normalizedContact) {
+      const pendingContactUser = await PendingRegistration.findOne({ contactNumber: normalizedContact })
+        .select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpLastSentAt +registrationOtpResendCount +contactNumber');
+      if (pendingContactUser) {
+        return respondWithPendingRegistration(res, pendingContactUser);
+      }
     }
 
     const hashedPassword = await hashPassword(password);
@@ -914,18 +873,18 @@ exports.register = async (req, res) => {
       fullname: trimmedFullName,
       email: normalizedEmail,
       emailNormalized: normalizedEmail,
-      contactNumber: normalizedContact,
-      verificationMethod: selectedMethod,
+      contactNumber: normalizedContact || '',
+      verificationMethod: 'email',
       emailVerified: false,
-      registrationOtpHash: selectedMethod === 'email' ? otpHash : null,
-      registrationOtpExpiresAt: selectedMethod === 'email' ? new Date(now + REGISTRATION_OTP_TTL_MS) : null,
+      registrationOtpHash: otpHash,
+      registrationOtpExpiresAt: new Date(now + REGISTRATION_OTP_TTL_MS),
       registrationOtpAttempts: 0,
-      registrationOtpLastSentAt: selectedMethod === 'email' ? new Date(now) : null,
+      registrationOtpLastSentAt: new Date(now),
       registrationOtpResendCount: 0,
-      contactOtpHash: selectedMethod === 'sms' ? hashResetValue(otp) : null,
-      contactOtpExpiresAt: selectedMethod === 'sms' ? new Date(now + CONTACT_OTP_TTL_MS) : null,
+      contactOtpHash: null,
+      contactOtpExpiresAt: null,
       contactOtpAttempts: 0,
-      contactOtpLastSentAt: selectedMethod === 'sms' ? new Date(now) : null,
+      contactOtpLastSentAt: null,
       contactOtpResendCount: 0,
       password: hashedPassword,
       role: /^\d{4}-\d{4}$/.test(trimmedId) ? 'coach' : 'student',
@@ -958,46 +917,39 @@ exports.register = async (req, res) => {
     const pendingRegistration = await PendingRegistration.create(pendingPayload);
 
     try {
-      if (selectedMethod === 'sms') {
-        await sendContactOtpViaEmail(normalizedEmail, normalizedContact, otp, CONTACT_OTP_TTL_MS / 60000);
-      } else {
-        await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
-      }
+      await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
     } catch (error) {
       await PendingRegistration.deleteOne({ _id: pendingRegistration._id });
       return res.status(503).json({
         success: false,
         verificationRequired: true,
-        verificationMethod: selectedMethod,
-        message: selectedMethod === 'sms'
-          ? error.message || 'SMS OTP verification is not configured. Configure the SMS provider or choose Email Verification.'
-          : buildRegistrationEmailFailureResponse(error).message
+        verificationMethod: 'email',
+        message: buildRegistrationEmailFailureResponse(error).message
       });
     }
 
-    console.log(`Pending registration awaiting ${selectedMethod === 'sms' ? 'contact-number' : 'email'} verification: ${pendingRegistration.id} (${pendingRegistration.role})`);
+    console.log(`Pending registration awaiting email verification: ${pendingRegistration.id} (${pendingRegistration.role})`);
     return res.status(201).json({
       success: true,
       verificationRequired: true,
-      verificationMethod: selectedMethod,
+      verificationMethod: 'email',
       codeSent: true,
-      emailSent: selectedMethod === 'email',
-      smsSent: selectedMethod === 'sms',
-      message: selectedMethod === 'sms'
-        ? 'Registration accepted. Enter the OTP sent to your contact number.'
-        : 'Registration accepted. Enter the verification code sent to your email.'
+      emailSent: true,
+      message: 'Registration accepted. Enter the verification code sent to your email.'
     });
   } catch (error) {
     console.error('Registration error:', error?.name || 'Unexpected error', error?.message || error);
 
     if (error.code === 11000) {
       const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+      const duplicatePendingFilters = [
+        { emailNormalized: normalizedEmail },
+        { id: String(req.body?.id || '').trim() }
+      ];
+      const normalizedContact = normalizePhoneNumber(req.body?.contactNumber || '');
+      if (normalizedContact) duplicatePendingFilters.push({ contactNumber: normalizedContact });
       const pendingRegistration = await PendingRegistration.findOne({
-        $or: [
-          { emailNormalized: normalizedEmail },
-          { id: String(req.body?.id || '').trim() },
-          { contactNumber: normalizePhoneNumber(req.body?.contactNumber || '') }
-        ]
+        $or: duplicatePendingFilters
       }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpLastSentAt +registrationOtpResendCount +contactOtpHash +contactOtpExpiresAt +contactOtpAttempts +contactOtpLastSentAt +contactNumber +verificationMethod');
       if (pendingRegistration) {
         return respondWithPendingRegistration(res, pendingRegistration);

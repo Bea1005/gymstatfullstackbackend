@@ -364,6 +364,7 @@ describe('Screener routes', () => {
     expect(submission.status).toBe('pending');
     expect(submission.coachStatus).toBe('approved');
     expect(submission.coachReviewedBy).toBe('screener-1');
+    expect(submission.notificationReadAt).toBeNull();
     expect(submission.approvedBy).toBeUndefined();
     expect(submission.reviewedBy).toBeUndefined();
     expect(submission.save).toHaveBeenCalled();

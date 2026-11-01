@@ -12,7 +12,12 @@ const { corsOptions } = require('./src/config/cors');
 const { getJWTSecret } = require('./src/config/security');
 const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('./src/config/passwords');
 const { getEmailConfigurationStatus } = require('./src/config/email');
-const { apiRateLimiter, coachApiRateLimiter } = require('./src/config/rateLimit');
+const {
+  apiRateLimiter,
+  coachApiRateLimiter,
+  registrationVerificationRateLimiter
+} = require('./src/config/rateLimit');
+const { checkStudentIdAvailability } = require('./src/controllers/authControllers');
 const User = require('./src/models/User');
 const StudentProfile = require('./src/models/StudentProfile');
 const { deleteProfilePhoto, uploadProfilePhoto, streamProfilePhoto } = require('./src/config/profilePhotoStorage');
@@ -230,6 +235,11 @@ app.get(`${BASE_URI}/health`, (req, res) => {
 app.use(`${BASE_URI}/schedules`, scheduleRoutes);
 
 // 3. AUTH - Login, Register, and Password Reset are PUBLIC
+app.get(
+  `${BASE_URI}/register/check-id`,
+  registrationVerificationRateLimiter,
+  checkStudentIdAvailability
+);
 app.use(`${BASE_URI}`, authRoutes);
 
 // PROFILE - current user routes
