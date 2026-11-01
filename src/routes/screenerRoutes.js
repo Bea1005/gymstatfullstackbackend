@@ -11,6 +11,7 @@ const {
   normalizeParticipationType
 } = require('../models/studentRequirementCollections');
 const { getStudentSports, splitRequirementSports } = require('../utils/requirementSports');
+const Requirement = require('../models/Requirement');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
@@ -475,11 +476,35 @@ const getCoachForwardingContext = async (coach) => {
     }));
   }));
   const allSubmissions = submissionsByEvent.flat();
+  // Exclude submissions linked to archived or inactive Requirement templates.
+  // Built-in types (med, psa, cor, insurance, profile, consent) have no parent
+  // template and are always included. Only custom other-type submissions are
+  // cross-referenced against the Requirement template status.
+  const fwdCustomIds = [...new Set(
+    allSubmissions
+      .filter((s) => String(s.requirementType || '').toLowerCase() === 'other' && s.customRequirementId)
+      .map((s) => s.customRequirementId)
+  )];
+  let fwdActiveTemplateIds = new Set();
+  if (fwdCustomIds.length) {
+    const fwdActiveTemplates = await Requirement.find({
+      _id: { $in: fwdCustomIds },
+      status: { $in: ['published'] },
+      isActive: { $ne: false },
+    }).select('_id').lean();
+    fwdActiveTemplateIds = new Set(fwdActiveTemplates.map((t) => String(t._id)));
+  }
+  const activeAllSubmissions = allSubmissions.filter((s) => {
+    if (String(s.requirementType || '').toLowerCase() !== 'other') return true;
+    if (!s.customRequirementId) return true;
+    return fwdActiveTemplateIds.has(String(s.customRequirementId));
+  });
+
   const rosterByStudentId = new Map(roster.map(({ student, matchedSports }) => [
     String(student._id),
     { student, matchedSports },
   ]));
-  const inScopeSubmissions = allSubmissions.filter((submission) => {
+  const inScopeSubmissions = activeAllSubmissions.filter((submission) => {
     const studentId = String(submission.studentId?._id || submission.studentId || '');
     const athlete = rosterByStudentId.get(studentId);
     if (!athlete) return false;
@@ -955,7 +980,31 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
     }));
 
     const submissions = submissionsByEvent.flat();
-    const inScopeSubmissions = submissions.filter((submission) => {
+    // Exclude submissions linked to archived or inactive Requirement templates.
+    // Built-in types (med, psa, cor, insurance, profile, consent) have no parent
+    // template and are always included. Only custom other-type submissions are
+    // cross-referenced against the Requirement template status.
+    const getCustomIds = [...new Set(
+      submissions
+        .filter((s) => String(s.requirementType || '').toLowerCase() === 'other' && s.customRequirementId)
+        .map((s) => s.customRequirementId)
+    )];
+    let getActiveTemplateIds = new Set();
+    if (getCustomIds.length) {
+      const getActiveTemplates = await Requirement.find({
+        _id: { $in: getCustomIds },
+        status: { $in: ['published'] },
+        isActive: { $ne: false },
+      }).select('_id').lean();
+      getActiveTemplateIds = new Set(getActiveTemplates.map((t) => String(t._id)));
+    }
+    const activeSubmissions = submissions.filter((s) => {
+      if (String(s.requirementType || '').toLowerCase() !== 'other') return true;
+      if (!s.customRequirementId) return true;
+      return getActiveTemplateIds.has(String(s.customRequirementId));
+    });
+
+    const inScopeSubmissions = activeSubmissions.filter((submission) => {
       const participationType = submission.participationType || 'Intrams';
       if (eventScope.size && !eventScope.has(normalizeScopeValue(participationType))) return false;
 
