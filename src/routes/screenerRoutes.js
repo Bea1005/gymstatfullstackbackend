@@ -258,7 +258,6 @@ const normalizeScopeValue = (value) => String(value || '')
 
 const getCoachForwardingReadiness = (roster, submissions, eventScope) => {
   const latestSubmissionsById = new Map();
-  let ready = roster.length > 0;
 
   roster.forEach(({ student, matchedSports }) => {
     const studentId = String(student?._id || student?.id || student?.userId || '');
@@ -268,54 +267,29 @@ const getCoachForwardingReadiness = (roster, submissions, eventScope) => {
 
     matchedSports.forEach((sport) => {
       const sportSubmissions = getSportScopedSubmissions(studentSubmissions, sport);
-      const participationTypes = eventScope.size
-        ? ['Intrams', 'STRASUC'].filter((event) => eventScope.has(normalizeScopeValue(event)))
-        : [...new Set(sportSubmissions.map((submission) => (
-            submission.participationType || 'Intrams'
-          )))];
-
-      if (!participationTypes.length) {
-        ready = false;
-        return;
-      }
+      const participationTypes = [...new Set(sportSubmissions
+        .map((submission) => submission.participationType || 'Intrams')
+        .filter((event) => (
+          !eventScope.size || eventScope.has(normalizeScopeValue(event))
+        )))];
 
       participationTypes.forEach((participationType) => {
         const eventSubmissions = sportSubmissions.filter((submission) => (
           normalizeScopeValue(submission.participationType || 'Intrams')
           === normalizeScopeValue(participationType)
         ));
-        const latestByRequirement = new Map();
         eventSubmissions.forEach((submission) => {
-          const requirementType = String(submission.requirementType || '').toLowerCase();
-          const normalizedType = requirementType === 'medical' ? 'med' : requirementType;
-          const requirementKey = normalizedType === 'other'
-            ? `other:${submission.customRequirementId || submission.customRequirementLabel || submission._id}`
-            : normalizedType;
-          const previous = latestByRequirement.get(requirementKey);
-          if (!previous || new Date(submission.uploadDate || submission.createdAt || 0)
-            > new Date(previous.uploadDate || previous.createdAt || 0)) {
-            latestByRequirement.set(requirementKey, submission);
-          }
-        });
-
-        const latestSubmissions = [...latestByRequirement.values()];
-        const requiredTypesApproved = ['med', 'psa', 'insurance', 'profile', 'consent']
-          .every((type) => latestByRequirement.get(type)?.coachStatus === 'approved');
-        if (!eventSubmissions.length || !requiredTypesApproved
-          || latestSubmissions.some((submission) => submission.coachStatus !== 'approved')) {
-          ready = false;
-        }
-
-        latestSubmissions.forEach((submission) => {
           latestSubmissionsById.set(String(submission._id), submission);
         });
       });
     });
   });
 
+  const applicableSubmissions = [...latestSubmissionsById.values()];
   return {
-    ready,
-    submissions: [...latestSubmissionsById.values()],
+    ready: applicableSubmissions.length > 0
+      && applicableSubmissions.every((submission) => submission.coachStatus === 'approved'),
+    submissions: applicableSubmissions,
   };
 };
 
@@ -662,11 +636,13 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
         athletesBySport.get(key).athletes.push(student);
       });
     });
-    const readySports = new Set(
-      [...athletesBySport.entries()]
-        .filter(([, group]) => isCoachApprovedSportGroup(group.athletes, submissions, group.sport))
-        .map(([key]) => key)
-    );
+    const readySports = isScreener
+      ? new Set()
+      : new Set(
+          [...athletesBySport.entries()]
+            .filter(([, group]) => isCoachApprovedSportGroup(group.athletes, submissions, group.sport))
+            .map(([key]) => key)
+        );
 
     console.log(`📄 Found ${submissions.length} requirement submissions`);
 
@@ -802,6 +778,8 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
         hasUpload,
+        screenerForwardedAt: submission.screenerForwardedAt || null,
+        screenerForwardedBy: submission.screenerForwardedBy || null,
         participationType: submission.participationType || 'Intrams',
         sport: submission.sport || studentEntry.sport
       };
@@ -815,11 +793,10 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
 
     // Convert map to array and add overall status
     const students = Array.from(studentsById.values()).flatMap((student) => {
-      const readyStudentSports = student.sports.filter((sport) => readySports.has(normalizeScopeValue(sport)));
-      if (!readyStudentSports.length) return [];
-
       const eligibleDocuments = student.requirements.documents.filter((document) => {
+        if (isScreener) return Boolean(document.screenerForwardedAt);
         if (document.coachStatus !== 'approved') return false;
+        const readyStudentSports = student.sports.filter((sport) => readySports.has(normalizeScopeValue(sport)));
         const documentSports = splitRequirementSports(document.sport || '')
           .map(normalizeScopeValue)
           .filter(Boolean);
@@ -829,6 +806,9 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
       });
       if (!eligibleDocuments.length) return [];
 
+      const readyStudentSports = isScreener
+        ? student.sports
+        : student.sports.filter((sport) => readySports.has(normalizeScopeValue(sport)));
       const requirements = {
         cor: null,
         med: null,
@@ -848,7 +828,7 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
 
       return [{
         ...student,
-        sport: readyStudentSports[0],
+        sport: readyStudentSports[0] || student.sport,
         sports: readyStudentSports,
         requirements,
         overallStatus: deriveOverallStatus(requirements)
