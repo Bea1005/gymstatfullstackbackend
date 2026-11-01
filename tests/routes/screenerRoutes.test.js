@@ -1,6 +1,7 @@
 const httpMocks = require('node-mocks-http');
 const express = require('express');
 const request = require('supertest');
+const mongoose = require('mongoose');
 const StudentRequirement = require('../../src/models/StudentRequirement');
 const StudentRequirementStrasuc = require('../../src/models/StudentRequirementStrasuc');
 const User = require('../../src/models/User');
@@ -29,6 +30,7 @@ const makeCoachApprovedRequirements = (studentId, sport, participationType = 'In
     fileName: `${requirementType}.pdf`,
     fileType: 'application/pdf',
     fileSize: 64,
+    requirementStatus: 'active',
     status: 'pending',
     coachStatus: 'approved',
     uploadDate: new Date(`2026-10-0${index + 1}T00:00:00.000Z`)
@@ -105,6 +107,7 @@ describe('Screener routes', () => {
         fileName: 'registration.pdf',
         fileType: 'application/pdf',
         fileSize: 64,
+        requirementStatus: 'active',
         files: [
           { fileName: 'front.jpg', fileType: 'image/jpeg', fileSize: 30 },
           { fileName: 'back.jpg', fileType: 'image/jpeg', fileSize: 34 }
@@ -120,6 +123,7 @@ describe('Screener routes', () => {
         fileName: 'psa.pdf',
         fileType: 'application/pdf',
         fileSize: 64,
+        requirementStatus: 'active',
         status: 'pending'
       }
     ]));
@@ -138,21 +142,13 @@ describe('Screener routes', () => {
     expect(response.body.data[0].requirements.documents).toHaveLength(1);
     expect(response.body.data[0].requirements.documents[0].files).toHaveLength(2);
     expect(response.body.data[0].requirements.documents[0].fileUrl).toContain('/coach/requirements/');
-    expect(response.body.data[0].batchStatusBySport).toEqual([
-      expect.objectContaining({
-        sport: 'Basketball Women',
-        ready: false,
-        approvedAthletes: 0,
-        totalAthletes: 1
-      }),
-      expect.objectContaining({
-        sport: 'Softball',
-        ready: false,
-        approvedAthletes: 0,
-        totalAthletes: 1
-      })
-    ]);
+    expect(response.body.forwardingStatus.canForward).toBe(false);
     expect(StudentRequirement.find).toHaveBeenCalledTimes(1);
+    expect(StudentRequirement.find).toHaveBeenCalledWith(expect.objectContaining({
+      $and: expect.arrayContaining([
+        { requirementStatus: 'active' }
+      ])
+    }));
   });
 
   it('groups a student assigned to multiple sports and events without duplicate entries', async () => {
@@ -183,6 +179,7 @@ describe('Screener routes', () => {
       fileName: 'intrams.pdf',
       fileType: 'application/pdf',
       fileSize: 10,
+      requirementStatus: 'active',
       status: 'pending'
     }]));
     StudentRequirementStrasuc.find.mockReturnValue(makeQuery([{
@@ -194,6 +191,7 @@ describe('Screener routes', () => {
       fileName: 'strasuc.pdf',
       fileType: 'application/pdf',
       fileSize: 12,
+      requirementStatus: 'active',
       status: 'pending'
     }]));
 
@@ -206,6 +204,146 @@ describe('Screener routes', () => {
     expect(response.body.data[0].requirements.documents.map((entry) => entry.participationType))
       .toEqual(expect.arrayContaining(['Intrams', 'STRASUC']));
     expect(StudentRequirementStrasuc.find).toHaveBeenCalledTimes(1);
+  });
+
+  it('bases forwarding readiness on the latest coach review status for each requirement', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(result)
+    });
+    const submissions = makeCoachApprovedRequirements('student-complete', 'Basketball');
+    submissions.unshift({
+      ...submissions[0],
+      _id: 'student-complete-old-medical',
+      coachStatus: 'rejected',
+      uploadDate: new Date('2026-09-30T00:00:00.000Z')
+    });
+    User.findById.mockReturnValue(makeQuery({
+      role: 'coach',
+      assignedSports: ['Basketball'],
+      assignedEvents: ['Intrams']
+    }));
+    User.find.mockReturnValue(makeQuery([{
+      _id: 'student-complete',
+      role: 'student',
+      fullname: 'Complete Student',
+      sports: ['Basketball']
+    }]));
+    StudentAthlete.find.mockReturnValue(makeQuery([]));
+    StudentRequirement.find.mockReturnValue(makeQuery(submissions));
+
+    const completeResponse = await request(app)
+      .get('/api/v1/coach/requirements')
+      .set('x-test-role', 'coach');
+
+    expect(completeResponse.status).toBe(200);
+    const coachDocuments = completeResponse.body.data[0].requirements.documents;
+    expect(coachDocuments).toHaveLength(6);
+    expect(coachDocuments.some((document) => document.status === 'rejected')).toBe(true);
+    expect(coachDocuments[0].finalStatus).toBe('pending');
+    expect(completeResponse.body.forwardingStatus.canForward).toBe(true);
+
+    submissions[1].coachStatus = 'rejected';
+    const incompleteResponse = await request(app)
+      .get('/api/v1/coach/requirements')
+      .set('x-test-role', 'coach');
+
+    expect(incompleteResponse.status).toBe(200);
+    expect(incompleteResponse.body.forwardingStatus.canForward).toBe(false);
+  });
+
+  it('ignores archived and non-active requirements when calculating forwarding readiness', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(result)
+    });
+    const activeSubmissions = makeCoachApprovedRequirements('student-active', 'Basketball');
+    const inactiveSubmissions = [
+      { ...activeSubmissions[0], _id: 'archived-rejected', requirementStatus: 'archived', coachStatus: 'rejected' },
+      { ...activeSubmissions[0], _id: 'reusable-pending', requirementStatus: 'reusable', coachStatus: 'pending' },
+      { ...activeSubmissions[0], _id: 'expired-pending', requirementStatus: 'expired', coachStatus: 'pending' },
+      { ...activeSubmissions[0], _id: 'missing-status-pending', requirementStatus: undefined, coachStatus: 'pending' }
+    ];
+    User.findById.mockReturnValue(makeQuery({
+      role: 'coach',
+      assignedSports: ['Basketball'],
+      assignedEvents: ['Intrams']
+    }));
+    User.find.mockReturnValue(makeQuery([{
+      _id: 'student-active',
+      role: 'student',
+      fullname: 'Active Student',
+      sports: ['Basketball']
+    }]));
+    StudentAthlete.find.mockReturnValue(makeQuery([]));
+    StudentRequirement.find.mockReturnValue(makeQuery([...activeSubmissions, ...inactiveSubmissions]));
+
+    const response = await request(app)
+      .get('/api/v1/coach/requirements')
+      .set('x-test-role', 'coach');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data[0].requirements.documents).toHaveLength(activeSubmissions.length);
+    expect(response.body.forwardingStatus.canForward).toBe(true);
+    expect(StudentRequirement.find).toHaveBeenCalledWith(expect.objectContaining({
+      $and: expect.arrayContaining([
+        { requirementStatus: 'active' }
+      ])
+    }));
+  });
+
+  it('prevents forwarding if required document categories are missing', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(result)
+    });
+    const submissions = [
+      {
+        _id: 'student-sparse-medical',
+        studentId: 'student-sparse',
+        requirementType: 'medical',
+        participationType: 'Intrams',
+        sport: 'Basketball',
+        requirementStatus: 'active',
+        status: 'pending',
+        coachStatus: 'approved',
+        uploadDate: new Date('2026-10-02T00:00:00.000Z')
+      },
+      {
+        _id: 'student-sparse-psa',
+        studentId: 'student-sparse',
+        requirementType: 'psa',
+        participationType: 'Intrams',
+        sport: 'Basketball',
+        requirementStatus: 'active',
+        status: 'pending',
+        coachStatus: 'approved',
+        uploadDate: new Date('2026-10-03T00:00:00.000Z')
+      }
+    ];
+    User.findById.mockReturnValue(makeQuery({
+      role: 'coach',
+      assignedSports: ['Basketball'],
+      assignedEvents: ['Intrams']
+    }));
+    User.find.mockReturnValue(makeQuery([{
+      _id: 'student-sparse',
+      role: 'student',
+      fullname: 'Sparse Requirements',
+      sports: ['Basketball']
+    }]));
+    StudentAthlete.find.mockReturnValue(makeQuery([]));
+    StudentRequirement.find.mockReturnValue(makeQuery(submissions));
+
+    const response = await request(app)
+      .get('/api/v1/coach/requirements')
+      .set('x-test-role', 'coach');
+
+    expect(response.status).toBe(200);
+    expect(response.body.forwardingStatus.canForward).toBe(false);
   });
 
   it('releases complete sport groups together and keeps other sports independent', async () => {
@@ -370,6 +508,135 @@ describe('Screener routes', () => {
     expect(submission.save).toHaveBeenCalled();
   });
 
+  it('prevents forwarding while any assigned student requirement is pending coach screening', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(result)
+    });
+    const submissions = makeCoachApprovedRequirements('student-forward', 'Basketball')
+      .map((submission) => submission.requirementType === 'consent'
+        ? { ...submission, coachStatus: 'pending' }
+        : submission);
+    User.findById.mockReturnValue(makeQuery({
+      _id: 'coach-1',
+      role: 'coach',
+      assignedSports: ['Basketball']
+    }));
+    User.find.mockReturnValue(makeQuery([{
+      _id: 'student-forward',
+      role: 'student',
+      sports: ['Basketball']
+    }]));
+    StudentAthlete.find.mockReturnValue(makeQuery([]));
+    const archivedSubmission = {
+      ...submissions[0],
+      _id: 'archived-forward-requirement',
+      requirementStatus: 'archived',
+      coachStatus: 'rejected'
+    };
+    StudentRequirement.find.mockReturnValue(makeQuery([...submissions, archivedSubmission]));
+    StudentRequirementStrasuc.find.mockReturnValue(makeQuery([]));
+
+    const response = await request(app)
+      .post('/api/v1/coach/requirements/forward')
+      .set('x-test-role', 'coach');
+
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain('complete the initial screening');
+  });
+
+  it('forwards all approved assigned requirements and records the coach and time', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(result)
+    });
+    const submissions = makeCoachApprovedRequirements('student-forward', 'Basketball');
+    const archivedSubmission = {
+      ...submissions[0],
+      _id: 'archived-forward-requirement',
+      requirementStatus: 'archived',
+      coachStatus: 'rejected'
+    };
+    const session = {
+      withTransaction: jest.fn(async (callback) => callback()),
+      endSession: jest.fn()
+    };
+    const originalStartSession = mongoose.startSession;
+    mongoose.startSession = jest.fn().mockResolvedValue(session);
+    User.findById.mockReturnValue(makeQuery({
+      _id: 'coach-1',
+      role: 'coach',
+      assignedSports: ['Basketball']
+    }));
+    User.find.mockReturnValue(makeQuery([{
+      _id: 'student-forward',
+      role: 'student',
+      sports: ['Basketball']
+    }]));
+    StudentAthlete.find.mockReturnValue(makeQuery([]));
+    StudentRequirement.find.mockReturnValue(makeQuery([...submissions, archivedSubmission]));
+    StudentRequirementStrasuc.find.mockReturnValue(makeQuery([]));
+    StudentRequirement.updateMany = jest.fn().mockResolvedValue({
+      modifiedCount: submissions.length
+    });
+
+    const response = await request(app)
+      .post('/api/v1/coach/requirements/forward')
+      .set('x-test-role', 'coach');
+
+    mongoose.startSession = originalStartSession;
+    expect(response.status).toBe(200);
+    expect(response.body.forwardedCount).toBe(submissions.length);
+    expect(session.withTransaction).toHaveBeenCalled();
+    expect(StudentRequirement.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: { $in: submissions.map((submission) => submission._id) },
+        coachStatus: 'approved',
+        requirementStatus: 'active',
+        screenerForwardedAt: null
+      }),
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          screenerForwardedAt: expect.any(Date),
+          screenerForwardedBy: 'coach-1'
+        })
+      }),
+      { session }
+    );
+    expect(StudentRequirement.updateMany.mock.calls[0][0]._id.$in)
+      .not.toContain(archivedSubmission._id);
+    expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('prevents forwarding a group that has already been forwarded', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(result)
+    });
+    const submissions = makeCoachApprovedRequirements('student-forward', 'Basketball')
+      .map((submission) => ({ ...submission, screenerForwardedAt: new Date() }));
+    User.findById.mockReturnValue(makeQuery({
+      _id: 'coach-1',
+      role: 'coach',
+      assignedSports: ['Basketball']
+    }));
+    User.find.mockReturnValue(makeQuery([{
+      _id: 'student-forward',
+      role: 'student',
+      sports: ['Basketball']
+    }]));
+    StudentAthlete.find.mockReturnValue(makeQuery([]));
+    StudentRequirement.find.mockReturnValue(makeQuery(submissions));
+    StudentRequirementStrasuc.find.mockReturnValue(makeQuery([]));
+
+    const response = await request(app)
+      .post('/api/v1/coach/requirements/forward')
+      .set('x-test-role', 'coach');
+
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain('already been forwarded');
+  });
+
   it('denies marking a different-department requirement as viewed', async () => {
     const submission = {
       _id: 'other-department-submission',
@@ -516,6 +783,11 @@ describe('Screener routes', () => {
     expect(listedStudentIds).toContain('student-own');
     expect(listedStudentIds).not.toContain('student-other');
     expect(User.find).toHaveBeenCalled();
+    expect(StudentRequirement.find).toHaveBeenCalledWith(expect.objectContaining({
+      $and: expect.arrayContaining([
+        { screenerForwardedAt: { $ne: null } }
+      ])
+    }));
   });
 
   it('does not return student records when a screener has no assigned department', async () => {
@@ -756,6 +1028,8 @@ describe('Screener routes', () => {
     const submission = {
       _id: 'own-submission',
       studentId: 'student-own',
+      coachStatus: 'approved',
+      screenerForwardedAt: new Date(),
       save: jest.fn()
     };
     StudentRequirement.findById.mockResolvedValue(submission);
@@ -779,6 +1053,7 @@ describe('Screener routes', () => {
       _id: 'assigned-submission',
       studentId: 'student-assigned',
       coachStatus: 'approved',
+      screenerForwardedAt: new Date(),
       save: jest.fn().mockResolvedValue(true)
     };
     StudentRequirement.findById.mockResolvedValue(submission);
@@ -853,7 +1128,9 @@ describe('Screener routes', () => {
         studentId: 'student-own',
         fileName: 'own.pdf',
         fileType: 'application/pdf',
-        fileData: Buffer.from('private requirement')
+        fileData: Buffer.from('private requirement'),
+        coachStatus: 'approved',
+        screenerForwardedAt: new Date()
       })
     });
     User.findById.mockReturnValue({
@@ -870,6 +1147,33 @@ describe('Screener routes', () => {
     expect(response.body.message).toContain('not authorized');
   });
 
+  it('denies Screener preview of a same-department requirement before forwarding', async () => {
+    const submissionId = '507f1f77bcf86cd799439011';
+    StudentRequirement.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: submissionId,
+        studentId: 'student-assigned',
+        fileName: 'assigned.pdf',
+        fileType: 'application/pdf',
+        fileData: Buffer.from('private requirement'),
+        coachStatus: 'approved'
+      })
+    });
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ department: 'CICS' })
+    });
+
+    const response = await request(app)
+      .get(`/api/v1/screener/requirements/${submissionId}/preview?participationType=Intrams`)
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain('has not been forwarded');
+  });
+
   it('previews an assigned-department requirement', async () => {
     const submissionId = '507f1f77bcf86cd799439011';
     const uploadedFile = Buffer.from('%PDF-1.4 assigned');
@@ -881,7 +1185,8 @@ describe('Screener routes', () => {
         fileName: 'assigned.pdf',
         fileType: 'application/pdf',
         fileData: uploadedFile,
-        coachStatus: 'approved'
+        coachStatus: 'approved',
+        screenerForwardedAt: new Date()
       })
     });
     User.findById.mockReturnValue({

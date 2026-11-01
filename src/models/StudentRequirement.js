@@ -80,6 +80,15 @@ const StudentRequirementSchema = new mongoose.Schema({
     ref: 'User',
     default: null
   },
+  screenerForwardedAt: {
+    type: Date,
+    default: null
+  },
+  screenerForwardedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
   coachRemarks: {
     type: String,
     default: ''

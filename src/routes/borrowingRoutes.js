@@ -45,6 +45,12 @@ const normalizeTimestampObject = (value) => {
     time: String(value.time || '').trim()
   };
 };
+const getReturnedTimestamp = (borrowing, returnedAt) => {
+  const timestamp = borrowing.returnedTimestamp;
+  if (timestamp && (String(timestamp.date || '').trim() || String(timestamp.time || '').trim())) return timestamp;
+  if (!returnedAt) return null;
+  return formatBorrowTimestamp(returnedAt);
+};
 const getBorrowingEquipmentItems = (borrowing) => (
   Array.isArray(borrowing.equipmentItems) && borrowing.equipmentItems.length > 0
     ? borrowing.equipmentItems.map((item) => ({
@@ -103,7 +109,7 @@ const buildBorrowingResponse = (borrowing) => {
     borrowTimestamp: borrowing.borrowTimestamp || formatBorrowTimestamp(borrowDate),
     returnDate: borrowing.returnDate || null,
     endTime: borrowing.endTime || '',
-    returnedTimestamp: borrowing.returnedTimestamp || (returnedAt ? formatBorrowTimestamp(returnedAt) : null),
+    returnedTimestamp: getReturnedTimestamp(borrowing, returnedAt),
     status: borrowing.status === 'Completed' ? 'Returned' : (borrowing.status === 'Out Now' ? 'Out' : borrowing.status || 'Out'),
     condition: borrowing.condition || null,
     borrowDate: borrowDate,
@@ -246,6 +252,7 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
       referenceIds,
       referenceConditions,
       borrowTimestamp,
+      returnDate,
       endTime,
       returnedTimestamp,
       status,
@@ -261,6 +268,9 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
     const borrowingDateTime = normalizedBorrowTimestamp.date || normalizedBorrowTimestamp.time
       ? validateBorrowingDateTime(normalizedBorrowTimestamp.date, normalizedBorrowTimestamp.time)
       : getCurrentManilaBorrowingDateTime();
+    const normalizedReturnDate = normalizeText(returnDate)
+      || normalizedBorrowTimestamp.date
+      || borrowingDateTime.date;
     const itemGroups = normalizeEquipmentItems(equipmentItems, {
       equipment,
       quantity,
@@ -281,6 +291,15 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
     }
     if (borrowingDateTime.error) {
       return res.status(400).json({ error: borrowingDateTime.error });
+    }
+    const returnDateValue = new Date(`${normalizedReturnDate}T00:00:00.000Z`);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(normalizedReturnDate)
+      || Number.isNaN(returnDateValue.getTime())
+      || returnDateValue.toISOString().slice(0, 10) !== normalizedReturnDate
+      || normalizedReturnDate < borrowingDateTime.date
+    ) {
+      return res.status(400).json({ error: 'Please provide a valid return date on or after the borrowing date.' });
     }
     if (itemGroups.some((item) => (
       !item.equipment
@@ -382,6 +401,7 @@ router.post('/admin/borrowing', protect, authorize('admin'), async (req, res) =>
             date: borrowingDateTime.date,
             time: borrowingDateTime.time,
           },
+          returnDate: returnDateValue,
           endTime: normalizeText(endTime),
           returnedTimestamp: normalizedReturnedTimestamp,
           status: status || 'Out Now',

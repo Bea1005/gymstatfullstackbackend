@@ -70,7 +70,36 @@ describe('multi-equipment borrowing transaction routes', () => {
     expect(Borrowing.create).not.toHaveBeenCalled();
   });
 
+  test('rejects an end date earlier than the borrowing date', async () => {
+    const today = getCurrentManilaBorrowingDateTime().date;
+    const startDate = new Date(`${today}T00:00:00.000Z`);
+    startDate.setUTCDate(startDate.getUTCDate() + 1);
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      body: {
+        fullname: 'Student Athlete',
+        equipmentItems: [{ equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 }],
+        borrowTimestamp: {
+          date: startDate.toISOString().slice(0, 10),
+          time: '09:00 AM',
+        },
+        returnDate: today,
+      },
+    });
+    const res = httpMocks.createResponse();
+
+    await getHandler('post', '/admin/borrowing')(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().error).toBe('Please provide a valid return date on or after the borrowing date.');
+    expect(Equipment.findOne).not.toHaveBeenCalled();
+    expect(Borrowing.create).not.toHaveBeenCalled();
+  });
+
   test('creates one transaction with distinct equipment groups and updates each selected unit', async () => {
+    const returnDate = new Date(`${getCurrentManilaBorrowingDateTime().date}T00:00:00.000Z`);
+    returnDate.setUTCDate(returnDate.getUTCDate() + 1);
+    const returnDateString = returnDate.toISOString().slice(0, 10);
     const volleyball = createEquipment('Volleyball', 'VB-001');
     const volleyballSecond = createEquipment('Volleyball', 'VB-002');
     const baseball = createEquipment('Baseball', 'BB-001');
@@ -92,6 +121,7 @@ describe('multi-equipment borrowing transaction routes', () => {
         fullname: 'Student Athlete',
         borrowerType: 'Others (Office/Agency)',
         borrowerTypeOther: 'Office of Student Affairs',
+        returnDate: returnDateString,
         equipmentItems: [
           { equipment: 'Volleyball', referenceIds: ['VB-001', 'VB-002'], referenceConditions: ['Good', 'Good'], quantity: 2 },
           { equipment: 'Baseball', referenceIds: ['BB-001'], referenceConditions: ['Good'], quantity: 1 },
@@ -107,6 +137,7 @@ describe('multi-equipment borrowing transaction routes', () => {
     expect(Borrowing.create.mock.calls[0][0][0]).toMatchObject({
       borrowerType: 'Others (Office/Agency)',
       borrowerTypeOther: 'Office of Student Affairs',
+      returnDate,
       equipment: 'Volleyball, Baseball',
       equipmentItems: [
         { equipment: 'Volleyball', referenceIds: ['VB-001', 'VB-002'], quantity: 2 },
@@ -116,6 +147,7 @@ describe('multi-equipment borrowing transaction routes', () => {
     expect(res._getJSONData()).toMatchObject({
       borrowerType: 'Others (Office/Agency)',
       borrowerTypeOther: 'Office of Student Affairs',
+      returnDate: returnDate.toISOString(),
     });
     expect(session.withTransaction).toHaveBeenCalledTimes(1);
   });
@@ -172,6 +204,7 @@ describe('multi-equipment borrowing transaction routes', () => {
     expect(Borrowing.create.mock.calls[0][0][0].equipmentItems).toEqual([
       expect.objectContaining({ equipment: 'Volleyball', referenceIds: ['VB-002'], quantity: 1 }),
     ]);
+    expect(Borrowing.create.mock.calls[0][0][0].returnDate).toEqual(expect.any(Date));
   });
 
   test('rejects duplicate Reference IDs across equipment groups', async () => {
