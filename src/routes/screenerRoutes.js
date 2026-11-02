@@ -86,8 +86,9 @@ const serveScreenerRequirementFile = async (req, res) => {
       if (!context) {
         return res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
       }
-    } else if (await denyScreenerDepartmentMismatch(req, res, submission)) {
-      return;
+    } else {
+      if (await denyScreenerDepartmentMismatch(req, res, submission)) return;
+      if (await denyScreenerSportMismatch(req, res, submission, req.query.sport)) return;
     }
     if (role === 'screener' && submission.coachStatus !== 'approved') {
       return res.status(409).json({
@@ -257,13 +258,13 @@ const normalizeScopeValue = (value) => String(value || '')
   .toLowerCase();
 
 const getCoachForwardingReadiness = (roster, submissions, eventScope) => {
-  const latestSubmissionsById = new Map();
+  const latestSubmissionsByRequirement = new Map();
 
   roster.forEach(({ student, matchedSports }) => {
     const studentId = String(student?._id || student?.id || student?.userId || '');
     const studentSubmissions = submissions.filter((submission) => (
       String(submission.studentId?._id || submission.studentId || '') === studentId
-    ));
+    ) && isActiveRequirement(submission));
 
     matchedSports.forEach((sport) => {
       const sportSubmissions = getSportScopedSubmissions(studentSubmissions, sport);
@@ -279,13 +280,28 @@ const getCoachForwardingReadiness = (roster, submissions, eventScope) => {
           === normalizeScopeValue(participationType)
         ));
         eventSubmissions.forEach((submission) => {
-          latestSubmissionsById.set(String(submission._id), submission);
+          const requirementType = String(submission.requirementType || '').toLowerCase();
+          const normalizedType = requirementType === 'medical' ? 'med' : requirementType;
+          const requirementKey = normalizedType === 'other'
+            ? `other:${submission.customRequirementId || submission.customRequirementLabel || submission._id}`
+            : normalizedType;
+          const key = [
+            studentId,
+            normalizeScopeValue(sport),
+            normalizeScopeValue(participationType),
+            requirementKey,
+          ].join(':');
+          const current = latestSubmissionsByRequirement.get(key);
+          if (!current || new Date(submission.uploadDate || submission.createdAt || 0)
+            > new Date(current.uploadDate || current.createdAt || 0)) {
+            latestSubmissionsByRequirement.set(key, submission);
+          }
         });
       });
     });
   });
 
-  const applicableSubmissions = [...latestSubmissionsById.values()];
+  const applicableSubmissions = [...latestSubmissionsByRequirement.values()];
   return {
     ready: applicableSubmissions.length > 0
       && applicableSubmissions.every((submission) => submission.coachStatus === 'approved'),
@@ -299,7 +315,7 @@ const normalizeDepartmentValue = (value) => String(value || '')
   .trim()
   .toLowerCase();
 
-const collectCoachSports = (coach) => {
+const collectCoachSportLabels = (coach) => {
   const sports = [
     ...(Array.isArray(coach?.assignedSports) ? coach.assignedSports : []),
     ...(Array.isArray(coach?.sports) ? coach.sports : []),
@@ -309,7 +325,21 @@ const collectCoachSports = (coach) => {
     coach?.sport,
   ];
 
-  return new Set(sports.map(normalizeScopeValue).filter(Boolean));
+  return [...new Map(sports
+    .map((sport) => [normalizeScopeValue(sport), String(sport || '').trim()])
+    .filter(([normalized, label]) => normalized && label)).values()];
+};
+
+const collectCoachSports = (coach) => new Set(
+  collectCoachSportLabels(coach).map(normalizeScopeValue).filter(Boolean)
+);
+
+const getCoachPrimarySport = (coach) => {
+  const sportLabels = collectCoachSportLabels(coach);
+  const primarySport = normalizeScopeValue(coach?.sport);
+  return sportLabels.find((sport) => normalizeScopeValue(sport) === primarySport)
+    || sportLabels[0]
+    || '';
 };
 
 const collectCoachEvents = (coach) => {
@@ -331,8 +361,57 @@ const collectCoachEvents = (coach) => {
 };
 
 const findCoachAccount = async (coachId) => User.findById(coachId)
-  .select('role sport sports assignedSports sportParticipation assignedEvents assignedParticipationTypes events eventAssignments')
+  .select('role sport sports assignedSports sportParticipation assignedEvents assignedParticipationTypes events eventAssignments strasucStudentIds')
   .lean();
+
+const getCoachGalleryRoster = async (coach) => {
+  const assignedStudentIds = Array.isArray(coach?.strasucStudentIds)
+    ? [...new Set(coach.strasucStudentIds.map(String))]
+    : [];
+  if (!assignedStudentIds.length) return [];
+
+  const students = await User.find({
+    role: 'student',
+    _id: { $in: assignedStudentIds },
+  })
+    .select('fullname username id studentNumber department yearLevel sport sports assignedSports sportParticipation')
+    .lean();
+  if (!students.length) return [];
+
+  const profileLinks = [
+    { userId: { $in: students.map((student) => student._id) } },
+    { id: { $in: students.map((student) => student.id).filter(Boolean) } },
+    { studentNumber: { $in: students.map((student) => student.studentNumber).filter(Boolean) } },
+  ];
+  let profileQuery = StudentAthlete.find({ $or: profileLinks })
+    .select('userId id studentNumber fullname department yearLevel sport sports assignedSports sportParticipation updatedAt');
+  if (typeof profileQuery.sort === 'function') {
+    profileQuery = profileQuery.sort({ updatedAt: -1 });
+  }
+  const profiles = await profileQuery.lean();
+
+  const usersById = new Map(students.map((student) => [String(student._id), student]));
+  const usersByRegisteredId = new Map(students
+    .filter((student) => student.id)
+    .map((student) => [String(student.id), student]));
+  const usersByStudentNumber = new Map(students
+    .filter((student) => student.studentNumber)
+    .map((student) => [String(student.studentNumber), student]));
+  const profilesByUserId = new Map();
+  profiles.forEach((profile) => {
+    const user = usersById.get(String(profile.userId || ''))
+      || usersByRegisteredId.get(String(profile.id || ''))
+      || usersByStudentNumber.get(String(profile.studentNumber || ''));
+    if (user && !profilesByUserId.has(String(user._id))) {
+      profilesByUserId.set(String(user._id), profile);
+    }
+  });
+
+  return students.map((student) => ({
+    student,
+    profile: profilesByUserId.get(String(student._id)) || {},
+  }));
+};
 
 const findStudentForCoachRequirement = async (studentId) => {
   if (!studentId) return null;
@@ -364,20 +443,23 @@ const getCoachRequirementContext = async (req, submission, participationType) =>
 
   const assignedSports = collectCoachSports(coach);
   if (!assignedSports.size) return null;
+  const primarySportKey = normalizeScopeValue(getCoachPrimarySport(coach));
 
   const studentId = submission.studentId?._id || submission.studentId;
   const student = await findStudentForCoachRequirement(studentId);
   if (!student) return null;
+  const galleryStudent = (await getCoachGalleryRoster(coach))
+    .find(({ student: assignedStudent }) => String(assignedStudent._id) === String(student._id));
+  if (!galleryStudent) return null;
 
-  const athleteProfiles = await StudentAthlete.find({ userId: student._id })
-    .select('sport sports assignedSports sportParticipation')
-    .lean();
-  const athleteProfile = athleteProfiles[0] || {};
+  const athleteProfile = galleryStudent.profile;
   const studentSports = new Set([
     ...getStudentSports(student),
     ...getStudentSports(athleteProfile),
   ].map(normalizeScopeValue).filter(Boolean));
-  const assignedStudentSports = [...studentSports].filter((sport) => assignedSports.has(sport));
+  const assignedStudentSports = [...studentSports].filter((sport) => (
+    sport === primarySportKey && assignedSports.has(sport)
+  ));
   if (!assignedStudentSports.length) return null;
 
   const eventScope = collectCoachEvents(coach);
@@ -388,7 +470,7 @@ const getCoachRequirementContext = async (req, submission, participationType) =>
     .map(normalizeScopeValue)
     .filter(Boolean);
   if (submissionSports.length && !submissionSports.includes(normalizeScopeValue('General'))
-    && !submissionSports.some((sport) => assignedSports.has(sport) && studentSports.has(sport))) {
+    && !submissionSports.includes(primarySportKey)) {
     return null;
   }
 
@@ -399,27 +481,21 @@ const getCoachRequirementContext = async (req, submission, participationType) =>
   };
 };
 
-const getCoachForwardingContext = async (coach) => {
+const getCoachForwardingContext = async (coach, selectedSport) => {
   const assignedSports = collectCoachSports(coach);
-  if (!assignedSports.size) return { ready: false, submissions: [] };
+  const selectedSportKey = normalizeScopeValue(selectedSport);
+  if (!assignedSports.size || !selectedSportKey || !assignedSports.has(selectedSportKey)) {
+    return { ready: false, submissions: [] };
+  }
 
-  const [registeredStudents, athleteProfiles] = await Promise.all([
-    User.find({ role: 'student', accountStatus: { $ne: 'archived' } })
-      .select('sport sports assignedSports sportParticipation')
-      .lean(),
-    StudentAthlete.find({})
-      .select('userId sport sports assignedSports sportParticipation')
-      .lean(),
-  ]);
-  const profilesByUserId = new Map(
-    athleteProfiles.map((profile) => [String(profile.userId), profile])
-  );
-  const roster = registeredStudents.map((student) => {
-    const profile = profilesByUserId.get(String(student._id)) || {};
+  const galleryRoster = await getCoachGalleryRoster(coach);
+  const roster = galleryRoster.map(({ student, profile }) => {
     const matchedSports = [...new Set([
       ...getStudentSports(student),
       ...getStudentSports(profile),
-    ].map(normalizeScopeValue).filter((sport) => sport && assignedSports.has(sport)))];
+    ].map(normalizeScopeValue).filter((sport) => (
+      sport === selectedSportKey && assignedSports.has(sport)
+    )))];
     return { student, matchedSports };
   }).filter(({ matchedSports }) => matchedSports.length > 0);
 
@@ -442,7 +518,7 @@ const getCoachForwardingContext = async (coach) => {
         { studentId: { $in: assignedStudentIds } },
       ],
     })
-      .select('studentId requirementType participationType customRequirementId customRequirementLabel requirementStatus coachStatus sport screenerForwardedAt')
+      .select('studentId requirementType participationType customRequirementId customRequirementLabel requirementStatus coachStatus status sport screenerForwardedAt uploadDate createdAt')
       .lean();
     return submissions.filter(isActiveRequirement).map((submission) => ({
       ...submission,
@@ -501,7 +577,7 @@ const findStudentForSubmission = async (studentId) => {
   try {
     let query = User.findById(studentId);
     if (query && typeof query.select === 'function') {
-      query = query.select('department');
+      query = query.select('department sport sports assignedSports sportParticipation');
       if (typeof query.lean === 'function') query = query.lean();
     }
     student = await query;
@@ -512,13 +588,42 @@ const findStudentForSubmission = async (studentId) => {
   if (!student) {
     let query = User.findOne({ id: String(studentId) });
     if (query && typeof query.select === 'function') {
-      query = query.select('department');
+      query = query.select('department sport sports assignedSports sportParticipation');
       if (typeof query.lean === 'function') query = query.lean();
     }
     student = await query;
   }
 
   return student;
+};
+
+const denyScreenerSportMismatch = async (req, res, submission, requestedSport) => {
+  if (String(req.user?.role || '').toLowerCase() !== 'screener' || !requestedSport) return false;
+
+  const requestedSportKey = normalizeScopeValue(requestedSport);
+  const student = await findStudentForSubmission(submission.studentId);
+  if (!student || !requestedSportKey) {
+    res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
+    return true;
+  }
+
+  const profiles = await StudentAthlete.find({ userId: student._id })
+    .select('sport sports assignedSports sportParticipation')
+    .lean();
+  const studentSports = [
+    ...(Array.isArray(student.sports) ? student.sports : []),
+    ...(profiles || []).flatMap((profile) => Array.isArray(profile.sports) ? profile.sports : []),
+  ].map(normalizeScopeValue);
+  const submissionSports = splitRequirementSports(submission.sport || '').map(normalizeScopeValue);
+  if (!studentSports.includes(requestedSportKey)
+    || (submissionSports.length
+      && !submissionSports.includes(normalizeScopeValue('General'))
+      && !submissionSports.includes(requestedSportKey))) {
+    res.status(403).json({ success: false, message: 'You are not authorized to access this requirement.' });
+    return true;
+  }
+
+  return false;
 };
 
 const denyScreenerDepartmentMismatch = async (req, res, submission) => {
@@ -566,6 +671,7 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
   try {
     const isScreener = String(req.user?.role || '').toLowerCase() === 'screener';
     const screenerDepartment = normalizeDepartmentValue(req.user?.department);
+    const requestedSportKey = normalizeScopeValue(req.query.sport);
     if (isScreener && !screenerDepartment) {
       return res.status(403).json({ success: false, message: 'Screener department is not configured.' });
     }
@@ -590,6 +696,9 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
     const athleteProfilesByUserId = new Map(
       athleteProfiles.map((profile) => [String(profile.userId), profile])
     );
+    const visibleStudentsById = new Map(
+      visibleStudents.map((student) => [String(student._id), student])
+    );
     
     console.log(`👥 Found ${studentsFromDb.length} students in database`);
 
@@ -608,6 +717,7 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
           studentId: { $in: visibleStudents.map((student) => student._id) }
         });
         activeSubmissionConditions.push({ screenerForwardedAt: { $ne: null } });
+        activeSubmissionConditions.push({ coachStatus: 'approved' });
       }
       const activeSubmissionFilter = { $and: activeSubmissionConditions };
       let submissionsQuery = RequirementModel.find(activeSubmissionFilter)
@@ -621,6 +731,24 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
       }));
     }));
     const submissions = submissionsByParticipation.flat()
+      .filter((submission) => {
+        if (!requestedSportKey) return true;
+
+        const studentId = String(submission.studentId?._id || submission.studentId || '');
+        const student = visibleStudentsById.get(studentId);
+        const athleteProfile = athleteProfilesByUserId.get(studentId) || {};
+        const studentSports = [
+          ...(Array.isArray(student?.sports) ? student.sports : []),
+          ...(Array.isArray(athleteProfile.sports) ? athleteProfile.sports : []),
+        ].map(normalizeScopeValue);
+        const submissionSports = splitRequirementSports(submission.sport || '')
+          .map(normalizeScopeValue);
+
+        return studentSports.includes(requestedSportKey)
+          && (!submissionSports.length
+            || submissionSports.includes(normalizeScopeValue('General'))
+            || submissionSports.includes(requestedSportKey));
+      })
       .sort((submissionA, submissionB) => (
         new Date(submissionB.uploadDate || submissionB.createdAt || 0)
         - new Date(submissionA.uploadDate || submissionA.createdAt || 0)
@@ -758,7 +886,8 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
         Number(file.fileSize) > 0
         || Boolean(resolveStoredFilePath(file.filePath))
       ));
-      const fileUrl = `/screener/requirements/${submission._id}/preview?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}`;
+      const sportQuery = requestedSportKey ? `&sport=${encodeURIComponent(String(req.query.sport).trim())}` : '';
+      const fileUrl = `/screener/requirements/${submission._id}/preview?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}${sportQuery}`;
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
@@ -860,42 +989,43 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
     }
 
     const assignedSports = collectCoachSports(coach);
+    const primarySport = getCoachPrimarySport(coach);
+    const requestedSport = String(req.query.sport || '').trim() || primarySport;
+    const requestedSportKey = normalizeScopeValue(requestedSport);
+    if (requestedSportKey && (
+      !assignedSports.has(requestedSportKey)
+      || requestedSportKey !== normalizeScopeValue(primarySport)
+    )) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not assigned to screen this sport.',
+      });
+    }
     if (!assignedSports.size) {
       return res.json({
         success: true,
         count: 0,
+        assignedSports: [],
+        selectedSport: '',
         forwardingStatus: { ready: false, forwarded: false, canForward: false },
         data: [],
       });
     }
 
-    const [registeredStudents, athleteProfiles] = await Promise.all([
-      User.find({ role: 'student', accountStatus: { $ne: 'archived' } })
-        .select('fullname username id department yearLevel sport sports assignedSports sportParticipation createdAt')
-        .sort({ createdAt: -1 })
-        .lean(),
-      StudentAthlete.find({})
-        .select('userId id studentNumber fullname department yearLevel sport sports assignedSports sportParticipation')
-        .lean(),
-    ]);
-
-    const profilesByUserId = new Map();
-    athleteProfiles.forEach((profile) => {
-      if (profile.userId && !profilesByUserId.has(String(profile.userId))) {
-        profilesByUserId.set(String(profile.userId), profile);
-      }
-    });
+    const galleryRoster = await getCoachGalleryRoster(coach);
 
     const studentsById = new Map();
     const assignedStudentIds = [];
     const eventScope = collectCoachEvents(coach);
-    registeredStudents.forEach((student) => {
+    galleryRoster.forEach(({ student, profile }) => {
       const studentId = String(student._id);
-      const profile = profilesByUserId.get(studentId) || {};
       const studentSports = new Map([
         ...getStudentSports(student),
         ...getStudentSports(profile),
-      ].map((sport) => [normalizeScopeValue(sport), String(sport || '').trim()]).filter(([sport, label]) => sport && label));
+      ].map((sport) => [normalizeScopeValue(sport), String(sport || '').trim()])
+        .filter(([sport, label]) => (
+          sport && label && (!requestedSportKey || sport === requestedSportKey)
+        )));
       const matchedSports = [...studentSports.entries()]
         .filter(([sport]) => assignedSports.has(sport))
         .map(([, label]) => label);
@@ -931,6 +1061,8 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
         success: true,
         count: 0,
         forwardingStatus: { ready: false, forwarded: false, canForward: false },
+        assignedSports: collectCoachSportLabels(coach),
+        selectedSport: requestedSport,
         data: [],
       });
     }
@@ -1063,10 +1195,12 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
     return res.json({
       success: true,
       count: data.length,
+      assignedSports: collectCoachSportLabels(coach),
+      selectedSport: requestedSport,
       forwardingStatus: {
         ready: forwardingReadiness.ready,
         forwarded: forwardingComplete,
-        canForward: forwardingReadiness.ready && !forwardingComplete,
+        canForward: forwardingReadiness.ready,
       },
       data,
     });
@@ -1088,11 +1222,28 @@ router.post('/coach/requirements/forward', protect, authorize('coach'), async (r
       return res.status(403).json({ success: false, message: 'Coach access could not be verified.' });
     }
 
-    const forwardingContext = await getCoachForwardingContext(coach);
+    const selectedSport = String(req.body?.sport || '').trim()
+      || getCoachPrimarySport(coach);
+    const primarySport = getCoachPrimarySport(coach);
+    if (!selectedSport) {
+      return res.status(400).json({
+        success: false,
+        message: 'A primary assigned sport is required before forwarding.',
+      });
+    }
+    if (normalizeScopeValue(selectedSport) !== normalizeScopeValue(primarySport)
+      || !collectCoachSports(coach).has(normalizeScopeValue(selectedSport))) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not assigned to screen this sport.',
+      });
+    }
+
+    const forwardingContext = await getCoachForwardingContext(coach, selectedSport);
     if (!forwardingContext.ready || forwardingContext.submissions.length === 0) {
       return res.status(409).json({
         success: false,
-        message: 'You cannot forward these documents to the Screener yet. Please complete the initial screening of all required documents for every student-athlete assigned to you before forwarding.',
+        message: `You cannot forward these documents to the Screener yet. Please complete the initial screening of all active requirements for every student-athlete in ${selectedSport} before forwarding.`,
       });
     }
 
@@ -1175,6 +1326,7 @@ router.put('/screener/requirements/:id/viewed', protect, authorize('admin', 'scr
         message: 'This requirement is not available until its sport group is approved by the coach.'
       });
     }
+    if (await denyScreenerSportMismatch(req, res, submission, req.body?.sport)) return;
     if (denyUnforwardedScreenerSubmission(req, res, submission)) return;
 
     submission.resubmitted = false;
@@ -1246,6 +1398,7 @@ router.put('/screener/requirements/:id/review', protect, authorize('admin', 'scr
     }
 
     if (await denyScreenerDepartmentMismatch(req, res, submission)) return;
+    if (await denyScreenerSportMismatch(req, res, submission, req.body?.sport)) return;
     if (String(req.user?.role || '').toLowerCase() === 'screener' && submission.coachStatus !== 'approved') {
       return res.status(409).json({
         success: false,
