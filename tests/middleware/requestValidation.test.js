@@ -133,6 +133,60 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
   });
 
+  it('accepts submission IDs for Coach Requirements forwarding', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/coach/requirements/forward',
+      body: {
+        sport: 'Basketball Women',
+        submissionIds: ['submission-1', 'submission-2'],
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.submissionIds).toEqual(['submission-1', 'submission-2']);
+  });
+
+  it('continues rejecting unexpected fields on Coach Requirements forwarding', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/coach/requirements/forward',
+      body: {
+        sport: 'Basketball Women',
+        submissionIds: ['submission-1'],
+        unexpectedField: 'not allowed',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
+  it('continues rejecting unknown fields on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/coach/requirements',
+      body: { unexpectedField: 'not allowed' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
   it('accepts the fields sent by the Admin Requirements FormData', () => {
     const req = httpMocks.createRequest({
       method: 'POST',
@@ -218,6 +272,47 @@ describe('validateRequestBody requirement upload fields', () => {
       method: 'POST',
       path: '/requirements',
       body: { title: 'Consent Form', unrecognizedField: 'not allowed' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
+  it('accepts forwarded Screener approval documents only on the approval endpoint', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/screener/requirements/approve-forwarded',
+      body: {
+        studentId: 'student-123',
+        sport: 'Basketball',
+        documents: [{
+          submissionId: 'submission-123',
+          participationType: 'Intrams',
+        }],
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.documents).toEqual([{
+      submissionId: 'submission-123',
+      participationType: 'Intrams',
+    }]);
+  });
+
+  it('continues rejecting the forwarded approval documents field on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'PUT',
+      path: '/api/v1/profile',
+      body: { documents: [] },
     });
     const res = httpMocks.createResponse();
     const next = jest.fn();

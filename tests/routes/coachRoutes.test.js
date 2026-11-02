@@ -103,6 +103,37 @@ describe('Coach athlete routes', () => {
     expect(response.body[0].athleteStatus).toBe('completed');
   });
 
+  it('shows students registered with the equivalent parenthesized sport under the Gallery category', async () => {
+    const athlete = {
+      _id: 'student-womens-basketball',
+      id: 'STUDENT02',
+      fullname: 'Student Athlete',
+      sport: 'Basketball (Women)',
+      sports: ['Basketball (Women)'],
+    };
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ strasucStudentIds: [athlete._id] }),
+    });
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([athlete]),
+    });
+    StudentProfile.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/athletes?sport=Basketball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([expect.objectContaining({
+      id: 'STUDENT02',
+      sport: 'Basketball Women',
+    })]);
+  });
+
   it('initializes and returns the singleton Coach Record content defaults', async () => {
     CoachFormHeader.findOneAndUpdate.mockReturnValue({
       lean: jest.fn().mockResolvedValue({ _id: 'global', ...coachRecordDefaults.formHeader }),

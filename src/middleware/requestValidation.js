@@ -32,6 +32,7 @@ const REGISTRATION_FIELDS = new Set([
   'contactNumber',
   'verificationMethod',
 ]);
+const SCREENER_FORWARD_APPROVAL_FIELDS = new Set(['documents']);
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
   'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
@@ -42,7 +43,7 @@ const KNOWN_FIELDS = new Set([
   'totalStock', 'onLoan', 'equipmentType', 'notifications', 'contactNumber', 'phoneNumber', 'dateOfBirth', 'dob', 'branchCampus',
   'graduationYear', 'athleteStatus', 'profilePhoto', 'sportParticipation', 'coachPosition', 'staffMembers',
   'studentId', 'course', 'location', 'photo', 'requirementType', 'participationType', 'requirementId', 'verificationMethod',
-  'replacementSubmissionId', 'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',
+  'replacementSubmissionId', 'submissionIds', 'customRequirementLabel', 'sourceAcademicYear', 'title', 'dueDate', 'isActive', 'instructions', 'priority',
   'targetStudents', 'sports', 'file', 'filename', 'originalname', 'mimetype', 'size', 'path', 'data', 'remarks', 'feedback',
   'grade', 'ids', 'createdBy', 'reviewedAt', 'reviewedBy'
 ]);
@@ -166,6 +167,8 @@ const validateRequestBody = (req, res, next) => {
       && /(?:^|\/)requirements\/[^/]+\/?$/.test(req.path);
     const isCoachRecordContentUpdate = req.method === 'PUT'
       && /(?:^|\/)coach\/record-content\/(?:form-header|eligibility|director)\/?$/.test(req.path);
+    const isScreenerForwardedApproval = req.method === 'PUT'
+      && /(?:^|\/)screener\/requirements\/approve-forwarded\/?$/.test(req.path);
     const isBorrowingCreate = req.method === 'POST'
       && /(?:^|\/)admin\/borrowing\/?$/.test(req.path);
     const isRegistration = req.method === 'POST'
@@ -182,11 +185,13 @@ const validateRequestBody = (req, res, next) => {
           : undefined,
       isCoachRecordContentUpdate
         ? COACH_RECORD_CONTENT_FIELDS
-        : isBorrowingCreate
-          ? BORROWING_CREATE_FIELDS
-          : isRegistration
-            ? REGISTRATION_FIELDS
-          : undefined
+        : isScreenerForwardedApproval
+          ? SCREENER_FORWARD_APPROVAL_FIELDS
+          : isBorrowingCreate
+            ? BORROWING_CREATE_FIELDS
+            : isRegistration
+              ? REGISTRATION_FIELDS
+              : undefined
     );
     const passwordValue = isRegistration ? req.body.password : req.body.newPassword;
     if (passwordValue !== undefined && !isPasswordValid(passwordValue)) {

@@ -45,15 +45,21 @@ const studentSearchProjection = '_id id studentNumber fullname department yearLe
 const studentAthleteSearchProjection = 'userId id studentNumber fullname department yearLevel branchCampus dateOfBirth dob sport sports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle updatedAt';
 const coachAthleteStatuses = new Set(['complete', 'incomplete', 'disqualified', 'no-documents']);
 const coachRecordConfigurationId = 'global';
+const normalizeSportCategory = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]/g, '');
 const getStudentSportForCategory = (student, category) => {
-  const normalizedCategory = String(category || '').trim().toLowerCase();
+  const normalizedCategory = normalizeSportCategory(category);
   const savedSports = [
     student.sport,
     ...(Array.isArray(student.sports) ? student.sports : []),
     ...(Array.isArray(student.assignedSports) ? student.assignedSports : []),
     ...(Array.isArray(student.sportParticipation) ? student.sportParticipation.map((entry) => entry?.sport) : []),
   ];
-  return savedSports.find((sport) => String(sport || '').trim().toLowerCase() === normalizedCategory) || '';
+  return savedSports.some((sport) => normalizeSportCategory(sport) === normalizedCategory)
+    ? String(category || '').trim()
+    : '';
 };
 
 const updateCoachRecordContent = (Model, fields, body) => {
