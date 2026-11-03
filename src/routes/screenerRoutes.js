@@ -199,7 +199,7 @@ const getSavedSports = (sports) => Array.from(new Set(
 ));
 
 const deriveOverallStatus = (requirements) => {
-  const documents = Array.isArray(requirements?.documents) ? requirements.documents : [];
+  const documents = Array.isArray(requirements) ? requirements : [];
   const latestByRequirement = new Map();
   documents.forEach((document) => {
     const requirementType = String(document?.requirementType || '').toLowerCase();
@@ -208,17 +208,20 @@ const deriveOverallStatus = (requirements) => {
       ? `other:${document.customRequirementId || document.submissionId || document._id}`
       : normalizedType;
     const previous = latestByRequirement.get(key);
-    if (!previous || new Date(document.uploadedAt || 0) > new Date(previous.uploadedAt || 0)) {
+    const uploadedAt = document.uploadedAt || document.uploadDate || document.createdAt || 0;
+    const previousUploadedAt = previous?.uploadedAt || previous?.uploadDate || previous?.createdAt || 0;
+    if (!previous || new Date(uploadedAt) > new Date(previousUploadedAt)) {
       latestByRequirement.set(key, document);
     }
   });
-  const requiredCategoriesApproved = ['med', 'psa', 'insurance', 'profile', 'consent']
-    .every((key) => latestByRequirement.get(key)?.status === 'approved');
-  const otherRequiredDocumentsApproved = [...latestByRequirement.values()]
-    .filter((document) => String(document?.requirementType || '').toLowerCase() !== 'cor')
-    .every((document) => document?.status === 'approved');
+  const displayedDocuments = [...latestByRequirement.values()];
+  const isCoachApprovedAndSubmitted = (document) => (
+    String(document?.status || '').trim().toLowerCase() === 'approved'
+    && getCoachReviewStatus(document) === 'approved'
+    && document.hasUpload === true
+  );
 
-  return requiredCategoriesApproved && otherRequiredDocumentsApproved
+  return displayedDocuments.length > 0 && displayedDocuments.every(isCoachApprovedAndSubmitted)
     ? 'Completed'
     : 'Incomplete';
 };
@@ -1167,7 +1170,7 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
         sport: readyStudentSports[0] || student.sport,
         sports: readyStudentSports,
         requirements,
-        overallStatus: deriveOverallStatus(requirements)
+        overallStatus: deriveOverallStatus(eligibleDocuments)
       }];
     });
     console.log(`✅ Returning ${students.length} students with requirements`);

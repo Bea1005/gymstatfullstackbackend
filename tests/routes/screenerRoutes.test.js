@@ -42,6 +42,7 @@ const makeCoachApprovedRequirements = (studentId, sport, participationType = 'In
 const makeQuery = (result) => ({
   select: jest.fn().mockReturnThis(),
   sort: jest.fn().mockReturnThis(),
+  populate: jest.fn().mockReturnThis(),
   lean: jest.fn().mockResolvedValue(result)
 });
 
@@ -2095,29 +2096,29 @@ describe('Screener routes', () => {
   });
 
   const approvedRequiredDocuments = () => [
-    { _id: 'approved-med', studentId: 'student-1', requirementType: 'medical', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'medical.pdf', fileType: 'application/pdf', fileData: Buffer.from('medical') },
-    { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa') },
-    { _id: 'approved-insurance', studentId: 'student-1', requirementType: 'insurance', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'insurance.pdf', fileType: 'application/pdf', fileData: Buffer.from('insurance') },
-    { _id: 'approved-profile', studentId: 'student-1', requirementType: 'profile', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'profile.pdf', fileType: 'application/pdf', fileData: Buffer.from('profile') },
-    { _id: 'approved-consent', studentId: 'student-1', requirementType: 'consent', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'consent.pdf', fileType: 'application/pdf', fileData: Buffer.from('consent') },
+    { _id: 'approved-med', studentId: 'student-1', requirementType: 'medical', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'medical.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('medical') },
+    { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'psa.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('psa') },
+    { _id: 'approved-insurance', studentId: 'student-1', requirementType: 'insurance', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'insurance.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('insurance') },
+    { _id: 'approved-profile', studentId: 'student-1', requirementType: 'profile', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'profile.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('profile') },
+    { _id: 'approved-consent', studentId: 'student-1', requirementType: 'consent', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'consent.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('consent') },
   ];
 
   it.each([
     {
       title: 'ignores rejected COR history when all required documents are approved',
       documents: [
-        { _id: 'older-rejected', studentId: 'student-1', requirementType: 'cor', status: 'rejected', coachStatus: 'approved', sport: 'Basketball', fileName: 'old.pdf', fileType: 'application/pdf', fileData: Buffer.from('old'), uploadDate: new Date('2026-01-01') },
-        { _id: 'newer-approved', studentId: 'student-1', requirementType: 'cor', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'new.pdf', fileType: 'application/pdf', fileData: Buffer.from('new'), uploadDate: new Date('2026-01-02') },
+        { _id: 'older-rejected', studentId: 'student-1', requirementType: 'cor', status: 'rejected', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'old.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('old'), uploadDate: new Date('2026-01-01') },
+        { _id: 'newer-approved', studentId: 'student-1', requirementType: 'cor', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'new.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('new'), uploadDate: new Date('2026-01-02') },
         ...approvedRequiredDocuments(),
       ],
       expectedOverallStatus: 'Completed',
     },
     {
-      title: 'keeps a student incomplete when a new requirement is pending among approved requirements',
+      title: 'keeps a student incomplete when a required category is missing',
       documents: [
-        { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'cor.pdf', fileType: 'application/pdf', fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
-        { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'psa.pdf', fileType: 'application/pdf', fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-02') },
-        { _id: 'pending-consent', studentId: 'student-1', requirementType: 'consent', status: 'pending', coachStatus: 'approved', sport: 'Basketball', fileName: 'consent.pdf', fileType: 'application/pdf', fileData: Buffer.from('consent'), uploadDate: new Date('2026-01-03') },
+        { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'cor.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
+        { _id: 'approved-psa', studentId: 'student-1', requirementType: 'psa', status: 'pending', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'psa.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('psa'), uploadDate: new Date('2026-01-02') },
+        { _id: 'pending-consent', studentId: 'student-1', requirementType: 'consent', status: 'pending', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'consent.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('consent'), uploadDate: new Date('2026-01-03') },
       ],
       expectedOverallStatus: 'Incomplete',
       expectedVisible: false,
@@ -2125,7 +2126,7 @@ describe('Screener routes', () => {
     {
       title: 'marks the student completed when all required documents and COR are approved',
       documents: [
-        { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', coachStatus: 'approved', sport: 'Basketball', fileName: 'cor.pdf', fileType: 'application/pdf', fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
+        { _id: 'approved-cor', studentId: 'student-1', requirementType: 'cor', status: 'approved', coachStatus: 'approved', requirementStatus: 'active', sport: 'Basketball', fileName: 'cor.pdf', fileType: 'application/pdf', fileSize: 64, fileData: Buffer.from('cor'), uploadDate: new Date('2026-01-01') },
         ...approvedRequiredDocuments(),
       ],
       expectedOverallStatus: 'Completed',
@@ -2142,11 +2143,12 @@ describe('Screener routes', () => {
       expectedVisible: false,
     },
     {
-      title: 'marks the student incomplete when a required Insurance document is rejected even if COR is absent',
+      title: 'marks the student incomplete when Coach rejects a required Insurance document',
       documents: approvedRequiredDocuments().map((document) => document.requirementType === 'insurance'
-        ? { ...document, status: 'rejected' }
+        ? { ...document, coachStatus: 'rejected' }
         : document),
       expectedOverallStatus: 'Incomplete',
+      expectedVisible: false,
     },
   ])('$title', async ({ documents, expectedOverallStatus, expectedVisible }) => {
     User.find.mockReturnValue({
@@ -2187,5 +2189,73 @@ describe('Screener routes', () => {
     }
     expect(response.body.data[0].overallStatus).toBe(expectedOverallStatus);
     expect(response.body.data[0].requirements.documents).toHaveLength(documents.length);
+  });
+
+  it.each([
+    ['newer Coach-pending submission hidden from the table', (documents) => [
+      ...documents,
+      {
+        ...documents[0],
+        _id: 'student-1-medical-latest',
+        coachStatus: 'pending',
+        uploadDate: new Date('2026-11-01T00:00:00.000Z'),
+      },
+    ], 'Completed'],
+    ['Screener-pending submission', (documents) => documents.map((document) => (
+      document.requirementType === 'medical'
+        ? { ...document, status: 'pending' }
+        : document
+    )), 'Incomplete'],
+    ['Screener-rejected submission', (documents) => documents.map((document) => (
+      document.requirementType === 'medical'
+        ? { ...document, status: 'rejected' }
+        : document
+    )), 'Incomplete'],
+    ['Coach-rejected submission', (documents) => documents.map((document) => (
+      document.requirementType === 'medical'
+        ? { ...document, coachStatus: 'rejected' }
+        : document
+    )), 'Completed'],
+    ['required submission without a file', (documents) => documents.map((document) => (
+      document.requirementType === 'medical'
+        ? { ...document, fileSize: 0, filePath: '' }
+        : document
+    )), 'Completed'],
+  ])('calculates status correctly for %s', async (_title, updateDocuments, expectedStatus) => {
+    const documents = updateDocuments(approvedRequiredDocuments()).map((document) => ({
+      ...document,
+      screenerForwardedAt: new Date('2026-10-10T00:00:00.000Z'),
+      screenerForwardedBy: 'coach-1',
+      studentId: {
+        _id: 'student-1',
+        fullname: 'Test Student',
+        department: 'CICS',
+        sport: 'Basketball',
+      },
+    }));
+    User.find.mockImplementation((filter) => makeQuery(
+      filter?._id?.$in
+        ? [{ _id: 'coach-1', department: 'CICS' }]
+        : [{
+          _id: 'student-1',
+          fullname: 'Test Student',
+          department: 'CICS',
+          sports: ['Basketball'],
+        }]
+    ));
+    StudentAthlete.find.mockReturnValue(makeQuery([{
+      userId: 'student-1',
+      sports: ['Basketball'],
+    }]));
+    StudentRequirement.find.mockReturnValue(makeQuery(documents));
+
+    const response = await request(app)
+      .get('/api/v1/screener/requirements?participationType=Intrams')
+      .set('x-test-role', 'screener')
+      .set('x-test-department', 'CICS');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toHaveLength(1);
+    expect(response.body.data[0].overallStatus).toBe(expectedStatus);
   });
 });

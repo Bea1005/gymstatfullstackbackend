@@ -18,6 +18,7 @@ const BORROWING_CREATE_FIELDS = new Set([
   'equipmentItems',
   'borrowerType',
   'borrowerTypeOther',
+  'returnDate',
 ]);
 const REGISTRATION_FIELDS = new Set([
   'fullname',

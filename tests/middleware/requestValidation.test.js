@@ -79,6 +79,7 @@ describe('validateRequestBody requirement upload fields', () => {
         fullname: 'Student Athlete',
         borrowerType: 'Others (Office/Agency)',
         borrowerTypeOther: 'Office of Student Affairs',
+        returnDate: '2026-11-04',
         equipmentItems: [
           { equipment: 'Volleyball', referenceIds: ['VB-001'], quantity: 1 },
           { equipment: 'Baseball', referenceIds: ['BB-001'], quantity: 1 },
@@ -94,6 +95,7 @@ describe('validateRequestBody requirement upload fields', () => {
     expect(req.body.equipmentItems).toHaveLength(2);
     expect(req.body.borrowerType).toBe('Others (Office/Agency)');
     expect(req.body.borrowerTypeOther).toBe('Office of Student Affairs');
+    expect(req.body.returnDate).toBe('2026-11-04');
   });
 
   it('continues rejecting unrelated fields on borrowing creation requests', () => {
