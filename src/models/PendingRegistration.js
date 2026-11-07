@@ -36,7 +36,7 @@ const pendingRegistrationSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['student', 'coach', 'admin', 'screener'],
+    enum: ['student', 'coach', 'admin', 'screener', 'calendar'],
     default: 'student'
   },
   department: {

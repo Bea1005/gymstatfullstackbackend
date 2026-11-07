@@ -8,4 +8,11 @@ const getScheduleClientType = (email) => {
     : 'External Client';
 };
 
-module.exports = { getScheduleClientType };
+const getScheduleAccountType = (email) => {
+  const clientType = getScheduleClientType(email);
+  if (clientType === 'Internal Client') return 'Internal';
+  if (clientType === 'External Client') return 'External';
+  return null;
+};
+
+module.exports = { getScheduleClientType, getScheduleAccountType };

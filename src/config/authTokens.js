@@ -44,7 +44,7 @@ const baseCookieOptions = {
   path: COOKIE_PATH,
 };
 
-const AUTH_ROLES = new Set(['student', 'coach', 'admin', 'screener']);
+const AUTH_ROLES = new Set(['student', 'coach', 'admin', 'screener', 'calendar']);
 
 const normalizePortalRole = (role) => {
   const normalizedRole = String(role || '').trim().toLowerCase();

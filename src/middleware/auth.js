@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { getJWTSecret } = require('../config/security');
+const { getScheduleAccountType } = require('../utils/scheduleClientType');
 const {
   ACCESS_COOKIE_NAME,
   IS_CROSS_SITE_COOKIE_MODE,
@@ -91,7 +92,7 @@ exports.protect = async (req, res, next) => {
     }
 
     const storedRole = String(user.role || '').trim().toLowerCase();
-    if (!['student', 'student-athlete', 'studentathlete', 'admin', 'coach', 'screener'].includes(storedRole)) {
+    if (!['student', 'student-athlete', 'studentathlete', 'admin', 'coach', 'screener', 'calendar'].includes(storedRole)) {
       return res.status(403).json({
         success: false,
         message: 'This account does not have an authorized role.'
@@ -128,7 +129,8 @@ exports.protect = async (req, res, next) => {
 
     req.user = {
       ...userData,
-      role: databaseRole
+      role: portalRole === 'calendar' ? 'calendar' : databaseRole,
+      accountType: user.accountType || getScheduleAccountType(user.email)
     };
     
     next();

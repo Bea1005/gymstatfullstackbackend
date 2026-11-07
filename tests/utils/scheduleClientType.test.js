@@ -1,4 +1,4 @@
-const { getScheduleClientType } = require('../../src/utils/scheduleClientType');
+const { getScheduleClientType, getScheduleAccountType } = require('../../src/utils/scheduleClientType');
 
 describe('getScheduleClientType', () => {
   it('classifies marsu.edu.ph email addresses as internal despite case and surrounding spaces', () => {
@@ -14,5 +14,11 @@ describe('getScheduleClientType', () => {
     expect(getScheduleClientType(null)).toBeNull();
     expect(getScheduleClientType('not-an-email')).toBeNull();
     expect(getScheduleClientType('requester@')).toBeNull();
+  });
+
+  it('maps valid email domains to the persisted account type', () => {
+    expect(getScheduleAccountType('requester@marsu.edu.ph')).toBe('Internal');
+    expect(getScheduleAccountType('requester@gmail.com')).toBe('External');
+    expect(getScheduleAccountType('not-an-email')).toBeNull();
   });
 });

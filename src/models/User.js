@@ -23,6 +23,16 @@ const baseUserSchema = new mongoose.Schema({
   emailVerified: {
     type: Boolean
   },
+  accountType: {
+    type: String,
+    enum: ['Internal', 'External'],
+    default: undefined
+  },
+  googleSub: {
+    type: String,
+    default: undefined,
+    select: false
+  },
   verificationMethod: {
     type: String,
     enum: ['email', 'sms'],
@@ -87,7 +97,7 @@ const baseUserSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['student', 'coach', 'admin', 'screener'],
+    enum: ['student', 'coach', 'admin', 'screener', 'calendar'],
     default: 'student'
   },
   department: {
@@ -268,6 +278,7 @@ const baseUserSchema = new mongoose.Schema({
 baseUserSchema.index({ id: 1 }, { unique: true });
 baseUserSchema.index({ email: 1 }, { sparse: true });
 baseUserSchema.index({ emailNormalized: 1 }, { unique: true, sparse: true });
+baseUserSchema.index({ googleSub: 1 }, { unique: true, sparse: true });
 baseUserSchema.index({ role: 1, accountStatus: 1, createdAt: -1 });
 
 const roleModelMap = {
@@ -283,6 +294,7 @@ const normalizeRole = (role) => {
   if (normalized === 'admin') return 'admin';
   if (normalized === 'screener') return 'screener';
   if (normalized === 'coach') return 'coach';
+  if (normalized === 'calendar') return 'calendar';
   return 'student';
 };
 
@@ -353,6 +365,7 @@ const syncRoleDocument = async (user) => {
   }
 
   const normalizedRole = normalizeRole(user.role);
+  if (normalizedRole === 'calendar') return;
   const targetModel = getRoleModel(normalizedRole);
   const source = user && typeof user.toObject === 'function' ? user.toObject() : user;
   const roleDocPayload = buildRoleDocument({ ...source, role: normalizedRole });
@@ -473,6 +486,19 @@ User.ensureEmailIndex = async () => {
       });
   }
   return emailIndexPromise;
+};
+
+let googleIndexPromise;
+User.ensureGoogleIndex = async () => {
+  if (!googleIndexPromise) {
+    googleIndexPromise = User.collection
+      .createIndex({ googleSub: 1 }, { unique: true, sparse: true })
+      .catch((error) => {
+        googleIndexPromise = null;
+        throw error;
+      });
+  }
+  return googleIndexPromise;
 };
 
 User.clearExpiredRegistrationOtps = async (now = new Date()) => User.updateMany(

@@ -1,6 +1,15 @@
 const mongoose = require('mongoose');
 
 const scheduleRequestSchema = new mongoose.Schema({
+  requesterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
+  },
+  accountType: {
+    type: String,
+    enum: ['Internal', 'External']
+  },
   eventName: {
     type: String,
     required: true,

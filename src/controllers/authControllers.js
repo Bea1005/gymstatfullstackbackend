@@ -575,6 +575,9 @@ exports.verifyRegistrationOtp = async (req, res) => {
     if (!pendingRegistration) {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
     }
+    if (pendingRegistration.role === 'calendar') {
+      return res.status(400).json({ success: false, message: 'Use the Public Calendar verification form for this registration.' });
+    }
 
     const otpHash = pendingRegistration.registrationOtpHash;
     const otpExpiresAt = pendingRegistration.registrationOtpExpiresAt;
@@ -690,6 +693,9 @@ exports.resendRegistrationOtp = async (req, res) => {
     }).select('+registrationOtpHash +registrationOtpExpiresAt +registrationOtpAttempts +registrationOtpLastSentAt +registrationOtpResendCount +contactOtpLastSentAt +contactOtpResendCount');
 
     if (!pendingRegistration) {
+      return res.status(202).json({ success: true, message: GENERIC_REGISTRATION_OTP_MESSAGE });
+    }
+    if (pendingRegistration.role === 'calendar') {
       return res.status(202).json({ success: true, message: GENERIC_REGISTRATION_OTP_MESSAGE });
     }
 

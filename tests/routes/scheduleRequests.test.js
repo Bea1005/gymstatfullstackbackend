@@ -68,4 +68,27 @@ describe('Public schedule-request calendar route', () => {
     expect(protect).toHaveBeenCalledTimes(1);
     expect(authorize).toHaveBeenCalledWith('admin');
   });
+
+  it('rejects unauthenticated schedule submissions before processing the upload', async () => {
+    protect.mockImplementationOnce((req, res) => res.status(401).json({
+      success: false,
+      message: 'Not authorized',
+    }));
+
+    const response = await request(app)
+      .post('/api/v1/schedule-requests')
+      .field('eventName', 'Campus Event');
+
+    expect(response.status).toBe(401);
+    expect(protect).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a request when authentication middleware does not provide a user', async () => {
+    const response = await request(app)
+      .post('/api/v1/schedule-requests')
+      .field('eventName', 'Campus Event');
+
+    expect(response.status).toBe(403);
+    expect(response.body.message).toMatch(/authenticated account/i);
+  });
 });

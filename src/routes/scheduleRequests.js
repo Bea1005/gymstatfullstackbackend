@@ -1,6 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
+const { getScheduleClientType, getScheduleAccountType } = require('../utils/scheduleClientType');
+const requireCalendarRequester = (req, res, next) => {
+  const email = String(req.user?.email || '').trim().toLowerCase();
+  const clientType = getScheduleClientType(email);
+  if (!req.user || req.user.emailVerified === false || !clientType) {
+    return res.status(403).json({
+      success: false,
+      message: 'A verified, authenticated account is required to request a schedule.'
+    });
+  }
+  req.user.accountType = getScheduleAccountType(email);
+  return next();
+};
 const { scheduleRequestRateLimiter } = require('../config/rateLimit');
 const { scheduleRequestUpload } = require('../config/multer');
 const { validateScheduleRequest } = require('../middleware/scheduleRequestValidation');
@@ -15,14 +28,13 @@ const {
   getRequestsByStatus
 } = require('../controllers/scheduleRequestController');
 
-// ============================================
-// PUBLIC ROUTE - NO AUTHENTICATION REQUIRED
-// ✅ Anyone can submit a schedule request
-// ============================================
+// Schedule requests are only accepted from an authenticated account.
 router.post(
   '/',
   scheduleRequestRateLimiter,
   express.json({ limit: process.env.SCHEDULE_REQUEST_JSON_LIMIT || '64kb' }),
+  protect,
+  requireCalendarRequester,
   scheduleRequestUpload.single('file'),
   validateScheduleRequest,
   createScheduleRequest
@@ -34,7 +46,7 @@ router.get('/public-calendar', getPublicCalendarScheduleRequests);
 router.get('/debug/test', protect, (req, res) => {
   res.json({
     message: 'Schedule requests API is working with MongoDB!',
-    publicRoute: 'POST / is public - No token needed!',
+    publicRoute: 'POST / requires an authenticated calendar requester.',
     database: 'MongoDB connected'
   });
 });

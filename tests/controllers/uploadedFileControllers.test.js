@@ -79,6 +79,14 @@ describe('persistent file controller integration', () => {
 
   it('stores schedule request attachment bytes in GridFS and persists its key', async () => {
     const req = httpMocks.createRequest({
+      user: {
+        _id: 'requester-id',
+        fullname: 'Person',
+        email: 'person@example.com',
+        contactNumber: '09123456789',
+        emailVerified: true,
+        accountType: 'External',
+      },
       body: {
         eventName: 'Meet',
         requesterName: 'Person',
@@ -108,6 +116,14 @@ describe('persistent file controller integration', () => {
   it('does not store a schedule request attachment when its time conflicts', async () => {
     findScheduleConflict.mockResolvedValue({ _id: 'conflicting-schedule' });
     const req = httpMocks.createRequest({
+      user: {
+        _id: 'requester-id',
+        fullname: 'Person',
+        email: 'person@example.com',
+        contactNumber: '09123456789',
+        emailVerified: true,
+        accountType: 'External',
+      },
       body: {
         eventName: 'Meet',
         requesterName: 'Person',

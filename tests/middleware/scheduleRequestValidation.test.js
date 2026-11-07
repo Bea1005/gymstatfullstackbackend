@@ -4,6 +4,13 @@ const { validateScheduleRequest } = require('../../src/middleware/scheduleReques
 describe('schedule request date/time validation', () => {
   const createRequest = (startDate) => httpMocks.createRequest({
     file: { originalname: 'request.pdf' },
+    user: {
+      _id: 'requester-id',
+      fullname: 'Jane Doe',
+      email: 'jane@example.com',
+      contactNumber: '+639171234567',
+      emailVerified: true,
+    },
     body: {
       eventName: 'Campus Event',
       requesterName: 'Jane Doe',
@@ -18,7 +25,7 @@ describe('schedule request date/time validation', () => {
     }
   });
 
-  it('rejects a public request for a past date', () => {
+  it('rejects an authenticated request for a past date', () => {
     const req = createRequest('2000-01-01');
     const res = httpMocks.createResponse();
     const next = jest.fn();

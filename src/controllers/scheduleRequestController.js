@@ -119,9 +119,11 @@ exports.createScheduleRequest = async (req, res) => {
 
     const requestData = {
       eventName: req.body.eventName,
-      requesterName: req.body.requesterName,
-      requesterEmail: req.body.requesterEmail,
-      requesterPhone: req.body.requesterPhone,
+      requesterId: req.user._id,
+      accountType: req.user.accountType,
+      requesterName: req.user.fullname,
+      requesterEmail: String(req.user.email || '').trim().toLowerCase(),
+      requesterPhone: req.user.contactNumber,
       organization: req.body.organization || '',
       purpose: req.body.purpose || '',
       details: req.body.details || '',

@@ -32,6 +32,7 @@ console.log(`   Email delivery service configured: ${getEmailConfigurationStatus
 getJWTSecret();
 
 const authRoutes = require('./src/routes/authRoutes');
+const calendarAuthRoutes = require('./src/routes/calendarAuthRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const borrowingRoutes = require('./src/routes/borrowingRoutes');
 const equipmentRoutes = require('./src/routes/equipmentRoutes');
@@ -241,6 +242,7 @@ app.get(
   checkStudentIdAvailability
 );
 app.use(`${BASE_URI}`, authRoutes);
+app.use(`${BASE_URI}/calendar-auth`, calendarAuthRoutes);
 
 // PROFILE - current user routes
 const handleProfileGet = async (req, res) => {

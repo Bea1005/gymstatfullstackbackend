@@ -17,9 +17,6 @@ const MAX_LENGTHS = {
 
 const REQUIRED_FIELDS = [
   'eventName',
-  'requesterName',
-  'requesterEmail',
-  'requesterPhone',
   'startDate',
   'startTime',
   'endDate',
@@ -77,10 +74,21 @@ const validateScheduleRequest = (req, res, next) => {
       if (normalized[field] === undefined) normalized[field] = '';
     });
     Object.keys(MAX_LENGTHS).forEach((field) => {
+      if (['requesterName', 'requesterEmail', 'requesterPhone'].includes(field)) return;
       if (typeof normalized[field] !== 'string') throw invalid('Request fields must be text values.');
       normalized[field] = normalized[field].trim();
       if (normalized[field].length > MAX_LENGTHS[field]) throw invalid('A request field is too long.');
     });
+
+    const requesterName = String(req.user?.fullname || '').trim();
+    const requesterEmail = String(req.user?.email || '').trim().toLowerCase();
+    const requesterPhone = String(req.user?.contactNumber || '').trim();
+    if (!requesterName || !EMAIL_PATTERN.test(requesterEmail) || !requesterPhone) {
+      throw invalid('Your account needs a name, verified email, and contact number before requesting a schedule.');
+    }
+    normalized.requesterName = requesterName;
+    normalized.requesterEmail = requesterEmail;
+    normalized.requesterPhone = requesterPhone;
 
     if (!EMAIL_PATTERN.test(normalized.requesterEmail)) throw invalid('Please provide a valid email address.');
     if (!PHONE_PATTERN.test(normalized.requesterPhone)) throw invalid('Please provide a valid phone number.');

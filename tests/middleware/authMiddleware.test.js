@@ -93,6 +93,29 @@ describe('Auth Middleware Tests', () => {
       expect(next).toHaveBeenCalledTimes(1);
     });
 
+    it('authenticates Public Calendar accounts using the calendar role cookie', async () => {
+      req.headers = { 'x-portal-role': 'calendar' };
+      req.cookies = { accessToken_calendar: 'calendar_access' };
+      jwt.verify.mockReturnValue({ id: 'calendar-user', role: 'calendar' });
+      User.findById.mockReturnValue({
+        select: jest.fn().mockResolvedValue({
+          _id: 'calendar-user',
+          role: 'calendar',
+          email: 'requester@example.com',
+          emailVerified: true,
+          status: 'Active',
+          lastActiveAt: new Date(),
+        })
+      });
+
+      await protect(req, res, next);
+
+      expect(jwt.verify.mock.calls[0][0]).toBe('calendar_access');
+      expect(req.user.role).toBe('calendar');
+      expect(req.user.accountType).toBe('External');
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects a role cookie whose database user does not match the tab context', async () => {
       req.headers = { 'x-portal-role': 'admin' };
       req.cookies = { accessToken_admin: 'wrong_role_access' };
