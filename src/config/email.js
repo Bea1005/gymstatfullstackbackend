@@ -11,8 +11,14 @@ const hasSmtpConfiguration = () => Boolean(
   && getEmailPassword()
 );
 const createEmailError = (message, code) => Object.assign(new Error(message), { code });
+const logEmailProviderIssue = (stage, details) => {
+  console.error('[EMAIL]', stage, {
+    provider: 'brevo',
+    ...details
+  });
+};
 
-const getBrevoSenderEmail = () => getSetting('BREVO_FROM_EMAIL', 'SMTP_FROM', 'SMTP_USER', 'EMAIL_USER');
+const getBrevoSenderEmail = () => getSetting('BREVO_FROM_EMAIL');
 
 const getRegistrationEmailFailure = (error) => {
   const code = String(error?.code || '');
@@ -87,12 +93,14 @@ const sendViaBrevo = async (to, subject, text, html) => {
   const apiKey = getSetting('BREVO_API_KEY');
   const fromEmail = getBrevoSenderEmail();
   if (!apiKey) {
+    logEmailProviderIssue('brevo-missing-api-key', { hasApiKey: false, hasSenderEmail: Boolean(fromEmail) });
     throw createEmailError(
       'Email provider is not configured.',
       'EMAIL_PROVIDER_NOT_CONFIGURED'
     );
   }
   if (!fromEmail) {
+    logEmailProviderIssue('brevo-missing-sender-email', { hasApiKey: true, hasSenderEmail: false });
     throw createEmailError(
       'Brevo sender email is missing. Set BREVO_FROM_EMAIL to the exact verified sender address in Brevo.',
       'BREVO_SENDER_NOT_CONFIGURED'
@@ -127,6 +135,11 @@ const sendViaBrevo = async (to, subject, text, html) => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve();
           } else {
+            logEmailProviderIssue('brevo-request-rejected', {
+              httpStatus: res.statusCode,
+              hasApiKey: Boolean(apiKey),
+              hasSenderEmail: Boolean(fromEmail)
+            });
             reject(createEmailError(
               'Brevo rejected the email request.',
               `BREVO_HTTP_${res.statusCode}`
