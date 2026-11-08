@@ -9,7 +9,9 @@ const {
   checkStudentIdAvailability,
   resendRegistrationOtp,
   verifyRegistrationOtp,
+  login,
 } = require('../../src/controllers/authControllers');
+const { verifyPassword } = require('../../src/config/passwords');
 const {
   sendRegistrationVerificationOtp,
 } = require('../../src/config/email');
@@ -29,6 +31,7 @@ jest.mock('../../src/models/PendingRegistration', () => ({
   updateOne: jest.fn(),
 }));
 jest.mock('../../src/models/RefreshSession', () => ({
+  create: jest.fn().mockResolvedValue({}),
   updateMany: jest.fn(),
 }));
 jest.mock('../../src/config/passwords', () => ({
@@ -58,6 +61,10 @@ const hashOtp = (otp) => crypto
 
 const validRegistration = (overrides = {}) => ({
   fullname: 'Jane Doe',
+  firstName: 'Jane',
+  middleInitial: '',
+  lastName: 'Doe',
+  suffix: '',
   email: 'jane@example.com',
   contactNumber: '09171234567',
   password: 'Password1!',
@@ -114,7 +121,7 @@ describe('registration identity verification', () => {
     expect(User.create).not.toHaveBeenCalled();
   });
 
-  it('allows registration without a contact number', async () => {
+  it('requires a valid contact number before creating a pending registration', async () => {
     const req = httpMocks.createRequest({
       body: validRegistration({ contactNumber: undefined }),
     });
@@ -122,17 +129,102 @@ describe('registration identity verification', () => {
 
     await register(req, res);
 
-    expect(res.statusCode).toBe(201);
-    expect(pendingDocument.contactNumber).toBe('');
-    expect(pendingDocument.contactOtpHash).toBeNull();
-    expect(pendingDocument.verificationMethod).toBe('email');
-    expect(pendingDocument.registrationOtpHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith(
-      'jane@example.com',
-      expect.stringMatching(/^\d{6}$/),
-      10
-    );
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toContain('Philippine mobile number');
+    expect(PendingRegistration.create).not.toHaveBeenCalled();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
     expect(sendContactVerificationOtp).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['firstName', ''],
+    ['lastName', '  '],
+  ])('requires %s even when a legacy fullname is supplied', async (field, value) => {
+    const res = httpMocks.createResponse();
+
+    await register(httpMocks.createRequest({
+      body: validRegistration({ [field]: value }),
+    }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(PendingRegistration.create).not.toHaveBeenCalled();
+  });
+
+  it('normalizes and preserves name components, optional middle initial, and suffix through email verification', async () => {
+    const registrationRes = httpMocks.createResponse();
+    await register(httpMocks.createRequest({
+      body: validRegistration({
+        firstName: '  Anne-Marie  ',
+        middleInitial: ' O. ',
+        lastName: " Dela Cruz ",
+        suffix: ' Jr. ',
+        contactNumber: '+639171234567',
+      }),
+    }), registrationRes);
+
+    expect(registrationRes.statusCode).toBe(201);
+    expect(PendingRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
+      fullname: 'Anne-Marie O. Dela Cruz Jr.',
+      firstName: 'Anne-Marie',
+      middleInitial: 'O.',
+      lastName: 'Dela Cruz',
+      suffix: 'Jr.',
+      contactNumber: '+639171234567',
+    }));
+
+    const otp = sendRegistrationVerificationOtp.mock.calls.at(-1)[1];
+    PendingRegistration.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue(pendingDocument),
+    });
+    const verifyRes = httpMocks.createResponse();
+    await verifyRegistrationOtp(httpMocks.createRequest({
+      body: { email: 'jane@example.com', otp },
+    }), verifyRes);
+
+    expect(verifyRes.statusCode).toBe(200);
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      fullname: 'Anne-Marie O. Dela Cruz Jr.',
+      firstName: 'Anne-Marie',
+      middleInitial: 'O.',
+      lastName: 'Dela Cruz',
+      suffix: 'Jr.',
+      contactNumber: '+639171234567',
+    }));
+  });
+
+  it('returns the saved name components and contact number after login', async () => {
+    const user = {
+      _id: 'created-user',
+      fullname: 'Anne-Marie O. Dela Cruz Jr.',
+      firstName: 'Anne-Marie',
+      middleInitial: 'O.',
+      lastName: 'Dela Cruz',
+      suffix: 'Jr.',
+      contactNumber: '+639171234567',
+      email: 'jane@example.com',
+      emailVerified: true,
+      role: 'student',
+      id: '23B1509',
+      password: 'hashed-registration-password',
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    User.findOne.mockResolvedValue(user);
+    verifyPassword.mockResolvedValue({ valid: true, needsRehash: false });
+    const res = httpMocks.createResponse();
+
+    await login(httpMocks.createRequest({
+      body: { id: '23B1509', password: 'Password1!' },
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData().user).toEqual(expect.objectContaining({
+      fullname: 'Anne-Marie O. Dela Cruz Jr.',
+      firstName: 'Anne-Marie',
+      middleInitial: 'O.',
+      lastName: 'Dela Cruz',
+      suffix: 'Jr.',
+      contactNumber: '+639171234567',
+    }));
   });
 
   it.each(['23B1509', '23G1509', '23S1509', '23T1509', '23B1496'])(
@@ -211,6 +303,10 @@ describe('registration identity verification', () => {
 
     expect(verifyRes.statusCode).toBe(200);
     expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      firstName: 'Jane',
+      middleInitial: '',
+      lastName: 'Doe',
+      suffix: '',
       contactNumber: '+639171234567',
       emailVerified: true,
       contactNumberVerified: false,

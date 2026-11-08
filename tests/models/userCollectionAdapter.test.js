@@ -21,6 +21,18 @@ describe('User collection adapter', () => {
     ]);
   });
 
+  it('stores the individual registration name fields on canonical and role records', () => {
+    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber'].forEach((field) => {
+      expect(User.schema.path(field)).toBeDefined();
+    });
+    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber'].forEach((field) => {
+      expect(StudentAthlete.schema.path(field)).toBeDefined();
+    });
+    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber'].forEach((field) => {
+      expect(Coach.schema.path(field)).toBeDefined();
+    });
+  });
+
   it('checks canonical users for email uniqueness and ignores stale role-only records', async () => {
     const canonicalLookup = jest.spyOn(User.collection, 'findOne').mockResolvedValue(null);
     const roleModels = [

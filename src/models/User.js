@@ -9,6 +9,26 @@ const baseUserSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  firstName: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  middleInitial: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  lastName: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  suffix: {
+    type: String,
+    default: '',
+    trim: true
+  },
   email: {
     type: String,
     required: false,
@@ -313,6 +333,10 @@ const buildRoleDocument = (user) => {
   const normalizedRole = normalizeRole(source.role);
   const roleDocPayload = {
     fullname: source.fullname || '',
+    firstName: source.firstName || '',
+    middleInitial: source.middleInitial || '',
+    lastName: source.lastName || '',
+    suffix: source.suffix || '',
     email: source.email || '',
     contactNumber: source.contactNumber || '',
     profilePhoto: source.profilePhoto || '',

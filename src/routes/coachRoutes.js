@@ -383,7 +383,12 @@ router.get('/coach/profile', protect, authorize('coach'), async (req, res) => {
 
     return res.json({
       fullname: user.fullname,
+      firstName: user.firstName || '',
+      middleInitial: user.middleInitial || '',
+      lastName: user.lastName || '',
+      suffix: user.suffix || '',
       email: user.email,
+      contactNumber: user.contactNumber || '',
       mainSport: user.sport || '',
       position: user.coachPosition || 'Coach',
       sportParticipation: user.sportParticipation || [],

@@ -83,6 +83,10 @@ describe('validateRequestBody requirement upload fields', () => {
       path: '/api/v1/register',
       body: {
         fullname: 'Jane Doe',
+        firstName: 'Jane',
+        middleInitial: 'A',
+        lastName: 'Doe',
+        suffix: 'Jr.',
         email: 'jane@gmail.com',
         password: 'Password1!',
         department: 'CICS',
@@ -101,6 +105,10 @@ describe('validateRequestBody requirement upload fields', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.body).toEqual(expect.objectContaining({
+      firstName: 'Jane',
+      middleInitial: 'A',
+      lastName: 'Doe',
+      suffix: 'Jr.',
       contactNumber: '09171234567',
       verificationMethod: 'sms',
       role: 'student',

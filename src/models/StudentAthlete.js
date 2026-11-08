@@ -11,6 +11,22 @@ const StudentAthleteSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  firstName: {
+    type: String,
+    default: ''
+  },
+  middleInitial: {
+    type: String,
+    default: ''
+  },
+  lastName: {
+    type: String,
+    default: ''
+  },
+  suffix: {
+    type: String,
+    default: ''
+  },
   email: {
     type: String,
     default: ''

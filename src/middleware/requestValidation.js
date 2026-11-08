@@ -22,6 +22,10 @@ const BORROWING_CREATE_FIELDS = new Set([
 ]);
 const REGISTRATION_FIELDS = new Set([
   'fullname',
+  'firstName',
+  'middleInitial',
+  'lastName',
+  'suffix',
   'email',
   'password',
   'department',

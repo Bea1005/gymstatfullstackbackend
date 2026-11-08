@@ -6,6 +6,26 @@ const pendingRegistrationSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  firstName: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  middleInitial: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  lastName: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  suffix: {
+    type: String,
+    default: '',
+    trim: true
+  },
   email: {
     type: String,
     required: true,
