@@ -183,4 +183,21 @@ describe('Email delivery configuration', () => {
       message: 'Brevo rejected the request. Check that the API key is active and the sender email is verified in Brevo.'
     });
   });
+
+  it('reports a missing Brevo sender address with a clear configuration message', async () => {
+    delete process.env.BREVO_FROM_EMAIL;
+    let deliveryError;
+
+    try {
+      await sendRegistrationVerificationOtp('jane@example.test', '654321', 10);
+    } catch (error) {
+      deliveryError = error;
+    }
+
+    expect(deliveryError).toMatchObject({ code: 'BREVO_SENDER_NOT_CONFIGURED' });
+    expect(getRegistrationEmailFailure(deliveryError)).toEqual({
+      code: 'provider-not-configured',
+      message: 'Brevo sender email is not configured. Set BREVO_FROM_EMAIL to the exact verified sender in Brevo.'
+    });
+  });
 });

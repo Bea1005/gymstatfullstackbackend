@@ -12,12 +12,16 @@ const hasSmtpConfiguration = () => Boolean(
 );
 const createEmailError = (message, code) => Object.assign(new Error(message), { code });
 
+const getBrevoSenderEmail = () => getSetting('BREVO_FROM_EMAIL', 'SMTP_FROM', 'SMTP_USER', 'EMAIL_USER');
+
 const getRegistrationEmailFailure = (error) => {
   const code = String(error?.code || '');
-  if (code === 'EMAIL_PROVIDER_NOT_CONFIGURED') {
+  if (code === 'EMAIL_PROVIDER_NOT_CONFIGURED' || code === 'BREVO_SENDER_NOT_CONFIGURED') {
     return {
       code: 'provider-not-configured',
-      message: 'Email sending is not configured on the backend. Check the Brevo API key and verified sender settings.'
+      message: code === 'BREVO_SENDER_NOT_CONFIGURED'
+        ? 'Brevo sender email is not configured. Set BREVO_FROM_EMAIL to the exact verified sender in Brevo.'
+        : 'Email sending is not configured on the backend. Check the Brevo API key and verified sender settings.'
     };
   }
   if (code === 'BREVO_HTTP_401' || code === 'BREVO_HTTP_403') {
@@ -67,24 +71,31 @@ const getEmailConfigurationStatus = () => {
   const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
   const password = getEmailPassword();
   const brevoKey = getSetting('BREVO_API_KEY');
-  const brevoFromEmail = getSetting('BREVO_FROM_EMAIL', 'SMTP_FROM', 'SMTP_USER', 'EMAIL_USER');
+  const brevoFromEmail = getBrevoSenderEmail();
   const brevoConfigured = Boolean(brevoKey && brevoFromEmail);
   return {
     configured: Boolean((host && user && password) || brevoConfigured),
     hostConfigured: Boolean(host),
     userConfigured: Boolean(user),
     passwordConfigured: Boolean(password),
-    brevoConfigured
+    brevoConfigured,
+    brevoFromEmailConfigured: Boolean(brevoFromEmail)
   };
 };
 
 const sendViaBrevo = async (to, subject, text, html) => {
   const apiKey = getSetting('BREVO_API_KEY');
-  const fromEmail = getSetting('BREVO_FROM_EMAIL', 'SMTP_FROM', 'SMTP_USER', 'EMAIL_USER');
-  if (!apiKey || !fromEmail) {
+  const fromEmail = getBrevoSenderEmail();
+  if (!apiKey) {
     throw createEmailError(
       'Email provider is not configured.',
       'EMAIL_PROVIDER_NOT_CONFIGURED'
+    );
+  }
+  if (!fromEmail) {
+    throw createEmailError(
+      'Brevo sender email is missing. Set BREVO_FROM_EMAIL to the exact verified sender address in Brevo.',
+      'BREVO_SENDER_NOT_CONFIGURED'
     );
   }
   const fromName = getSetting('BREVO_FROM_NAME') || 'GYMSTAT';
