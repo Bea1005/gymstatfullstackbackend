@@ -235,33 +235,19 @@ exports.getSchedulesByDateRange = async (req, res) => {
       });
     }
 
-    const rangeStart = new Date(`${startDate}T00:00:00.000Z`);
-    const rangeEnd = new Date(`${endDate}T00:00:00.000Z`);
+    const MAX_PREP_DAYS = 30;
+    const prepWindowStart = new Date(`${startDate}T00:00:00.000Z`);
+    prepWindowStart.setUTCDate(prepWindowStart.getUTCDate() - MAX_PREP_DAYS);
+    const prepWindowStartStr = prepWindowStart.toISOString().slice(0, 10);
+
     const schedules = await Schedule.find({
       status: 'active',
-      $or: [
-        { startDate: { $lte: endDate }, endDate: { $gte: startDate } },
-        {
-          startDate: { $gt: endDate },
-          prepDays: { $gt: 0 },
-          $expr: {
-            $lte: [
-              {
-                $subtract: [
-                  { $dateFromString: { dateString: '$startDate', onError: null, onNull: null } },
-                  { $multiply: [{ $ifNull: ['$prepDays', 0] }, 86400000] }
-                ]
-              },
-              { $dateFromString: { dateString: endDate } }
-            ]
-          }
-        }
-      ]
+      startDate: { $lte: endDate },
+      endDate:   { $gte: prepWindowStartStr },
     })
-      .select('_id event startDate endDate startTime endTime prepDays status fromRequest')
-    .populate('fromRequest', 'requesterEmail')
-    .sort({ startDate: 1, startTime: 1 })
-    .lean();
+      .select('_id event startDate endDate startTime endTime prepDays status fromRequest organization requesterEmail')
+      .sort({ startDate: 1, startTime: 1 })
+      .lean();
 
     const calendarSchedules = schedules.filter((schedule) => {
       const scheduleStart = new Date(`${schedule.startDate}T00:00:00.000Z`);
