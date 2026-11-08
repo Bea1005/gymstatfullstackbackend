@@ -20,6 +20,7 @@ const {
 } = require('../../src/config/sms');
 
 jest.mock('../../src/models/User', () => ({
+  hasRegisteredId: jest.fn(),
   findOne: jest.fn(),
   create: jest.fn(),
 }));
@@ -81,6 +82,7 @@ describe('registration identity verification', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     pendingDocument = null;
+    User.hasRegisteredId.mockResolvedValue(false);
     User.findOne.mockResolvedValue(null);
     User.create.mockImplementation(async (user) => ({ _id: 'created-user', ...user }));
     PendingRegistration.findOne.mockImplementation(() => ({
@@ -119,6 +121,127 @@ describe('registration identity verification', () => {
     expect(sendContactVerificationOtp).not.toHaveBeenCalled();
     expect(res._getJSONData()).not.toHaveProperty('otp');
     expect(User.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'sadiwa.hazel@marsu.edu.ph',
+    'firstname.lastname@marsu.edu.ph',
+    'username@marsu.edu.ph',
+    'user+registration@marsu.edu.ph',
+    'ordinary.user@gmail.com',
+    'username@marsu.edu',
+    'username@marsu.edu.ph.extra',
+  ])('accepts valid registration email %s', async (email) => {
+    const res = httpMocks.createResponse();
+
+    await register(httpMocks.createRequest({
+      body: validRegistration({ email }),
+    }), res);
+
+    expect(res.statusCode).toBe(201);
+    expect(PendingRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
+      email,
+      emailNormalized: email.toLowerCase(),
+    }));
+    expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith(
+      email,
+      expect.stringMatching(/^\d{6}$/),
+      10
+    );
+    expect(User.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '',
+    '   ',
+    'missing-user@marsu..edu.ph',
+    '.username@marsu.edu.ph',
+    'username.@marsu.edu.ph',
+    'username..surname@marsu.edu.ph',
+    'username@-marsu.edu.ph',
+    'username@marsu.edu.ph-',
+  ])('rejects malformed or unsupported registration email %s', async (email) => {
+    const res = httpMocks.createResponse();
+
+    await register(httpMocks.createRequest({
+      body: validRegistration({ email }),
+    }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(PendingRegistration.create).not.toHaveBeenCalled();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
+  });
+
+  it('rejects a registration email already in use', async () => {
+    User.findOne.mockResolvedValueOnce({
+      id: '23B1496',
+      email: 'sadiwa.hazel@marsu.edu.ph',
+    });
+    const res = httpMocks.createResponse();
+
+    await register(httpMocks.createRequest({
+      body: validRegistration({ email: 'Sadiwa.Hazel@marsu.edu.ph' }),
+    }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res._getJSONData().message).toContain('already registered');
+    expect(PendingRegistration.create).not.toHaveBeenCalled();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
+  });
+
+  it('resends verification to the exact saved registration email', async () => {
+    const savedEmail = 'Sadiwa.Hazel@marsu.edu.ph';
+    const pendingRegistration = {
+      _id: 'pending-registration',
+      email: savedEmail,
+      emailNormalized: savedEmail.toLowerCase(),
+      registrationOtpLastSentAt: new Date(Date.now() - 61_000),
+      registrationOtpResendCount: 0,
+      contactOtpResendCount: 0,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    PendingRegistration.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue(pendingRegistration),
+    });
+    PendingRegistration.findOneAndUpdate.mockResolvedValue(pendingRegistration);
+    const res = httpMocks.createResponse();
+
+    await resendRegistrationOtp(httpMocks.createRequest({
+      body: { email: savedEmail.toLowerCase() },
+    }), res);
+
+    expect(res.statusCode).toBe(202);
+    expect(sendRegistrationVerificationOtp).toHaveBeenCalledWith(
+      savedEmail,
+      expect.stringMatching(/^\d{6}$/),
+      10
+    );
+  });
+
+  it('creates an institutional account only after email verification', async () => {
+    const email = 'Sadiwa.Hazel@marsu.edu.ph';
+    const registrationRes = httpMocks.createResponse();
+    await register(httpMocks.createRequest({
+      body: validRegistration({ email }),
+    }), registrationRes);
+
+    expect(registrationRes.statusCode).toBe(201);
+    expect(User.create).not.toHaveBeenCalled();
+
+    const otp = sendRegistrationVerificationOtp.mock.calls.at(-1)[1];
+    PendingRegistration.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue(pendingDocument),
+    });
+    const verificationRes = httpMocks.createResponse();
+    await verifyRegistrationOtp(httpMocks.createRequest({
+      body: { email, otp },
+    }), verificationRes);
+
+    expect(verificationRes.statusCode).toBe(200);
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      email,
+      emailVerified: true,
+    }));
   });
 
   it('requires a valid contact number before creating a pending registration', async () => {
@@ -259,7 +382,7 @@ describe('registration identity verification', () => {
   });
 
   it('checks whether a valid student ID is already associated with an account', async () => {
-    User.findOne.mockResolvedValue({ id: '23B1496' });
+    User.hasRegisteredId.mockResolvedValue(true);
     const res = httpMocks.createResponse();
 
     await checkStudentIdAvailability(httpMocks.createRequest({
@@ -272,6 +395,7 @@ describe('registration identity verification', () => {
       available: false,
       message: 'This ID is already registered. Please use a different ID.',
     }));
+    expect(User.hasRegisteredId).toHaveBeenCalledWith('23B1496');
   });
 
   it('does not retain an unverified registration when email delivery fails', async () => {

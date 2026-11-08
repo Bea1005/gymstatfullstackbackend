@@ -478,6 +478,9 @@ const User = mongoose.model('User', baseUserSchema, 'users');
 User.hasRegisteredId = async (id) => {
   const normalizedId = String(id || '').trim();
   if (!normalizedId) return false;
+  if (mongoose.connection.readyState !== 1) {
+    throw new Error('MongoDB is not connected');
+  }
 
   const canonicalUser = await User.collection.findOne(
     { id: normalizedId },

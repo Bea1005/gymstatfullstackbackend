@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const crypto = require('crypto');
 const { getJWTSecret } = require('../config/security');
@@ -32,11 +33,14 @@ const REGISTRATION_OTP_COOLDOWN_MS = 60 * 1000;
 const REGISTRATION_OTP_MAX_ATTEMPTS = 5;
 const REGISTRATION_OTP_MAX_RESENDS = 5;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
-const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
+const DUPLICATE_ID_MESSAGE = 'This Student ID is already registered.';
 const DUPLICATE_EMAIL_MESSAGE = 'This email is already registered. Please use a different email address.';
 const DUPLICATE_CONTACT_MESSAGE = 'This contact number is already registered. Please use a different mobile number.';
 const GENERIC_REGISTRATION_OTP_MESSAGE = 'If a pending registration is associated with that email, a verification code can be sent.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REGISTRATION_EMAIL_PATTERN = new RegExp(
+  "^(?=.{1,254}$)(?=.{1,64}@)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$"
+);
 const NAME_COMPONENT_PATTERN = /^[\p{L}\p{M}]+(?:[\s'’.-][\p{L}\p{M}]+)*\.?$/u;
 const DISPOSABLE_EMAIL_DOMAINS = new Set([
   'mailinator.com', 'guerrillamail.com', 'dispostable.com', 'temp-mail.org',
@@ -66,6 +70,7 @@ const isDummyEmailAddress = (email) => {
   if (!localPart || !domain) return false;
   if (DISPOSABLE_EMAIL_DOMAINS.has(domain)) return true;
   if (domain.includes('mailinator') || domain.includes('guerrillamail') || domain.includes('tempmail')) return true;
+  if (domain === 'marsu.edu.ph') return false;
 
   const normalizedLocalPart = localPart.replace(/[._+-]+/g, '').toLowerCase();
   if (DUMMY_EMAIL_PREFIXES.has(normalizedLocalPart)) return true;
@@ -181,16 +186,17 @@ exports.checkStudentIdAvailability = async (req, res) => {
   if (!/^23[BGST]\d{4}$/.test(id)) {
     return res.status(400).json({
       success: false,
-      message: 'Student ID must be 7 characters: 23 followed by B, G, S, or T and four digits (for example, 23B1496).'
+      message: 'Invalid Student ID format.'
     });
   }
 
   try {
-    // Use the low-level collection query which bypasses Mongoose hooks and is
-    // more resilient during startup — avoids triggering syncRoleDocument on
-    // an unrelated read-only lookup.
-    const taken = await User.hasRegisteredId(id);
-    if (taken) {
+    const [taken, pendingRegistration] = await Promise.all([
+      User.hasRegisteredId(id),
+      PendingRegistration.findOne({ id }).select('_id')
+    ]);
+
+    if (taken || pendingRegistration) {
       return res.status(200).json({
         success: true,
         available: false,
@@ -200,13 +206,14 @@ exports.checkStudentIdAvailability = async (req, res) => {
 
     return res.status(200).json({ success: true, available: true });
   } catch (error) {
-    console.error('Student ID availability check failed:', error?.message || error);
-    // Return 200 with available:null so the frontend can still proceed to
-    // registration, which enforces uniqueness independently on the backend.
-    return res.status(200).json({
-      success: true,
-      available: null,
-      message: 'Unable to verify this ID number right now. Registration will validate it on submission.'
+    console.error('Student ID availability check failed:', {
+      name: error?.name,
+      code: error?.code,
+      message: error?.message || String(error)
+    });
+    return res.status(503).json({
+      success: false,
+      message: 'Student ID verification is temporarily unavailable. Please try again.'
     });
   }
 };
@@ -796,7 +803,11 @@ exports.resendRegistrationOtp = async (req, res) => {
     }
 
     try {
-      await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
+      await sendRegistrationVerificationOtp(
+        pendingRegistration.email,
+        otp,
+        REGISTRATION_OTP_TTL_MS / 60000
+      );
     } catch (error) {
       await PendingRegistration.updateOne(
         { _id: pendingRegistration._id, verificationMethod: 'email' },
@@ -836,7 +847,8 @@ exports.register = async (req, res) => {
       id,
       contactNumber
     } = req.body;
-    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const submittedEmail = String(email || '').trim();
+    const normalizedEmail = submittedEmail.toLowerCase();
     const normalizedContact = normalizePhoneNumber(contactNumber || '');
     const normalizedFirstName = normalizeNamePart(firstName);
     const normalizedMiddleInitial = normalizeNamePart(middleInitial);
@@ -875,7 +887,7 @@ exports.register = async (req, res) => {
       normalizedSuffix
     ].filter(Boolean).join(' ');
 
-    if (!EMAIL_PATTERN.test(normalizedEmail) || isDummyEmailAddress(normalizedEmail)) {
+    if (!REGISTRATION_EMAIL_PATTERN.test(normalizedEmail) || isDummyEmailAddress(normalizedEmail)) {
       return res.status(400).json({
         success: false,
         message: 'Please use a real email address that you regularly access.'
@@ -892,7 +904,7 @@ exports.register = async (req, res) => {
         success: false,
         message: /^\d{4}-\d{4}$/.test(trimmedId || '')
           ? 'Coach ID numbers must use the format 0000-0000.'
-          : 'Student ID must be 7 characters: 23 followed by B, G, S, or T and four digits (for example, 23B1496).'
+          : 'Invalid Student ID format.'
       });
     }
 
@@ -944,7 +956,7 @@ exports.register = async (req, res) => {
       middleInitial: normalizedMiddleInitial,
       lastName: normalizedLastName,
       suffix: normalizedSuffix,
-      email: normalizedEmail,
+      email: submittedEmail,
       emailNormalized: normalizedEmail,
       contactNumber: normalizedContact || '',
       verificationMethod: 'email',
@@ -990,7 +1002,7 @@ exports.register = async (req, res) => {
     const pendingRegistration = await PendingRegistration.create(pendingPayload);
 
     try {
-      await sendRegistrationVerificationOtp(normalizedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
+      await sendRegistrationVerificationOtp(submittedEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
     } catch (error) {
       await PendingRegistration.deleteOne({ _id: pendingRegistration._id });
       return res.status(503).json({

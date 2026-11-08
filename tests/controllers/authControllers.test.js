@@ -64,7 +64,9 @@ describe('Auth Controllers', () => {
     User.hasRegisteredId = jest.fn().mockResolvedValue(false);
     User.hasRegisteredEmail = jest.fn().mockResolvedValue(false);
     User.ensureEmailIndex = jest.fn().mockResolvedValue('emailNormalized_1');
-    PendingRegistration.findOne.mockResolvedValue(null);
+    PendingRegistration.findOne.mockImplementation(() => ({
+      select: jest.fn().mockResolvedValue(null)
+    }));
     PendingRegistration.findOneAndUpdate.mockResolvedValue(null);
     PendingRegistration.create.mockImplementation(async (pending) => ({ _id: 'pending123', ...pending }));
     PendingRegistration.deleteOne.mockResolvedValue({ deletedCount: 1 });
@@ -494,7 +496,7 @@ describe('Auth Controllers', () => {
   );
 
   it('checks whether a valid student ID is already associated with an account', async () => {
-    User.findOne.mockResolvedValue({ id: '23B1496' });
+    User.hasRegisteredId.mockResolvedValue(true);
     const res = httpMocks.createResponse();
 
     await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23B1496' } }), res);
@@ -503,17 +505,58 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData()).toEqual({
       success: true,
       available: false,
-      message: 'This ID is already registered. Please use a different ID.'
+      message: 'This Student ID is already registered.'
+    });
+    expect(User.hasRegisteredId).toHaveBeenCalledWith('23B1496');
+  });
+
+  it('reports an unused valid student ID as available', async () => {
+    const res = httpMocks.createResponse();
+
+    await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23B1519' } }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toEqual({ success: true, available: true });
+    expect(User.hasRegisteredId).toHaveBeenCalledWith('23B1519');
+  });
+
+  it.each(['', '23A1509', '23B15A9'])(
+    'rejects invalid student ID %s in the availability check',
+    async (id) => {
+      const res = httpMocks.createResponse();
+
+      await checkStudentIdAvailability(httpMocks.createRequest({ query: { id } }), res);
+
+      expect(res.statusCode).toBe(400);
+      expect(User.hasRegisteredId).not.toHaveBeenCalled();
+    }
+  );
+
+  it('returns unavailable when the ID is reserved by a pending registration', async () => {
+    PendingRegistration.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue({ _id: 'pending-id' }) });
+    const res = httpMocks.createResponse();
+
+    await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23B1519' } }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData()).toEqual({
+      success: true,
+      available: false,
+      message: 'This Student ID is already registered.'
     });
   });
 
-  it('rejects malformed student IDs in the availability check', async () => {
+  it('returns a temporary service error when the ID lookup fails', async () => {
+    User.hasRegisteredId.mockRejectedValueOnce(new Error('database unavailable'));
     const res = httpMocks.createResponse();
 
-    await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23A1509' } }), res);
+    await checkStudentIdAvailability(httpMocks.createRequest({ query: { id: '23B1519' } }), res);
 
-    expect(res.statusCode).toBe(400);
-    expect(User.findOne).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(503);
+    expect(res._getJSONData()).toEqual({
+      success: false,
+      message: 'Student ID verification is temporarily unavailable. Please try again.'
+    });
   });
 
   it('rejects duplicate IDs during registration', async () => {
