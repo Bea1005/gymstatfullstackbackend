@@ -2,6 +2,81 @@ const httpMocks = require('node-mocks-http');
 const { validateRequestBody } = require('../../src/middleware/requestValidation');
 
 describe('validateRequestBody requirement upload fields', () => {
+  it('accepts Public Calendar registration fields only on the calendar registration endpoint', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/calendar-auth/register',
+      body: {
+        firstName: 'Jane',
+        middleName: 'Marie',
+        lastName: 'Doe',
+        email: 'jane@example.com',
+        phoneNumber: '09171234567',
+        password: 'ValidPassword1!',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body).toEqual(expect.objectContaining({
+      firstName: 'Jane',
+      middleName: 'Marie',
+      lastName: 'Doe',
+      email: 'jane@example.com',
+      phoneNumber: '09171234567',
+    }));
+  });
+
+  it('continues rejecting Public Calendar registration fields on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/calendar-auth/login',
+      body: { firstName: 'Jane' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
+  it('accepts the Google identity credential only on the calendar Google auth endpoint', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/calendar-auth/google',
+      body: { credential: 'google-id-token' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body).toEqual({ credential: 'google-id-token' });
+  });
+
+  it('continues rejecting the Google identity credential on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/calendar-auth/login',
+      body: { credential: 'google-id-token' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
   it('accepts the complete registration payload including phone verification fields', () => {
     const req = httpMocks.createRequest({
       method: 'POST',

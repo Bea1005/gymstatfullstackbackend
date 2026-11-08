@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
+const { normalizePhoneNumber } = require('../config/sms');
 const { getScheduleClientType, getScheduleAccountType } = require('../utils/scheduleClientType');
 const requireCalendarRequester = (req, res, next) => {
   const email = String(req.user?.email || '').trim().toLowerCase();
@@ -9,6 +10,12 @@ const requireCalendarRequester = (req, res, next) => {
     return res.status(403).json({
       success: false,
       message: 'A verified, authenticated account is required to request a schedule.'
+    });
+  }
+  if (!String(req.user.fullname || '').trim() || !normalizePhoneNumber(req.user.contactNumber)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Complete your profile before requesting a schedule.'
     });
   }
   req.user.accountType = getScheduleAccountType(email);

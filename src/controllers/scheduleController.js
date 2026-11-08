@@ -235,17 +235,36 @@ exports.getSchedulesByDateRange = async (req, res) => {
       });
     }
 
-    const MAX_PREP_DAYS = 30;
-    const prepWindowStart = new Date(`${startDate}T00:00:00.000Z`);
-    prepWindowStart.setUTCDate(prepWindowStart.getUTCDate() - MAX_PREP_DAYS);
-    const prepWindowStartStr = prepWindowStart.toISOString().slice(0, 10);
+    const rangeStart = new Date(`${startDate}T00:00:00.000Z`);
+    const rangeEnd = new Date(`${endDate}T00:00:00.000Z`);
 
     const schedules = await Schedule.find({
       status: 'active',
-      startDate: { $lte: endDate },
-      endDate:   { $gte: prepWindowStartStr },
+      $or: [
+        {
+          startDate: { $lte: endDate },
+          endDate: { $gte: startDate },
+        },
+        {
+          startDate: { $gt: endDate },
+          prepDays: { $gt: 0 },
+          $expr: {
+            $lte: [
+              {
+                $dateSubtract: {
+                  startDate: { $dateFromString: { dateString: '$startDate' } },
+                  unit: 'day',
+                  amount: '$prepDays',
+                },
+              },
+              { $dateFromString: { dateString: endDate } },
+            ],
+          },
+        },
+      ],
     })
-      .select('_id event startDate endDate startTime endTime prepDays status fromRequest organization requesterEmail')
+      .select('_id event startDate endDate startTime endTime prepDays status fromRequest')
+      .populate('fromRequest', 'requesterEmail')
       .sort({ startDate: 1, startTime: 1 })
       .lean();
 

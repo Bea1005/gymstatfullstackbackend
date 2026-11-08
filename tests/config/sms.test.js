@@ -6,16 +6,13 @@ const {
   sendContactVerificationOtp,
 } = require('../../src/config/sms');
 
-describe('SMS delivery configuration', () => {
-  const environmentNames = [
-    'TWILIO_ACCOUNT_SID',
-    'TWILIO_AUTH_TOKEN',
-    'TWILIO_PHONE_NUMBER',
-  ];
+describe('Brevo SMS delivery configuration', () => {
+  const environmentNames = ['BREVO_API_KEY', 'BREVO_SMS_SENDER'];
   let originalEnvironment;
   let httpsRequestSpy;
   let requestCapture;
-  let responseStatus = 201;
+  let responseStatus;
+  let responseBody;
 
   beforeEach(() => {
     originalEnvironment = Object.fromEntries(
@@ -23,18 +20,19 @@ describe('SMS delivery configuration', () => {
     );
     environmentNames.forEach((name) => delete process.env[name]);
     responseStatus = 201;
+    responseBody = '';
     requestCapture = { body: '' };
     httpsRequestSpy = jest.spyOn(https, 'request').mockImplementation((options, callback) => {
       const request = new EventEmitter();
       const response = new EventEmitter();
       response.statusCode = responseStatus;
-      response.resume = jest.fn();
       request.write = (chunk) => {
         requestCapture.body += String(chunk);
       };
       request.end = () => {
         process.nextTick(() => {
           callback(response);
+          if (responseBody) response.emit('data', Buffer.from(responseBody));
           response.emit('end');
         });
       };
@@ -51,6 +49,11 @@ describe('SMS delivery configuration', () => {
     });
   });
 
+  const configureBrevo = () => {
+    process.env.BREVO_API_KEY = 'test-brevo-api-key';
+    process.env.BREVO_SMS_SENDER = 'GYMSTAT';
+  };
+
   it.each([
     ['09171234567', '+639171234567'],
     ['+639171234567', '+639171234567'],
@@ -65,11 +68,18 @@ describe('SMS delivery configuration', () => {
     }
   );
 
-  it('does not claim delivery when Twilio is not configured', async () => {
+  it('requires both the Brevo API key and a configured SMS sender', async () => {
     expect(getSmsConfigurationStatus()).toEqual({
       configured: false,
-      provider: 'twilio',
-      missing: environmentNames,
+      provider: 'brevo',
+      missing: ['BREVO_API_KEY', 'BREVO_SMS_SENDER'],
+    });
+
+    process.env.BREVO_API_KEY = 'test-brevo-api-key';
+    expect(getSmsConfigurationStatus()).toEqual({
+      configured: false,
+      provider: 'brevo',
+      missing: ['BREVO_SMS_SENDER'],
     });
 
     await expect(sendContactVerificationOtp('09171234567', '012345'))
@@ -77,38 +87,84 @@ describe('SMS delivery configuration', () => {
     expect(httpsRequestSpy).not.toHaveBeenCalled();
   });
 
-  it('sends an OTP through the configured Twilio Messages API', async () => {
-    process.env.TWILIO_ACCOUNT_SID = `AC${'a'.repeat(32)}`;
-    process.env.TWILIO_AUTH_TOKEN = 'test-auth-token';
-    process.env.TWILIO_PHONE_NUMBER = '+15551234567';
+  it('rejects sender IDs that do not meet Brevo format limits', () => {
+    process.env.BREVO_API_KEY = 'test-brevo-api-key';
+    process.env.BREVO_SMS_SENDER = 'GYMSTAT_SENDER_TOO_LONG';
+
+    expect(getSmsConfigurationStatus()).toEqual({
+      configured: false,
+      provider: 'brevo',
+      missing: ['BREVO_SMS_SENDER'],
+    });
+  });
+
+  it('sends an OTP to a normalized Philippine number through the Brevo API', async () => {
+    configureBrevo();
 
     await expect(sendContactVerificationOtp('09171234567', '012345', 5))
       .resolves.toBeUndefined();
 
     expect(requestCapture.options).toEqual(expect.objectContaining({
-      hostname: 'api.twilio.com',
-      path: `/2010-04-01/Accounts/AC${'a'.repeat(32)}/Messages.json`,
+      hostname: 'api.brevo.com',
+      path: '/v3/transactionalSMS/sms',
       method: 'POST',
       headers: expect.objectContaining({
-        Authorization: `Basic ${Buffer.from(`AC${'a'.repeat(32)}:test-auth-token`).toString('base64')}`,
+        'api-key': 'test-brevo-api-key',
       }),
     }));
-    expect(new URLSearchParams(requestCapture.body).get('To')).toBe('+639171234567');
-    expect(new URLSearchParams(requestCapture.body).get('From')).toBe('+15551234567');
-    expect(new URLSearchParams(requestCapture.body).get('Body')).toContain('012345');
-    expect(new URLSearchParams(requestCapture.body).get('Body')).toContain('expires in 5 minutes');
+    expect(JSON.parse(requestCapture.body)).toEqual({
+      sender: 'GYMSTAT',
+      recipient: '+639171234567',
+      content: 'Your GYMSTAT verification code is 012345. It expires in 5 minutes.',
+      type: 'transactional',
+    });
   });
 
-  it('reports provider delivery failures without exposing the OTP', async () => {
-    process.env.TWILIO_ACCOUNT_SID = `AC${'a'.repeat(32)}`;
-    process.env.TWILIO_AUTH_TOKEN = 'test-auth-token';
-    process.env.TWILIO_PHONE_NUMBER = '+15551234567';
-    responseStatus = 401;
+  it('maps Brevo low-credit errors and logs safe provider details only', async () => {
+    configureBrevo();
+    responseStatus = 400;
+    responseBody = JSON.stringify({
+      code: 'not_enough_credits',
+      message: 'Not enough credits for +639171234567; code 012345',
+    });
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(sendContactVerificationOtp('09171234567', '012345'))
       .rejects.toMatchObject({
-        code: 'TWILIO_HTTP_401',
-        message: 'The SMS provider could not send the verification code. Check the backend SMS configuration and try again.',
+        code: 'BREVO_SMS_INSUFFICIENT_CREDITS',
+        message: 'SMS delivery is unavailable because the Brevo account has insufficient SMS credits.',
+      });
+
+    expect(log).toHaveBeenCalledWith('Brevo SMS request failed:', expect.objectContaining({
+      httpStatus: 400,
+      providerCode: 'not_enough_credits',
+      providerMessage: expect.not.stringContaining('+639171234567'),
+    }));
+    expect(JSON.stringify(log.mock.calls)).not.toContain('012345');
+    log.mockRestore();
+  });
+
+  it('reports an authorization failure without exposing provider credentials', async () => {
+    configureBrevo();
+    responseStatus = 401;
+    responseBody = JSON.stringify({ code: 'unauthorized', message: 'Authentication failed' });
+
+    await expect(sendContactVerificationOtp('09171234567', '012345'))
+      .rejects.toMatchObject({
+        code: 'BREVO_SMS_AUTH_FAILED',
+        message: 'Brevo rejected the SMS credentials. Check the backend API key.',
+      });
+  });
+
+  it('reports transactional SMS permission errors', async () => {
+    configureBrevo();
+    responseStatus = 400;
+    responseBody = JSON.stringify({ code: 'permission_denied', message: 'SMS sending is disabled' });
+
+    await expect(sendContactVerificationOtp('09171234567', '012345'))
+      .rejects.toMatchObject({
+        code: 'BREVO_SMS_PERMISSION_DENIED',
+        message: 'Brevo denied SMS sending. Check that transactional SMS is activated and the account has SMS permissions.',
       });
   });
 });

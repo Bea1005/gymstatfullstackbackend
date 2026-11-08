@@ -199,6 +199,18 @@ app.use((req, res, next) => {
         });
       }
 
+      if (body?.safeError === 'password-reset-sms-delivery') {
+        return originalJson({
+          success: false,
+          deliveryIssue: typeof body.deliveryIssue === 'string'
+            && /^[a-z0-9_-]{1,60}$/i.test(body.deliveryIssue)
+            ? body.deliveryIssue
+            : 'delivery-failed',
+          message: String(body.message || 'The SMS verification code could not be sent. Please use the email recovery option or try again later.')
+            .slice(0, 240)
+        });
+      }
+
       return originalJson({
         success: false,
         message: 'An unexpected server error occurred. Please try again.'
@@ -585,6 +597,13 @@ app.use((err, req, res, next) => {
     return res.status(403).json({
       success: false,
       message: 'Origin is not allowed'
+    });
+  }
+
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      success: false,
+      message: 'Request body must contain valid JSON.'
     });
   }
 

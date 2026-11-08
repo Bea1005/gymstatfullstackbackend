@@ -91,4 +91,23 @@ describe('Public schedule-request calendar route', () => {
     expect(response.status).toBe(403);
     expect(response.body.message).toMatch(/authenticated account/i);
   });
+
+  it('rejects an authenticated requester who has not completed their profile', async () => {
+    protect.mockImplementationOnce((req, res, next) => {
+      req.user = {
+        email: 'requester@example.com',
+        emailVerified: true,
+        fullname: 'Jane Doe',
+        contactNumber: '',
+      };
+      next();
+    });
+
+    const response = await request(app)
+      .post('/api/v1/schedule-requests')
+      .field('eventName', 'Campus Event');
+
+    expect(response.status).toBe(403);
+    expect(response.body.message).toMatch(/complete your profile/i);
+  });
 });

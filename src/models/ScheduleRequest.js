@@ -100,8 +100,6 @@ const scheduleRequestSchema = new mongoose.Schema({
 scheduleRequestSchema.index({ status: 1, createdAt: 1 });
 scheduleRequestSchema.index({ requesterEmail: 1 });
 scheduleRequestSchema.index({ startDate: 1 });
-// Compound index covering the public-calendar query: status + startDate + endDate
-scheduleRequestSchema.index({ status: 1, startDate: 1, endDate: 1 });
 scheduleRequestSchema.index({ eventName: 'text' });
 
 const ScheduleRequest = mongoose.model('ScheduleRequest', scheduleRequestSchema);

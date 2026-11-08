@@ -472,7 +472,9 @@ exports.requestPasswordResetBySms = async (req, res) => {
       console.error('Password reset SMS delivery failed:', smsError && smsError.code || 'unknown');
       return res.status(503).json({
         success: false,
-        message: smsError && smsError.message || 'The SMS verification code could not be sent. Please use the email recovery option or try again later.'
+        safeError: 'password-reset-sms-delivery',
+        deliveryIssue: smsError && smsError.code || 'delivery-failed',
+        message: 'The SMS verification code could not be sent. Please use email recovery or try again later.'
       });
     }
 
@@ -505,17 +507,53 @@ exports.verifyPasswordResetSmsOtp = async (req, res) => {
     }
 
     if ((user.passwordResetSmsOtpAttempts || 0) >= SMS_RESET_OTP_MAX_ATTEMPTS_CONST) {
-      user.passwordResetSmsOtpHash = null;
-      user.passwordResetSmsOtpExpiresAt = null;
-      user.passwordResetSmsOtpAttempts = 0;
-      user.passwordResetSmsLastSentAt = null;
-      await user.save();
+      await User.updateOne(
+        { _id: user._id, passwordResetSmsOtpHash: user.passwordResetSmsOtpHash },
+        {
+          $set: {
+            passwordResetSmsOtpHash: null,
+            passwordResetSmsOtpExpiresAt: null,
+            passwordResetSmsOtpAttempts: 0,
+            passwordResetSmsLastSentAt: null,
+          },
+        }
+      );
       return res.status(429).json({ success: false, message: 'Too many verification attempts. Please request a new code.' });
     }
 
-    user.passwordResetSmsOtpAttempts = (user.passwordResetSmsOtpAttempts || 0) + 1;
     if (!resetValueMatches(otp, user.passwordResetSmsOtpHash)) {
-      await user.save();
+      const failedAttempt = await User.findOneAndUpdate(
+        {
+          _id: user._id,
+          contactNumber: normalizedPhone,
+          passwordResetSmsOtpHash: user.passwordResetSmsOtpHash,
+          passwordResetSmsOtpExpiresAt: { $gt: new Date(now) },
+          passwordResetSmsOtpAttempts: { $lt: SMS_RESET_OTP_MAX_ATTEMPTS_CONST },
+        },
+        { $inc: { passwordResetSmsOtpAttempts: 1 } },
+        { new: true, select: 'passwordResetSmsOtpAttempts' }
+      );
+      if (!failedAttempt) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
+      }
+      if (failedAttempt.passwordResetSmsOtpAttempts >= SMS_RESET_OTP_MAX_ATTEMPTS_CONST) {
+        await User.updateOne(
+          {
+            _id: user._id,
+            passwordResetSmsOtpHash: user.passwordResetSmsOtpHash,
+            passwordResetSmsOtpAttempts: { $gte: SMS_RESET_OTP_MAX_ATTEMPTS_CONST },
+          },
+          {
+            $set: {
+              passwordResetSmsOtpHash: null,
+              passwordResetSmsOtpExpiresAt: null,
+              passwordResetSmsOtpAttempts: 0,
+              passwordResetSmsLastSentAt: null,
+            },
+          }
+        );
+        return res.status(429).json({ success: false, message: 'Too many verification attempts. Please request a new code.' });
+      }
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code.' });
     }
 
@@ -526,6 +564,7 @@ exports.verifyPasswordResetSmsOtp = async (req, res) => {
         contactNumber: normalizedPhone,
         passwordResetSmsOtpHash: user.passwordResetSmsOtpHash,
         passwordResetSmsOtpExpiresAt: { $gt: new Date(now) },
+        passwordResetSmsOtpAttempts: { $lt: SMS_RESET_OTP_MAX_ATTEMPTS_CONST },
       },
       {
         $set: {

@@ -33,6 +33,15 @@ const REGISTRATION_FIELDS = new Set([
   'contactNumber',
   'verificationMethod',
 ]);
+const CALENDAR_REGISTRATION_FIELDS = new Set([
+  'firstName',
+  'middleName',
+  'lastName',
+  'email',
+  'phoneNumber',
+  'password',
+]);
+const GOOGLE_AUTH_FIELDS = new Set(['credential']);
 const SCREENER_FORWARD_APPROVAL_FIELDS = new Set(['documents']);
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
@@ -174,6 +183,10 @@ const validateRequestBody = (req, res, next) => {
       && /(?:^|\/)admin\/borrowing\/?$/.test(req.path);
     const isRegistration = req.method === 'POST'
       && /(?:^|\/)register\/?$/.test(req.path);
+    const isCalendarRegistration = req.method === 'POST'
+      && /(?:^|\/)calendar-auth\/register\/?$/.test(req.path);
+    const isCalendarGoogleAuth = req.method === 'POST'
+      && /(?:^|\/)calendar-auth\/google\/?$/.test(req.path);
     req.body = normalizeKeyValue(
       'body',
       req.body,
@@ -190,11 +203,17 @@ const validateRequestBody = (req, res, next) => {
           ? SCREENER_FORWARD_APPROVAL_FIELDS
           : isBorrowingCreate
             ? BORROWING_CREATE_FIELDS
-            : isRegistration
-              ? REGISTRATION_FIELDS
-              : undefined
+            : isCalendarRegistration
+              ? CALENDAR_REGISTRATION_FIELDS
+              : isRegistration
+                ? REGISTRATION_FIELDS
+                : isCalendarGoogleAuth
+                  ? GOOGLE_AUTH_FIELDS
+                  : undefined
     );
-    const passwordValue = isRegistration ? req.body.password : req.body.newPassword;
+    const passwordValue = isRegistration || isCalendarRegistration
+          ? req.body.password
+          : req.body.newPassword;
     if (passwordValue !== undefined && !isPasswordValid(passwordValue)) {
       return res.status(400).json({ success: false, message: PASSWORD_POLICY_MESSAGE });
     }

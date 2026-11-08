@@ -14,6 +14,8 @@ const {
   resendRegistrationOtp,
   login,
   requestPasswordReset,
+  requestPasswordResetBySms,
+  verifyPasswordResetSmsOtp,
   verifyPasswordResetOtp,
   resetPassword,
   refreshSession,
@@ -49,6 +51,7 @@ const {
   getRegistrationEmailFailure,
   sendRegistrationVerificationOtp
 } = require('../../src/config/email');
+const sms = require('../../src/config/sms');
 
 const hashResetValue = (value) => crypto
   .createHmac('sha256', getJWTSecret())
@@ -942,6 +945,152 @@ describe('Auth Controllers', () => {
     expect(res.statusCode).toBe(202);
     expect(res._getJSONData().success).toBe(true);
     expect(res._getJSONData().message).toContain('If an account is associated');
+  });
+
+  it('returns a safe, actionable error when password-reset SMS delivery fails', async () => {
+    const user = {
+      _id: 'user123',
+      passwordResetSmsOtpHash: null,
+      passwordResetSmsOtpExpiresAt: null,
+      passwordResetSmsOtpAttempts: 0,
+      passwordResetSmsLastSentAt: null,
+      save: jest.fn().mockResolvedValue(true),
+    };
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    const sendSms = jest.spyOn(sms, 'sendContactVerificationOtp').mockRejectedValue(
+      Object.assign(new Error('SMS OTP verification is not configured. Set BREVO_API_KEY.'), {
+        code: 'SMS_PROVIDER_NOT_CONFIGURED',
+      })
+    );
+    const req = httpMocks.createRequest({ body: { phoneNumber: '09171234567' } });
+    const res = httpMocks.createResponse();
+
+    await requestPasswordResetBySms(req, res);
+    sendSms.mockRestore();
+
+    expect(res.statusCode).toBe(503);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: false,
+      safeError: 'password-reset-sms-delivery',
+      deliveryIssue: 'SMS_PROVIDER_NOT_CONFIGURED',
+      message: 'The SMS verification code could not be sent. Please use email recovery or try again later.',
+    }));
+    expect(user.passwordResetSmsOtpHash).toBeNull();
+    expect(user.passwordResetSmsOtpExpiresAt).toBeNull();
+    expect(user.passwordResetSmsLastSentAt).toBeNull();
+  });
+
+  it('completes the SMS reset flow and allows login with the new password', async () => {
+    const user = {
+      _id: 'sms-reset-user',
+      id: '23B1509',
+      email: 'coach@example.com',
+      fullname: 'Jane Doe',
+      role: 'student',
+      contactNumber: '+639171234567',
+      contactNumberVerified: true,
+      emailVerified: true,
+      password: 'old-password-hash',
+      passwordResetSmsOtpAttempts: 0,
+      save: jest.fn().mockResolvedValue(true),
+    };
+    User.findOne
+      .mockReturnValueOnce({ select: jest.fn().mockResolvedValue(user) })
+      .mockReturnValueOnce({ select: jest.fn().mockResolvedValue(user) })
+      .mockResolvedValueOnce(user);
+    const sendSms = jest.spyOn(sms, 'sendContactVerificationOtp').mockResolvedValue(undefined);
+
+    const requestResponse = httpMocks.createResponse();
+    await requestPasswordResetBySms(
+      httpMocks.createRequest({ body: { phoneNumber: '09171234567' } }),
+      requestResponse
+    );
+
+    expect(requestResponse.statusCode).toBe(202);
+    const [sentPhone, otp] = sendSms.mock.calls[0];
+    expect(sentPhone).toBe('+639171234567');
+    expect(otp).toMatch(/^\d{6}$/);
+    expect(user.passwordResetSmsOtpHash).toBe(hashResetValue(otp));
+    expect(user.passwordResetSmsOtpExpiresAt.getTime()).toBeGreaterThan(Date.now());
+
+    User.findOneAndUpdate.mockResolvedValueOnce(user);
+    const verifyResponse = httpMocks.createResponse();
+    await verifyPasswordResetSmsOtp(
+      httpMocks.createRequest({ body: { phoneNumber: sentPhone, otp } }),
+      verifyResponse
+    );
+
+    expect(verifyResponse.statusCode).toBe(200);
+    const resetToken = verifyResponse._getJSONData().resetToken;
+    expect(resetToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(User.findOneAndUpdate.mock.calls[0][0]).toEqual(expect.objectContaining({
+      _id: user._id,
+      passwordResetSmsOtpHash: hashResetValue(otp),
+      passwordResetSmsOtpExpiresAt: { $gt: expect.any(Date) },
+      passwordResetSmsOtpAttempts: { $lt: 5 },
+    }));
+
+    bcrypt.hash.mockResolvedValue('new-secure-password-hash');
+    User.findOneAndUpdate.mockImplementationOnce(async (filter, update) => {
+      user.password = update.$set.password;
+      return user;
+    });
+    const resetResponse = httpMocks.createResponse();
+    await resetPassword(
+      httpMocks.createRequest({
+        body: { email: user.email, resetToken, newPassword: 'NewPassword1!' },
+      }),
+      resetResponse
+    );
+
+    expect(resetResponse.statusCode).toBe(200);
+    expect(user.password).toBe('new-secure-password-hash');
+    expect(RefreshSession.updateMany).toHaveBeenCalledWith(
+      { userId: user._id, revokedAt: null },
+      { $set: { revokedAt: expect.any(Date) } }
+    );
+
+    bcrypt.compare.mockResolvedValue(true);
+    const loginResponse = httpMocks.createResponse();
+    await login(
+      httpMocks.createRequest({ body: { id: user.id, password: 'NewPassword1!' } }),
+      loginResponse
+    );
+
+    expect(loginResponse.statusCode).toBe(200);
+    expect(loginResponse._getJSONData().success).toBe(true);
+    expect(bcrypt.compare).toHaveBeenCalledWith('NewPassword1!', 'new-secure-password-hash');
+    sendSms.mockRestore();
+  });
+
+  it('atomically increments failed SMS OTP attempts', async () => {
+    const user = {
+      _id: 'sms-reset-user',
+      passwordResetSmsOtpHash: hashResetValue('123456'),
+      passwordResetSmsOtpExpiresAt: new Date(Date.now() + 60_000),
+      passwordResetSmsOtpAttempts: 1,
+    };
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    User.findOneAndUpdate.mockResolvedValue({ passwordResetSmsOtpAttempts: 2 });
+    const req = httpMocks.createRequest({
+      body: { phoneNumber: '09171234567', otp: '654321' },
+    });
+    const res = httpMocks.createResponse();
+
+    await verifyPasswordResetSmsOtp(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: user._id,
+        passwordResetSmsOtpHash: user.passwordResetSmsOtpHash,
+        passwordResetSmsOtpExpiresAt: { $gt: expect.any(Date) },
+        passwordResetSmsOtpAttempts: { $lt: 5 },
+      }),
+      { $inc: { passwordResetSmsOtpAttempts: 1 } },
+      { new: true, select: 'passwordResetSmsOtpAttempts' }
+    );
+    expect(user.save).toBeUndefined();
   });
 
   it('requires a verified reset challenge before changing a password', async () => {
