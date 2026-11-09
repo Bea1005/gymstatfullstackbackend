@@ -6,8 +6,8 @@ const {
   sendContactVerificationOtp,
 } = require('../../src/config/sms');
 
-describe('Brevo SMS delivery configuration', () => {
-  const environmentNames = ['BREVO_API_KEY', 'BREVO_SMS_SENDER'];
+describe('Semaphore SMS delivery configuration', () => {
+  const environmentNames = ['SEMAPHORE_API_KEY', 'SEMAPHORE_SENDER_NAME'];
   let originalEnvironment;
   let httpsRequestSpy;
   let requestCapture;
@@ -19,7 +19,7 @@ describe('Brevo SMS delivery configuration', () => {
       environmentNames.map((name) => [name, process.env[name]])
     );
     environmentNames.forEach((name) => delete process.env[name]);
-    responseStatus = 201;
+    responseStatus = 200;
     responseBody = '';
     requestCapture = { body: '' };
     httpsRequestSpy = jest.spyOn(https, 'request').mockImplementation((options, callback) => {
@@ -36,6 +36,7 @@ describe('Brevo SMS delivery configuration', () => {
           response.emit('end');
         });
       };
+      request.destroy = jest.fn();
       requestCapture.options = options;
       return request;
     });
@@ -49,9 +50,9 @@ describe('Brevo SMS delivery configuration', () => {
     });
   });
 
-  const configureBrevo = () => {
-    process.env.BREVO_API_KEY = 'test-brevo-api-key';
-    process.env.BREVO_SMS_SENDER = 'GYMSTAT';
+  const configureSemaphore = () => {
+    process.env.SEMAPHORE_API_KEY = 'test-semaphore-api-key';
+    process.env.SEMAPHORE_SENDER_NAME = 'GYMSTAT';
   };
 
   it.each([
@@ -68,18 +69,12 @@ describe('Brevo SMS delivery configuration', () => {
     }
   );
 
-  it('requires both the Brevo API key and a configured SMS sender', async () => {
+  it('requires the Semaphore API key and does not use Brevo credentials', async () => {
+    process.env.BREVO_API_KEY = 'brevo-key-is-not-an-sms-key';
     expect(getSmsConfigurationStatus()).toEqual({
       configured: false,
-      provider: 'brevo',
-      missing: ['BREVO_API_KEY', 'BREVO_SMS_SENDER'],
-    });
-
-    process.env.BREVO_API_KEY = 'test-brevo-api-key';
-    expect(getSmsConfigurationStatus()).toEqual({
-      configured: false,
-      provider: 'brevo',
-      missing: ['BREVO_SMS_SENDER'],
+      provider: 'semaphore',
+      missing: ['SEMAPHORE_API_KEY'],
     });
 
     await expect(sendContactVerificationOtp('09171234567', '012345'))
@@ -87,84 +82,68 @@ describe('Brevo SMS delivery configuration', () => {
     expect(httpsRequestSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects sender IDs that do not meet Brevo format limits', () => {
-    process.env.BREVO_API_KEY = 'test-brevo-api-key';
-    process.env.BREVO_SMS_SENDER = 'GYMSTAT_SENDER_TOO_LONG';
-
-    expect(getSmsConfigurationStatus()).toEqual({
-      configured: false,
-      provider: 'brevo',
-      missing: ['BREVO_SMS_SENDER'],
-    });
-  });
-
-  it('sends an OTP to a normalized Philippine number through the Brevo API', async () => {
-    configureBrevo();
+  it('sends an OTP to Semaphore using the normalized Philippine number', async () => {
+    configureSemaphore();
 
     await expect(sendContactVerificationOtp('09171234567', '012345', 5))
       .resolves.toBeUndefined();
 
-    expect(requestCapture.options).toEqual(expect.objectContaining({
-      hostname: 'api.brevo.com',
-      path: '/v3/transactionalSMS/sms',
-      method: 'POST',
-      headers: expect.objectContaining({
-        'api-key': 'test-brevo-api-key',
-      }),
-    }));
-    expect(JSON.parse(requestCapture.body)).toEqual({
-      sender: 'GYMSTAT',
-      recipient: '+639171234567',
-      content: 'Your GYMSTAT verification code is 012345. It expires in 5 minutes.',
-      type: 'transactional',
+    expect(getSmsConfigurationStatus()).toEqual({
+      configured: true,
+      provider: 'semaphore',
+      missing: [],
     });
+    expect(requestCapture.options).toEqual(expect.objectContaining({
+      hostname: 'api.semaphore.co',
+      path: '/api/v4/messages',
+      method: 'POST',
+    }));
+    expect(requestCapture.body).toContain('apikey=test-semaphore-api-key');
+    expect(requestCapture.body).toContain('number=639171234567');
+    expect(requestCapture.body).toContain('sendername=GYMSTAT');
+    expect(new URLSearchParams(requestCapture.body).get('message')).toBe(
+      'Your GYMSTAT verification code is 012345. It expires in 5 minutes.'
+    );
   });
 
-  it('maps Brevo low-credit errors and logs safe provider details only', async () => {
-    configureBrevo();
-    responseStatus = 400;
-    responseBody = JSON.stringify({
-      code: 'not_enough_credits',
-      message: 'Not enough credits for +639171234567; code 012345',
-    });
+  it('does not require a sender override when Semaphore has its default sender', async () => {
+    process.env.SEMAPHORE_API_KEY = 'test-semaphore-api-key';
+
+    await expect(sendContactVerificationOtp('09171234567', '012345'))
+      .resolves.toBeUndefined();
+
+    expect(requestCapture.body).not.toContain('sendername=');
+  });
+
+  it('maps rejected Semaphore credentials without exposing the API key', async () => {
+    configureSemaphore();
+    responseStatus = 401;
+    responseBody = 'unauthorized';
+
+    await expect(sendContactVerificationOtp('09171234567', '012345'))
+      .rejects.toMatchObject({ code: 'SEMAPHORE_AUTH_FAILED' });
+  });
+
+  it('maps insufficient Semaphore credits', async () => {
+    configureSemaphore();
+    responseStatus = 402;
+
+    await expect(sendContactVerificationOtp('09171234567', '012345'))
+      .rejects.toMatchObject({ code: 'SEMAPHORE_INSUFFICIENT_CREDITS' });
+  });
+
+  it('logs only redacted details when Semaphore rejects an SMS', async () => {
+    configureSemaphore();
+    responseStatus = 422;
+    responseBody = 'sender rejected for 639171234567 and OTP 012345';
     const log = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(sendContactVerificationOtp('09171234567', '012345'))
-      .rejects.toMatchObject({
-        code: 'BREVO_SMS_INSUFFICIENT_CREDITS',
-        message: 'SMS delivery is unavailable because the Brevo account has insufficient SMS credits.',
-      });
+      .rejects.toMatchObject({ code: 'SEMAPHORE_INVALID_SENDER' });
 
-    expect(log).toHaveBeenCalledWith('Brevo SMS request failed:', expect.objectContaining({
-      httpStatus: 400,
-      providerCode: 'not_enough_credits',
-      providerMessage: expect.not.stringContaining('+639171234567'),
-    }));
+    expect(JSON.stringify(log.mock.calls)).not.toContain('test-semaphore-api-key');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('639171234567');
     expect(JSON.stringify(log.mock.calls)).not.toContain('012345');
     log.mockRestore();
-  });
-
-  it('reports an authorization failure without exposing provider credentials', async () => {
-    configureBrevo();
-    responseStatus = 401;
-    responseBody = JSON.stringify({ code: 'unauthorized', message: 'Authentication failed' });
-
-    await expect(sendContactVerificationOtp('09171234567', '012345'))
-      .rejects.toMatchObject({
-        code: 'BREVO_SMS_AUTH_FAILED',
-        message: 'Brevo rejected the SMS credentials. Check the backend API key.',
-      });
-  });
-
-  it('reports transactional SMS permission errors', async () => {
-    configureBrevo();
-    responseStatus = 400;
-    responseBody = JSON.stringify({ code: 'permission_denied', message: 'SMS sending is disabled' });
-
-    await expect(sendContactVerificationOtp('09171234567', '012345'))
-      .rejects.toMatchObject({
-        code: 'BREVO_SMS_PERMISSION_DENIED',
-        message: 'Brevo denied SMS sending. Check that transactional SMS is activated and the account has SMS permissions.',
-      });
   });
 });

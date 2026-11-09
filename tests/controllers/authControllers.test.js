@@ -1001,7 +1001,7 @@ describe('Auth Controllers', () => {
     };
     User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
     const sendSms = jest.spyOn(sms, 'sendContactVerificationOtp').mockRejectedValue(
-      Object.assign(new Error('SMS OTP verification is not configured. Set BREVO_API_KEY.'), {
+      Object.assign(new Error('SMS OTP verification is not configured. Set SEMAPHORE_API_KEY.'), {
         code: 'SMS_PROVIDER_NOT_CONFIGURED',
       })
     );
@@ -1011,6 +1011,9 @@ describe('Auth Controllers', () => {
     await requestPasswordResetBySms(req, res);
     sendSms.mockRestore();
 
+    expect(User.findOne).toHaveBeenCalledWith({
+      contactNumber: { $in: ['+639171234567', '09171234567'] },
+    });
     expect(res.statusCode).toBe(503);
     expect(res._getJSONData()).toEqual(expect.objectContaining({
       success: false,
@@ -1050,6 +1053,9 @@ describe('Auth Controllers', () => {
     );
 
     expect(requestResponse.statusCode).toBe(202);
+    expect(User.findOne).toHaveBeenCalledWith({
+      contactNumber: { $in: ['+639171234567', '09171234567'] },
+    });
     const [sentPhone, otp] = sendSms.mock.calls[0];
     expect(sentPhone).toBe('+639171234567');
     expect(otp).toMatch(/^\d{6}$/);

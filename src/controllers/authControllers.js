@@ -9,7 +9,8 @@ const {
   sendRegistrationVerificationOtp,
   sendScreenerAccountCreatedEmail
 } = require('../config/email');
-const { normalizePhoneNumber } = require('../config/sms');
+const sms = require('../config/sms');
+const { normalizePhoneNumber } = sms;
 const RefreshSession = require('../models/RefreshSession');
 const PendingRegistration = require('../models/PendingRegistration');
 const {
@@ -444,7 +445,8 @@ exports.requestPasswordResetBySms = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ contactNumber: normalizedPhone })
+    const localPhone = `0${normalizedPhone.slice(3)}`;
+    const user = await User.findOne({ contactNumber: { $in: [normalizedPhone, localPhone] } })
       .select('+passwordResetSmsOtpHash +passwordResetSmsOtpExpiresAt +passwordResetSmsOtpAttempts +passwordResetSmsLastSentAt');
     if (!user) return res.status(202).json({ success: true, message: GENERIC_SMS_RESET_MESSAGE });
 
@@ -461,8 +463,7 @@ exports.requestPasswordResetBySms = async (req, res) => {
     await user.save();
 
     try {
-      const { sendContactVerificationOtp } = require('../config/sms');
-      await sendContactVerificationOtp(normalizedPhone, otp, SMS_RESET_OTP_TTL_MS_CONST / 60000);
+      await sms.sendContactVerificationOtp(normalizedPhone, otp, SMS_RESET_OTP_TTL_MS_CONST / 60000);
     } catch (smsError) {
       user.passwordResetSmsOtpHash = null;
       user.passwordResetSmsOtpExpiresAt = null;

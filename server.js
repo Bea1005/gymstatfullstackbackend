@@ -1,8 +1,8 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const { installSafeConsole } = require('./src/config/logger');
 installSafeConsole();
 const fs = require('fs');
-const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -12,6 +12,7 @@ const { corsOptions } = require('./src/config/cors');
 const { getJWTSecret } = require('./src/config/security');
 const { hashPassword, verifyPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('./src/config/passwords');
 const { getEmailConfigurationStatus } = require('./src/config/email');
+const { getSmsConfigurationStatus } = require('./src/config/sms');
 const {
   apiRateLimiter,
   coachApiRateLimiter,
@@ -29,6 +30,7 @@ console.log('🔐 Environment Configuration:');
 console.log(`   PORT: ${process.env.PORT || 4000}`);
 console.log(`   BASE_URI: ${process.env.BASE_URI || '/api/v1'}`);
 console.log(`   Email delivery service configured: ${getEmailConfigurationStatus().configured ? 'yes' : 'no'}`);
+console.log(`   Password recovery SMS configured: ${getSmsConfigurationStatus().configured ? 'yes' : 'no'}`);
 getJWTSecret();
 
 const authRoutes = require('./src/routes/authRoutes');
