@@ -32,8 +32,11 @@ const normalizePhoneNumber = (value) => {
   return '';
 };
 
-// Infobip requires digits only, no leading +
-const toInfobipNumber = (e164) => e164.replace(/^\+/, '');
+// Infobip requires digits only, no leading +, no spaces
+const toInfobipNumber = (e164) => e164.replace(/^\+/, '').replace(/\s+/g, '');
+
+// Strip spaces from sender too (Infobip rejects "44 7491 163443", needs "447491163443")
+const normalizeInfobipSender = (sender) => String(sender || '').replace(/\s+/g, '');
 
 const createSmsError = (message, code, details = {}) =>
   Object.assign(new Error(message), { code, ...details });
@@ -142,7 +145,7 @@ const sendContactVerificationOtp = async (contactNumber, otp, ttlMinutes) => {
 
   const apiKey    = getSetting('INFOBIP_API_KEY');
   const baseUrl   = getSetting('INFOBIP_BASE_URL').replace(/^https?:\/\//, '').replace(/\/$/, '');
-  const sender    = getSetting('INFOBIP_SENDER');
+  const sender    = normalizeInfobipSender(getSetting('INFOBIP_SENDER'));
   const recipient = toInfobipNumber(e164);
   const text      = `Your GYMSTAT verification code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
 
