@@ -246,6 +246,29 @@ app.get(`${BASE_URI}/health`, (req, res) => {
   });
 });
 
+// 1b. SMS config diagnostic - Public (shows status only, never exposes credentials)
+app.get(`${BASE_URI}/health/sms`, (req, res) => {
+  try {
+    const { getSmsConfigurationStatus } = require('./src/config/sms');
+    const status = getSmsConfigurationStatus();
+    const apiKey = process.env.INFOBIP_API_KEY || '';
+    const baseUrl = process.env.INFOBIP_BASE_URL || '';
+    const sender = process.env.INFOBIP_SENDER || '';
+    res.json({
+      provider: status.provider,
+      configured: status.configured,
+      missing: status.missing,
+      vars: {
+        INFOBIP_API_KEY: apiKey ? `set (${apiKey.length} chars, starts: ${apiKey.slice(0, 8)}...)` : 'MISSING',
+        INFOBIP_BASE_URL: baseUrl || 'MISSING',
+        INFOBIP_SENDER: sender || 'MISSING',
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 2. SCHEDULES - GET is PUBLIC (NO TOKEN NEEDED!)
 app.use(`${BASE_URI}/schedules`, scheduleRoutes);
 
