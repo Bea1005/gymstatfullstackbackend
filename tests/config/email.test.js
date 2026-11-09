@@ -1,6 +1,5 @@
 const { EventEmitter } = require('events');
 const https = require('https');
-const nodemailer = require('nodemailer');
 const {
   getEmailConfigurationStatus,
   getRegistrationEmailFailure,
@@ -22,7 +21,6 @@ describe('Email delivery configuration', () => {
   ];
   let requestCapture;
   let httpsRequestSpy;
-  let smtpTransportSpy;
 
   beforeEach(() => {
     environmentNames.forEach((name) => {
@@ -53,7 +51,6 @@ describe('Email delivery configuration', () => {
 
   afterEach(() => {
     httpsRequestSpy.mockRestore();
-    if (smtpTransportSpy) smtpTransportSpy.mockRestore();
     environmentNames.forEach((name) => {
       if (previousEnvironment[name] === undefined) delete process.env[name];
       else process.env[name] = previousEnvironment[name];
@@ -118,12 +115,10 @@ describe('Email delivery configuration', () => {
     expect(message.htmlContent).toContain('&lt;em&gt;Schedule conflict&lt;/em&gt;');
   });
 
-  it('falls back to configured SMTP when Brevo rejects a registration verification email', async () => {
+  it('does not fall back to configured SMTP when Brevo rejects a registration email', async () => {
     process.env.SMTP_HOST = 'smtp.example.test';
     process.env.SMTP_USER = 'mailer@example.test';
     process.env.SMTP_PASSWORD = 'test-password';
-    const sendMail = jest.fn().mockResolvedValue({});
-    smtpTransportSpy = jest.spyOn(nodemailer, 'createTransport').mockReturnValue({ sendMail });
     httpsRequestSpy.mockImplementationOnce((_options, callback) => {
       const response = new EventEmitter();
       response.statusCode = 403;
@@ -132,6 +127,10 @@ describe('Email delivery configuration', () => {
       request.end = () => {
         process.nextTick(() => {
           callback(response);
+          response.emit('data', JSON.stringify({
+            code: 'unauthorized',
+            message: 'API key is not permitted to use this endpoint'
+          }));
           response.emit('end');
         });
       };
@@ -139,17 +138,30 @@ describe('Email delivery configuration', () => {
       return request;
     });
 
-    await sendRegistrationVerificationOtp('jane@example.test', '654321', 10);
+    await expect(
+      sendRegistrationVerificationOtp('jane@example.test', '654321', 10)
+    ).rejects.toMatchObject({
+      code: 'BREVO_HTTP_403',
+      providerCode: 'unauthorized',
+      providerMessage: 'API key is not permitted to use this endpoint'
+    });
+    expect(httpsRequestSpy).toHaveBeenCalledTimes(1);
+  });
 
-    expect(nodemailer.createTransport).toHaveBeenCalledWith(expect.objectContaining({
-      host: 'smtp.example.test',
-      auth: { user: 'mailer@example.test', pass: 'test-password' }
+  it('requires Brevo configuration even when SMTP credentials are present', async () => {
+    delete process.env.BREVO_API_KEY;
+    process.env.SMTP_HOST = 'smtp.example.test';
+    process.env.SMTP_USER = 'mailer@example.test';
+    process.env.SMTP_PASSWORD = 'test-password';
+
+    expect(getEmailConfigurationStatus()).toEqual(expect.objectContaining({
+      configured: false,
+      brevoConfigured: false
     }));
-    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
-      to: 'jane@example.test',
-      subject: 'GYMSTAT email verification code',
-      text: expect.stringContaining('654321')
-    }));
+    await expect(
+      sendRegistrationVerificationOtp('jane@example.test', '654321', 10)
+    ).rejects.toMatchObject({ code: 'EMAIL_PROVIDER_NOT_CONFIGURED' });
+    expect(httpsRequestSpy).not.toHaveBeenCalled();
   });
 
   it('classifies Brevo credential rejection without exposing provider response content', async () => {
@@ -178,9 +190,10 @@ describe('Email delivery configuration', () => {
 
     expect(deliveryError).toMatchObject({ code: 'BREVO_HTTP_401' });
     expect(deliveryError.message).not.toContain('sensitive provider response');
+    expect(deliveryError.providerMessage).toBe('sensitive provider response');
     expect(getRegistrationEmailFailure(deliveryError)).toEqual({
       code: 'brevo-credentials-rejected',
-      message: 'Brevo rejected the request. Check that the API key is active and the sender email is verified in Brevo.'
+      message: 'Brevo rejected the request. For the deployed site, set the active Brevo API v3 key and verified sender in the Render backend environment, then restart the service. Also check that transactional email is enabled and any Brevo IP allowlist includes the backend.'
     });
   });
 

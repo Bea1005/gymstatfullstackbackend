@@ -1,16 +1,8 @@
-const nodemailer = require('nodemailer');
-
 const getSetting = (...names) => names
   .map((name) => process.env[name])
   .find((value) => value !== undefined && value !== null && String(value).trim() !== '')
   ?.trim();
-const getEmailPassword = () => String(getSetting('SMTP_PASSWORD', 'EMAIL_PASSWORD', 'MAIL_PASSWORD') || '').replace(/\s+/g, '');
-const hasSmtpConfiguration = () => Boolean(
-  getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST')
-  && getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER')
-  && getEmailPassword()
-);
-const createEmailError = (message, code) => Object.assign(new Error(message), { code });
+const createEmailError = (message, code, details = {}) => Object.assign(new Error(message), { code }, details);
 const logEmailProviderIssue = (stage, details) => {
   console.error('[EMAIL]', stage, {
     provider: 'brevo',
@@ -33,7 +25,7 @@ const getRegistrationEmailFailure = (error) => {
   if (code === 'BREVO_HTTP_401' || code === 'BREVO_HTTP_403') {
     return {
       code: 'brevo-credentials-rejected',
-      message: 'Brevo rejected the request. Check that the API key is active and the sender email is verified in Brevo.'
+      message: 'Brevo rejected the request. For the deployed site, set the active Brevo API v3 key and verified sender in the Render backend environment, then restart the service. Also check that transactional email is enabled and any Brevo IP allowlist includes the backend.'
     };
   }
   if (code === 'BREVO_HTTP_400') {
@@ -60,12 +52,6 @@ const getRegistrationEmailFailure = (error) => {
       message: 'The backend could not connect to the email service. Check the backend network and try again.'
     };
   }
-  if (code === 'SMTP_AUTH_FAILED') {
-    return {
-      code: 'smtp-auth-failed',
-      message: 'The configured email provider rejected its credentials. Check the backend email settings.'
-    };
-  }
   return {
     code: 'delivery-failed',
     message: 'The verification email could not be sent. Check the backend email settings and provider logs, then try again.'
@@ -73,17 +59,11 @@ const getRegistrationEmailFailure = (error) => {
 };
 
 const getEmailConfigurationStatus = () => {
-  const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
-  const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
-  const password = getEmailPassword();
   const brevoKey = getSetting('BREVO_API_KEY');
   const brevoFromEmail = getBrevoSenderEmail();
   const brevoConfigured = Boolean(brevoKey && brevoFromEmail);
   return {
-    configured: Boolean((host && user && password) || brevoConfigured),
-    hostConfigured: Boolean(host),
-    userConfigured: Boolean(user),
-    passwordConfigured: Boolean(password),
+    configured: brevoConfigured,
     brevoConfigured,
     brevoFromEmailConfigured: Boolean(brevoFromEmail)
   };
@@ -135,14 +115,37 @@ const sendViaBrevo = async (to, subject, text, html) => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve();
           } else {
+            let providerCode;
+            let providerMessage;
+            try {
+              const providerResponse = JSON.parse(responseBody);
+              if (typeof providerResponse?.code === 'string') {
+                providerCode = providerResponse.code
+                  .replace(/[\u0000-\u001f\u007f]/g, ' ')
+                  .slice(0, 100);
+              }
+              if (typeof providerResponse?.message === 'string') {
+                providerMessage = providerResponse.message
+                  .replace(/[\u0000-\u001f\u007f]/g, ' ')
+                  .slice(0, 200);
+              }
+            } catch {
+              // Provider errors can be non-JSON; never log their raw response body.
+            }
             logEmailProviderIssue('brevo-request-rejected', {
               httpStatus: res.statusCode,
               hasApiKey: Boolean(apiKey),
-              hasSenderEmail: Boolean(fromEmail)
+              hasSenderEmail: Boolean(fromEmail),
+              ...(providerCode ? { providerCode } : {}),
+              ...(providerMessage ? { providerMessage } : {})
             });
             reject(createEmailError(
               'Brevo rejected the email request.',
-              `BREVO_HTTP_${res.statusCode}`
+              `BREVO_HTTP_${res.statusCode}`,
+              {
+                ...(providerCode ? { providerCode } : {}),
+                ...(providerMessage ? { providerMessage } : {})
+              }
             ));
           }
         });
@@ -158,34 +161,6 @@ const sendViaBrevo = async (to, subject, text, html) => {
     });
     req.write(body);
     req.end();
-  });
-};
-
-const getEmailTransport = () => {
-  const host = getSetting('SMTP_HOST', 'EMAIL_HOST', 'MAIL_HOST');
-  const user = getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER');
-  const password = getEmailPassword();
-  const port = Number(getSetting('SMTP_PORT', 'EMAIL_PORT', 'MAIL_PORT') || 587);
-  const secureSetting = getSetting('SMTP_SECURE', 'EMAIL_SECURE', 'MAIL_SECURE');
-  const missing = [
-    ['SMTP_HOST', host],
-    ['SMTP_USER', user],
-    ['SMTP_PASSWORD', password]
-  ].filter(([, value]) => !value).map(([key]) => key);
-  if (missing.length) {
-    throw createEmailError(
-      'Email provider is not configured.',
-      'EMAIL_PROVIDER_NOT_CONFIGURED'
-    );
-  }
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure: secureSetting === undefined ? port === 465 : String(secureSetting).toLowerCase() === 'true',
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
-    auth: { user, pass: password }
   });
 };
 
@@ -209,19 +184,7 @@ const sendPasswordResetOtp = async (email, otp, expiresInMinutes) => {
     '</div>'
   ].join('');
 
-  const brevoKey = getSetting('BREVO_API_KEY');
-  if (brevoKey) {
-    return sendViaBrevo(email, subject, text, html);
-  }
-
-  const transporter = getEmailTransport();
-  await transporter.sendMail({
-    from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
-    to: email,
-    subject,
-    text,
-    html
-  });
+  return sendViaBrevo(email, subject, text, html);
 };
 
 const sendRegistrationVerificationOtp = async (email, otp, expiresInMinutes) => {
@@ -244,32 +207,7 @@ const sendRegistrationVerificationOtp = async (email, otp, expiresInMinutes) => 
     '</div>'
   ].join('');
 
-  const brevoKey = getSetting('BREVO_API_KEY');
-  if (brevoKey) {
-    try {
-      return await sendViaBrevo(email, subject, text, html);
-    } catch (brevoError) {
-      if (!hasSmtpConfiguration()) throw brevoError;
-      console.warn(
-        `Brevo registration email delivery failed [${brevoError?.code || 'unknown'}]; trying configured SMTP fallback.`
-      );
-    }
-  }
-
-  try {
-    const transporter = getEmailTransport();
-    await transporter.sendMail({
-      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
-      to: email,
-      subject,
-      text,
-      html
-    });
-  } catch (error) {
-    if (error?.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
-    const code = error?.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
-    throw createEmailError('SMTP email delivery failed.', code);
-  }
+  return sendViaBrevo(email, subject, text, html);
 };
 
 const escapeEmailHtml = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({
@@ -326,24 +264,7 @@ const sendScreenerAccountCreatedEmail = async (email, screenerId, loginUrl) => {
     '</div>'
   ].join('');
 
-  if (getSetting('BREVO_API_KEY')) {
-    return sendViaBrevo(recipient, subject, text, html);
-  }
-
-  try {
-    const transporter = getEmailTransport();
-    await transporter.sendMail({
-      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
-      to: recipient,
-      subject,
-      text,
-      html
-    });
-  } catch (error) {
-    if (error?.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
-    const code = error?.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
-    throw createEmailError('SMTP email delivery failed.', code);
-  }
+  return sendViaBrevo(recipient, subject, text, html);
 };
 
 const sendScheduleRequestStatusEmail = async (email, request, status) => {
@@ -383,24 +304,7 @@ const sendScheduleRequestStatusEmail = async (email, request, status) => {
     '</div>'
   ].filter(Boolean).join('');
 
-  if (getSetting('BREVO_API_KEY')) {
-    return sendViaBrevo(recipient, subject, text, html);
-  }
-
-  try {
-    const transporter = getEmailTransport();
-    await transporter.sendMail({
-      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
-      to: recipient,
-      subject,
-      text,
-      html
-    });
-  } catch (error) {
-    if (error?.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
-    const code = error?.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
-    throw createEmailError('SMTP email delivery failed.', code);
-  }
+  return sendViaBrevo(recipient, subject, text, html);
 };
 
 
@@ -450,21 +354,7 @@ const sendScreenerAuthorizationEmail = async (email, screenerName, confirmUrl) =
     '</div>'
   ].join('');
 
-  if (getSetting('BREVO_API_KEY')) {
-    return sendViaBrevo(recipient, subject, text, html);
-  }
-
-  try {
-    const transporter = getEmailTransport();
-    await transporter.sendMail({
-      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
-      to: recipient, subject, text, html
-    });
-  } catch (error) {
-    if (error && error.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
-    const code = error && error.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
-    throw createEmailError('SMTP email delivery failed.', code);
-  }
+  return sendViaBrevo(recipient, subject, text, html);
 };
 // Delivers a contact-number OTP via email when SMS is not available.
 // Uses the existing Brevo email channel -- no SMS credits required.
@@ -493,26 +383,7 @@ const sendContactOtpViaEmail = async (email, contactNumber, otp, expiresInMinute
     '</div>'
   ].join('');
 
-  if (getSetting('BREVO_API_KEY')) {
-    try {
-      return await sendViaBrevo(email, subject, text, html);
-    } catch (brevoError) {
-      if (!hasSmtpConfiguration()) throw brevoError;
-      console.warn('Brevo contact OTP email failed [' + (brevoError && brevoError.code || 'unknown') + ']; trying SMTP fallback.');
-    }
-  }
-
-  try {
-    const transporter = getEmailTransport();
-    await transporter.sendMail({
-      from: getSetting('SMTP_FROM', 'EMAIL_FROM', 'MAIL_FROM') || getSetting('SMTP_USER', 'EMAIL_USER', 'MAIL_USER'),
-      to: email, subject, text, html
-    });
-  } catch (error) {
-    if (error && error.code === 'EMAIL_PROVIDER_NOT_CONFIGURED') throw error;
-    const code = error && error.code === 'EAUTH' ? 'SMTP_AUTH_FAILED' : 'SMTP_DELIVERY_FAILED';
-    throw createEmailError('SMTP email delivery failed.', code);
-  }
+  return sendViaBrevo(email, subject, text, html);
 };
 
 module.exports = {

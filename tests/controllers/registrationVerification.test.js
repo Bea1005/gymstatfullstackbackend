@@ -405,7 +405,14 @@ describe('registration identity verification', () => {
     await register(httpMocks.createRequest({ body: validRegistration() }), res);
 
     expect(res.statusCode).toBe(503);
-    expect(res._getJSONData().message).toBe('The verification email could not be sent.');
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: false,
+      safeError: 'registration-email-delivery',
+      verificationRequired: true,
+      verificationMethod: 'email',
+      deliveryIssue: 'delivery-failed',
+      message: 'The verification email could not be sent.',
+    }));
     expect(PendingRegistration.deleteOne).toHaveBeenCalledWith({ _id: 'pending-registration' });
     expect(User.create).not.toHaveBeenCalled();
   });

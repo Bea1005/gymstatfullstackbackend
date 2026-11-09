@@ -1006,10 +1006,8 @@ exports.register = async (req, res) => {
     } catch (error) {
       await PendingRegistration.deleteOne({ _id: pendingRegistration._id });
       return res.status(503).json({
-        success: false,
-        verificationRequired: true,
-        verificationMethod: 'email',
-        message: buildRegistrationEmailFailureResponse(error).message
+        ...buildRegistrationEmailFailureResponse(error),
+        verificationMethod: 'email'
       });
     }
 
