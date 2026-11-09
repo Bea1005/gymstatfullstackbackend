@@ -470,7 +470,10 @@ exports.requestPasswordResetBySms = async (req, res) => {
       user.passwordResetSmsOtpAttempts = 0;
       user.passwordResetSmsLastSentAt = null;
       await user.save();
-      console.error('Password reset SMS delivery failed:', smsError && smsError.code || 'unknown');
+      console.warn('Password reset SMS delivery failed:', {
+        errorCode: smsError && smsError.code || 'unknown',
+        providerStatusCode: smsError && smsError.providerStatusCode || 0
+      });
       return res.status(503).json({
         success: false,
         safeError: 'password-reset-sms-delivery',

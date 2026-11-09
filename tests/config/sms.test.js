@@ -136,11 +136,15 @@ describe('Semaphore SMS delivery configuration', () => {
     configureSemaphore();
     responseStatus = 422;
     responseBody = 'sender rejected for 639171234567 and OTP 012345';
-    const log = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const log = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(sendContactVerificationOtp('09171234567', '012345'))
       .rejects.toMatchObject({ code: 'SEMAPHORE_INVALID_SENDER' });
 
+    expect(log).toHaveBeenCalledWith('Semaphore SMS request failed:', expect.objectContaining({
+      httpStatus: 422,
+      errorCode: 'SEMAPHORE_INVALID_SENDER',
+    }));
     expect(JSON.stringify(log.mock.calls)).not.toContain('test-semaphore-api-key');
     expect(JSON.stringify(log.mock.calls)).not.toContain('639171234567');
     expect(JSON.stringify(log.mock.calls)).not.toContain('012345');

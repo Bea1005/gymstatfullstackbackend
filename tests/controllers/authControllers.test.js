@@ -73,11 +73,13 @@ describe('Auth Controllers', () => {
     PendingRegistration.updateOne.mockResolvedValue({ ok: 1 });
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     console.log.mockRestore();
     console.error.mockRestore();
+    console.warn.mockRestore();
   });
 
   it('assigns a student role when the ID is exactly 7 alphanumeric characters', async () => {
@@ -1021,6 +1023,10 @@ describe('Auth Controllers', () => {
       deliveryIssue: 'SMS_PROVIDER_NOT_CONFIGURED',
       message: 'The SMS verification code could not be sent. Please use email recovery or try again later.',
     }));
+    expect(console.warn).toHaveBeenCalledWith('Password reset SMS delivery failed:', {
+      errorCode: 'SMS_PROVIDER_NOT_CONFIGURED',
+      providerStatusCode: 0,
+    });
     expect(user.passwordResetSmsOtpHash).toBeNull();
     expect(user.passwordResetSmsOtpExpiresAt).toBeNull();
     expect(user.passwordResetSmsLastSentAt).toBeNull();

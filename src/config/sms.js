@@ -184,7 +184,7 @@ const sendContactVerificationOtp = async (contactNumber, otp, ttlMinutes) => {
           const safeBody = redact(responseBody, [apiKey, recipientForApi, String(otp)]);
           const mapped   = getSemaphoreError(response.statusCode || 0, responseBody);
 
-          console.error('Semaphore SMS request failed:', {
+          console.warn('Semaphore SMS request failed:', {
             httpStatus: response.statusCode || 0,
             responseBody: safeBody || 'No response body',
             errorCode: mapped.code,
