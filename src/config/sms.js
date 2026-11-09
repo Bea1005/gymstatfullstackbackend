@@ -1,15 +1,16 @@
+'use strict';
 /**
- * SMS delivery via Semaphore (semaphore.co) — Philippine SMS provider.
+ * SMS delivery via Infobip (infobip.com).
  *
  * Required environment variables:
- *   SEMAPHORE_API_KEY     – API key from semaphore.co Account → API Keys
- *   SEMAPHORE_SENDER_NAME – (optional) approved sender name, e.g. "GYMSTAT"
- *                           defaults to your account's registered sender name
+ *   INFOBIP_API_KEY   – API key from Infobip dashboard
+ *   INFOBIP_BASE_URL  – your unique base URL, e.g. xxxxx.api.infobip.com
+ *   INFOBIP_SENDER    – sender name or number, e.g. InfoSMS or +12015550123
  *
- * Endpoint: POST https://api.semaphore.co/api/v4/messages
- * Rate limit: 120 requests per minute
+ * Auth: Authorization: App {api-key}
+ * Endpoint: POST https://{base_url}/sms/2/text/advanced
+ * Phone format: digits only, no leading + (e.g. 639171234567)
  */
-'use strict';
 
 const https = require('https');
 
@@ -18,20 +19,21 @@ const https = require('https');
 // ---------------------------------------------------------------------------
 
 const getSetting = (name) => {
-  const value = process.env[name];
-  return value === undefined || value === null || String(value).trim() === ''
+  const val = process.env[name];
+  return (val === undefined || val === null || String(val).trim() === '')
     ? ''
-    : String(value).trim();
+    : String(val).trim();
 };
 
 const normalizePhoneNumber = (value) => {
-  const number = String(value || '').trim();
-  // 09XXXXXXXXX  → +639XXXXXXXXX
-  if (/^09[0-9]{9}$/.test(number)) return `+63${number.slice(1)}`;
-  // already in E.164 PH format
-  if (/^\+639[0-9]{9}$/.test(number)) return number;
+  const n = String(value || '').trim();
+  if (/^09[0-9]{9}$/.test(n)) return '+63' + n.slice(1);
+  if (/^\+639[0-9]{9}$/.test(n)) return n;
   return '';
 };
+
+// Infobip requires digits only, no leading +
+const toInfobipNumber = (e164) => e164.replace(/^\+/, '');
 
 const createSmsError = (message, code, details = {}) =>
   Object.assign(new Error(message), { code, ...details });
@@ -41,77 +43,69 @@ const createSmsError = (message, code, details = {}) =>
 // ---------------------------------------------------------------------------
 
 const getSmsConfigurationStatus = () => {
-  const apiKey = getSetting('SEMAPHORE_API_KEY');
+  const apiKey  = getSetting('INFOBIP_API_KEY');
+  const baseUrl = getSetting('INFOBIP_BASE_URL');
+  const sender  = getSetting('INFOBIP_SENDER');
   const missing = [];
 
-  if (!apiKey || /your-|placeholder|example|replace-me/i.test(apiKey)) {
-    missing.push('SEMAPHORE_API_KEY');
-  }
+  if (!apiKey  || /your-|placeholder|example|replace-me/i.test(apiKey))  missing.push('INFOBIP_API_KEY');
+  if (!baseUrl || /your-|placeholder|example|replace-me/i.test(baseUrl)) missing.push('INFOBIP_BASE_URL');
+  if (!sender  || /your-|placeholder|example|replace-me/i.test(sender))  missing.push('INFOBIP_SENDER');
 
-  return { configured: missing.length === 0, provider: 'semaphore', missing };
+  return { configured: missing.length === 0, provider: 'infobip', missing };
 };
 
 const buildSmsNotConfiguredMessage = () => {
   const { missing } = getSmsConfigurationStatus();
-  return `SMS OTP verification is not configured. Set ${missing.join(' and ')} in the backend environment.`;
+  return `SMS OTP is not configured. Set ${missing.join(' and ')} in the backend environment.`;
 };
 
 // ---------------------------------------------------------------------------
-// Map Semaphore HTTP errors to clean user-facing messages
+// Map Infobip HTTP errors to user-facing messages
 // ---------------------------------------------------------------------------
 
-const getSemaphoreError = (httpStatus, responseBody) => {
-  // 401 — bad API key
-  if (httpStatus === 401) {
+const getInfobipError = (httpStatus, responseBody) => {
+  const body = String(responseBody || '').toLowerCase();
+
+  if (httpStatus === 401 || httpStatus === 403) {
     return {
-      code: 'SEMAPHORE_AUTH_FAILED',
-      message: 'Semaphore rejected the SMS credentials. Check SEMAPHORE_API_KEY.',
+      code: 'INFOBIP_AUTH_FAILED',
+      message: 'Infobip rejected the SMS credentials. Check INFOBIP_API_KEY.',
     };
   }
-  // 402 — insufficient credits
-  if (httpStatus === 402) {
-    return {
-      code: 'SEMAPHORE_INSUFFICIENT_CREDITS',
-      message: 'Your Semaphore account has insufficient SMS credits. Top up at semaphore.co.',
-    };
-  }
-  // 422 — validation error (bad number, bad sender, etc.)
-  if (httpStatus === 422) {
-    const body = String(responseBody || '').toLowerCase();
-    if (body.includes('sender')) {
+  if (httpStatus === 400) {
+    if (body.includes('invalid') && body.includes('to')) {
       return {
-        code: 'SEMAPHORE_INVALID_SENDER',
-        message: 'The Semaphore sender name is not approved or missing. Check SEMAPHORE_SENDER_NAME.',
+        code: 'INFOBIP_INVALID_NUMBER',
+        message: 'The destination mobile number was rejected by Infobip. Check the format.',
       };
     }
-    if (body.includes('number') || body.includes('recipient')) {
+    if (body.includes('sender') || body.includes('from')) {
       return {
-        code: 'SEMAPHORE_INVALID_NUMBER',
-        message: 'The destination mobile number was rejected by Semaphore. Check the Philippine number format.',
+        code: 'INFOBIP_INVALID_SENDER',
+        message: 'The SMS sender is invalid. Check INFOBIP_SENDER.',
       };
     }
     return {
-      code: 'SEMAPHORE_INVALID_REQUEST',
-      message: 'Semaphore rejected the SMS request. Check your sender name and recipient number.',
+      code: 'INFOBIP_INVALID_REQUEST',
+      message: 'Infobip rejected the SMS request. Check your sender name and recipient number.',
     };
   }
-  // 429 — rate limited
   if (httpStatus === 429) {
     return {
-      code: 'SEMAPHORE_RATE_LIMITED',
-      message: 'Semaphore is temporarily rate-limiting SMS delivery. Please wait and try again.',
+      code: 'INFOBIP_RATE_LIMITED',
+      message: 'Infobip is temporarily rate-limiting SMS delivery. Please wait and try again.',
     };
   }
-  // 5xx — provider down
   if (httpStatus >= 500) {
     return {
-      code: 'SEMAPHORE_UNAVAILABLE',
-      message: 'The Semaphore SMS service is temporarily unavailable. Please try again later.',
+      code: 'INFOBIP_UNAVAILABLE',
+      message: 'The Infobip SMS service is temporarily unavailable. Please try again later.',
     };
   }
   return {
-    code: 'SEMAPHORE_SMS_DELIVERY_FAILED',
-    message: 'The SMS provider could not send the verification code. Check your Semaphore configuration.',
+    code: 'INFOBIP_SMS_DELIVERY_FAILED',
+    message: 'The SMS provider could not send the verification code. Check your Infobip configuration.',
   };
 };
 
@@ -124,14 +118,14 @@ const redact = (message, values) => {
 };
 
 // ---------------------------------------------------------------------------
-// Send OTP via Semaphore
+// Send OTP via Infobip
 // ---------------------------------------------------------------------------
 
 const sendContactVerificationOtp = async (contactNumber, otp, ttlMinutes) => {
   const minutes   = Number(ttlMinutes) > 0 ? Number(ttlMinutes) : 5;
-  const recipient = normalizePhoneNumber(contactNumber);
+  const e164      = normalizePhoneNumber(contactNumber);
 
-  if (!recipient) {
+  if (!e164) {
     throw createSmsError(
       'Please provide a valid Philippine mobile number in the format 09XXXXXXXXX or +639XXXXXXXXX.',
       'SMS_INVALID_PHONE_NUMBER'
@@ -146,68 +140,86 @@ const sendContactVerificationOtp = async (contactNumber, otp, ttlMinutes) => {
     throw createSmsError(buildSmsNotConfiguredMessage(), 'SMS_PROVIDER_NOT_CONFIGURED');
   }
 
-  const apiKey     = getSetting('SEMAPHORE_API_KEY');
-  const senderName = getSetting('SEMAPHORE_SENDER_NAME'); // optional
-  const message    = `Your GYMSTAT verification code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+  const apiKey    = getSetting('INFOBIP_API_KEY');
+  const baseUrl   = getSetting('INFOBIP_BASE_URL').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const sender    = getSetting('INFOBIP_SENDER');
+  const recipient = toInfobipNumber(e164);
+  const text      = `Your GYMSTAT verification code is ${otp}. It expires in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
 
-  // Semaphore accepts the recipient as 09XXXXXXXXX or +639XXXXXXXXX
-  // Strip the leading + so we pass 639XXXXXXXXX (Semaphore handles both formats)
-  const recipientForApi = recipient.startsWith('+') ? recipient.slice(1) : recipient;
-
-  const params = new URLSearchParams({ apikey: apiKey, number: recipientForApi, message });
-  if (senderName) params.set('sendername', senderName);
-  const postBody = params.toString();
+  const body = JSON.stringify({
+    messages: [{
+      from: sender,
+      destinations: [{ to: recipient }],
+      text,
+    }],
+  });
 
   await new Promise((resolve, reject) => {
     let responseBody = '';
-    const request = https.request(
+    const req = https.request(
       {
-        hostname: 'api.semaphore.co',
-        path: '/api/v4/messages',
+        hostname: baseUrl,
+        path: '/sms/2/text/advanced',
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(postBody),
+          Authorization: `App ${apiKey}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Accept: 'application/json',
         },
         timeout: 15000,
       },
-      (response) => {
-        response.on('data', (chunk) => {
+      (res) => {
+        res.on('data', (chunk) => {
           if (responseBody.length < 8192) responseBody += chunk.toString();
         });
-        response.on('end', () => {
-          if (response.statusCode >= 200 && response.statusCode < 300) {
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            // Infobip returns 200 even for some errors — check messages[0].status
+            try {
+              const parsed = JSON.parse(responseBody);
+              const msgStatus = parsed?.messages?.[0]?.status;
+              const groupId   = msgStatus?.groupId;
+              // groupId 5 = REJECTED, groupId 6 = EXPIRED
+              if (groupId === 5 || groupId === 6) {
+                const desc = redact(msgStatus?.description, [apiKey, recipient, String(otp)]);
+                console.error('Infobip message rejected:', { groupId, description: desc });
+                reject(createSmsError(
+                  'The SMS provider rejected the message. Check INFOBIP_SENDER and the recipient number.',
+                  'INFOBIP_MESSAGE_REJECTED'
+                ));
+                return;
+              }
+            } catch { /* JSON parse failed — treat as success */ }
             resolve();
             return;
           }
 
-          const safeBody = redact(responseBody, [apiKey, recipientForApi, String(otp)]);
-          const mapped   = getSemaphoreError(response.statusCode || 0, responseBody);
-
-          console.warn('Semaphore SMS request failed:', {
-            httpStatus: response.statusCode || 0,
-            responseBody: safeBody || 'No response body',
-            errorCode: mapped.code,
+          const safeBody = redact(responseBody, [apiKey, recipient, String(otp)]);
+          const mapped   = getInfobipError(res.statusCode || 0, responseBody);
+          console.error('Infobip SMS request failed:', {
+            httpStatus: res.statusCode,
+            response:   safeBody,
+            errorCode:  mapped.code,
           });
-
           reject(createSmsError(mapped.message, mapped.code, {
-            providerStatusCode: response.statusCode || 0,
+            providerStatusCode: res.statusCode || 0,
           }));
         });
       }
     );
 
-    request.on('error', () => reject(createSmsError(
+    req.on('error', () => reject(createSmsError(
       'Could not connect to the SMS provider. Please try again later.',
       'SMS_PROVIDER_CONNECTION_FAILED'
     )));
-    request.on('timeout', () => {
-      request.destroy();
+    req.on('timeout', () => {
+      req.destroy();
       reject(createSmsError('The SMS provider request timed out.', 'SMS_PROVIDER_TIMEOUT'));
     });
 
-    request.write(postBody);
-    request.end();
+    req.write(body);
+    req.end();
   });
 };
 
