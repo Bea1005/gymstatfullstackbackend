@@ -33,6 +33,7 @@ const REGISTRATION_OTP_TTL_MS = 10 * 60 * 1000;
 const REGISTRATION_OTP_COOLDOWN_MS = 60 * 1000;
 const REGISTRATION_OTP_MAX_ATTEMPTS = 5;
 const REGISTRATION_OTP_MAX_RESENDS = 5;
+const FIRST_VALID_STUDENT_ID_YEAR = 2023;
 const GENERIC_RESET_MESSAGE = 'If an account is associated with that email, a verification code has been sent.';
 const DUPLICATE_ID_MESSAGE = 'This Student ID is already registered.';
 const DUPLICATE_EMAIL_MESSAGE = 'This email is already registered. Please use a different email address.';
@@ -171,23 +172,35 @@ const issueLoginOtpForScreener = async (user) => {
   }
 };
 
+const isValidStudentId = (id) => {
+  const trimmedId = String(id || '').trim();
+  if (!trimmedId || /\s/.test(trimmedId)) return false;
+
+  const studentIdMatch = trimmedId.match(/^(\d{2})[BGST]\d{4}$/);
+  if (!studentIdMatch) return false;
+
+  const studentIdYear = 2000 + Number(studentIdMatch[1]);
+  return studentIdYear >= FIRST_VALID_STUDENT_ID_YEAR
+    && studentIdYear <= new Date().getFullYear();
+};
+
+const getInvalidStudentIdMessage = () => (
+  `Enter a valid Student ID in the format YYB####, YYG####, YYS####, or YYT####, using a year from ${FIRST_VALID_STUDENT_ID_YEAR} through ${new Date().getFullYear()}.`
+);
+
 const isValidId = (id) => {
   const trimmedId = String(id || '').trim();
   if (!trimmedId || /\s/.test(trimmedId)) return false;
 
-  if (/^\d{4}-\d{4}$/.test(trimmedId)) {
-    return true;
-  }
-
-  return /^23[BGST]\d{4}$/.test(trimmedId);
+  return /^\d{4}-\d{4}$/.test(trimmedId) || isValidStudentId(trimmedId);
 };
 
 exports.checkStudentIdAvailability = async (req, res) => {
   const id = String(req.query?.id || '').trim();
-  if (!/^23[BGST]\d{4}$/.test(id)) {
+  if (!isValidStudentId(id)) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid Student ID format.'
+      message: getInvalidStudentIdMessage()
     });
   }
 
@@ -908,7 +921,7 @@ exports.register = async (req, res) => {
         success: false,
         message: /^\d{4}-\d{4}$/.test(trimmedId || '')
           ? 'Coach ID numbers must use the format 0000-0000.'
-          : 'Invalid Student ID format.'
+          : getInvalidStudentIdMessage()
       });
     }
 

@@ -367,6 +367,88 @@ describe('registration identity verification', () => {
     }
   );
 
+  it('accepts prior and current year IDs, rejects future IDs, and advances in January', async () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date(2026, 5, 15));
+
+      const valid2026Ids = ['24S1495', '23B1495', '25G1495', '26T1495'];
+      for (const id of valid2026Ids) {
+        const res = httpMocks.createResponse();
+        await register(httpMocks.createRequest({
+          body: validRegistration({ id }),
+        }), res);
+        expect(res.statusCode).toBe(201);
+        expect(PendingRegistration.create).toHaveBeenCalledWith(
+          expect.objectContaining({ id, role: 'student' })
+        );
+
+        const availability = httpMocks.createResponse();
+        await checkStudentIdAvailability(httpMocks.createRequest({
+          query: { id },
+        }), availability);
+        expect(availability.statusCode).toBe(200);
+        expect(availability._getJSONData()).toEqual({
+          success: true,
+          available: true,
+        });
+        expect(User.hasRegisteredId).toHaveBeenCalledWith(id);
+      }
+
+      for (const id of ['22B1495', '27S1495']) {
+        const res = httpMocks.createResponse();
+        await register(httpMocks.createRequest({
+          body: validRegistration({ id }),
+        }), res);
+        expect(res.statusCode).toBe(400);
+        expect(res._getJSONData().message).toBe(
+          'Enter a valid Student ID in the format YYB####, YYG####, YYS####, or YYT####, using a year from 2023 through 2026.'
+        );
+        expect(PendingRegistration.create).not.toHaveBeenCalledWith(
+          expect.objectContaining({ id })
+        );
+      }
+
+      const futureAvailability = httpMocks.createResponse();
+      await checkStudentIdAvailability(httpMocks.createRequest({
+        query: { id: '27S1495' },
+      }), futureAvailability);
+      expect(futureAvailability.statusCode).toBe(400);
+      expect(futureAvailability._getJSONData().message).toBe(
+        'Enter a valid Student ID in the format YYB####, YYG####, YYS####, or YYT####, using a year from 2023 through 2026.'
+      );
+      expect(User.hasRegisteredId).not.toHaveBeenCalledWith('27S1495');
+
+      jest.setSystemTime(new Date(2027, 0, 1));
+      const nextYearRegistration = httpMocks.createResponse();
+      await register(httpMocks.createRequest({
+        body: validRegistration({ id: '27S1495' }),
+      }), nextYearRegistration);
+      expect(nextYearRegistration.statusCode).toBe(201);
+
+      const nextYearAvailability = httpMocks.createResponse();
+      await checkStudentIdAvailability(httpMocks.createRequest({
+        query: { id: '27S1495' },
+      }), nextYearAvailability);
+      expect(nextYearAvailability.statusCode).toBe(200);
+      expect(User.hasRegisteredId).toHaveBeenCalledWith('27S1495');
+
+      const future2027Registration = httpMocks.createResponse();
+      await register(httpMocks.createRequest({
+        body: validRegistration({ id: '28B1495' }),
+      }), future2027Registration);
+      expect(future2027Registration.statusCode).toBe(400);
+
+      const future2027Availability = httpMocks.createResponse();
+      await checkStudentIdAvailability(httpMocks.createRequest({
+        query: { id: '28B1495' },
+      }), future2027Availability);
+      expect(future2027Availability.statusCode).toBe(400);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps the existing Coach ID format valid', async () => {
     const res = httpMocks.createResponse();
 
@@ -386,16 +468,16 @@ describe('registration identity verification', () => {
     const res = httpMocks.createResponse();
 
     await checkStudentIdAvailability(httpMocks.createRequest({
-      query: { id: '23B1496' },
+      query: { id: '24S1495' },
     }), res);
 
     expect(res.statusCode).toBe(200);
     expect(res._getJSONData()).toEqual(expect.objectContaining({
       success: true,
       available: false,
-      message: 'This ID is already registered. Please use a different ID.',
+      message: 'This Student ID is already registered.',
     }));
-    expect(User.hasRegisteredId).toHaveBeenCalledWith('23B1496');
+    expect(User.hasRegisteredId).toHaveBeenCalledWith('24S1495');
   });
 
   it('does not retain an unverified registration when email delivery fails', async () => {

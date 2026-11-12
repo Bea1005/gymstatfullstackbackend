@@ -20,14 +20,22 @@ const { protect, authorize } = require('../middleware/auth');
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const getCoachAccess = async (coachId) => {
+const getCoachAccess = async (coachId, authenticatedUser) => {
   const coach = await User.findOne({ _id: coachId, role: 'coach' })
-    .select('_id')
+    .select('_id sport assignedSports strasucStudentIds')
     .lean();
-  return coach;
+  if (!coach) return null;
+
+  const access = { ...coach };
+  for (const field of ['sport', 'assignedSports', 'strasucStudentIds']) {
+    if (access[field] === undefined && authenticatedUser?.[field] !== undefined) {
+      access[field] = authenticatedUser[field];
+    }
+  }
+  return access;
 };
 
-const getCoachStudentUploads = async (studentId) => {
+const getCoachStudentUploads = async (studentId, selectedSport) => {
   const requirementModels = getAllStudentRequirementModels();
   const uploadsByModel = await Promise.all(requirementModels.map((RequirementModel) => RequirementModel.find({
     studentId,
@@ -35,9 +43,13 @@ const getCoachStudentUploads = async (studentId) => {
       { participationType: { $in: ['Intrams', 'STRASUC'] } },
       { participationType: { $exists: false } },
     ],
-  }).select('requirementType customRequirementId fileName status coachStatus participationType').lean()));
+  }).select('requirementType customRequirementId fileName status coachStatus participationType sport').lean()));
 
-  return uploadsByModel.flat();
+  const selectedSportKey = normalizeSportCategory(selectedSport);
+  return uploadsByModel.flat().filter((upload) => {
+    const uploadSports = String(upload.sport || 'General').split('|').map(normalizeSportCategory);
+    return uploadSports.includes('general') || uploadSports.includes(selectedSportKey);
+  });
 };
 
 const studentProjection = '_id id fullname department yearLevel branchCampus dateOfBirth dob sport sports assignedSports sportParticipation athleteStatus formHeaderCenter eligibilityNotes directorEventLabel directorName directorTitle';
@@ -49,6 +61,43 @@ const normalizeSportCategory = (value) => String(value || '')
   .trim()
   .toLowerCase()
   .replace(/[^a-z0-9]/g, '');
+const getCoachAssignedSports = (coach) => {
+  const sports = [
+    ...(Array.isArray(coach?.assignedSports) ? coach.assignedSports : []),
+    coach?.sport,
+  ];
+  const seenSports = new Set();
+  return sports.reduce((assignedSports, sport) => {
+    const label = String(sport || '').trim();
+    const normalized = normalizeSportCategory(label);
+    if (normalized && label && !seenSports.has(normalized)) {
+      seenSports.add(normalized);
+      assignedSports.push(label);
+    }
+    return assignedSports;
+  }, []);
+};
+const resolveCoachSport = (coach, requestedSport, { defaultToAssigned = false } = {}) => {
+  const assignedSports = getCoachAssignedSports(coach);
+  if (!assignedSports.length) return '';
+
+  const normalizedRequest = normalizeSportCategory(requestedSport);
+  if (normalizedRequest) {
+    return assignedSports.find((sport) => normalizeSportCategory(sport) === normalizedRequest) || '';
+  }
+  if (!defaultToAssigned) return '';
+
+  const primarySport = assignedSports.find((sport) => (
+    normalizeSportCategory(sport) === normalizeSportCategory(coach?.sport)
+  ));
+  return primarySport || assignedSports[0];
+};
+const getCoachStudentForSport = async (student, sport) => {
+  if (getStudentSportForCategory(student, sport)) return student;
+  const roleProfiles = await findStudentAthleteRecords([student]);
+  const [mergedStudent] = linkStudentAthletesToUsers([student], roleProfiles);
+  return getStudentSportForCategory(mergedStudent, sport) ? mergedStudent : null;
+};
 const getStudentSportForCategory = (student, category) => {
   const normalizedCategory = normalizeSportCategory(category);
   const savedSports = [
@@ -187,7 +236,9 @@ const toStudentResponse = (student, profile, selectedSport) => ({
   directorEventLabel: student.directorEventLabel || '',
   directorName: student.directorName || '',
   directorTitle: student.directorTitle || '',
-  profilePhotoUrl: profile?.imageFileId ? `/coach/students/${student._id}/profile-photo` : '',
+  profilePhotoUrl: profile?.imageFileId
+    ? `/coach/students/${student._id}/profile-photo?sport=${encodeURIComponent(selectedSport || '')}`
+    : '',
 });
 
 const facultyPhotoUpload = multer({
@@ -351,14 +402,24 @@ router.delete('/coach/faculty-members/:facultyId', protect, authorize('coach'), 
 
 router.get('/coach/students/:studentId/profile-photo', protect, authorize('coach'), async (req, res) => {
   try {
-    const coach = await User.findOne({
-      _id: req.user._id,
-      role: 'coach',
-      strasucStudentIds: req.params.studentId,
-    }).select('_id').lean();
-    if (!coach) return res.status(403).json({ message: 'You are not authorized to view this student' });
+    const coach = await getCoachAccess(req.user._id || req.user.id, req.user);
+    if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(coach, req.query.sport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to view this sport' });
+    const isInGallery = (coach.strasucStudentIds || []).some((studentId) => (
+      String(studentId) === String(req.params.studentId)
+    ));
+    if (!isInGallery) return res.status(403).json({ message: 'You are not authorized to view this student' });
 
-    const student = await User.findOne({ _id: req.params.studentId, role: 'student' }).select('_id').lean();
+    const studentRecord = await User.findOne({
+      _id: req.params.studentId,
+      role: 'student',
+    }).select(studentSearchProjection).lean();
+    const student = studentRecord
+      ? await getCoachStudentForSport(studentRecord, selectedSport)
+      : null;
+    if (!student) return res.status(403).json({ message: 'You are not authorized to view this student for the selected sport' });
+
     const profile = student ? await StudentProfile.findOne({ studentId: student._id }).lean() : null;
     if (!profile?.imageFileId) return res.status(404).json({ message: 'Profile photo not found' });
 
@@ -390,6 +451,7 @@ router.get('/coach/profile', protect, authorize('coach'), async (req, res) => {
       email: user.email,
       contactNumber: user.contactNumber || '',
       mainSport: user.sport || '',
+      assignedSports: getCoachAssignedSports(user),
       position: user.coachPosition || 'Coach',
       sportParticipation: user.sportParticipation || [],
       staffMembers: user.staffMembers || []
@@ -505,11 +567,13 @@ router.put('/coach/record-content/director', protect, authorize('coach'), async 
 // GET coach athletes (assigned students)
 router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   try {
-    const selectedSport = String(req.query.sport || req.user?.sport || '').trim();
-    const coach = await User.findOne({ _id: req.user._id || req.user.id, role: 'coach' })
-      .select('strasucStudentIds')
-      .lean();
-    const selectedStudentIds = Array.isArray(coach?.strasucStudentIds) ? coach.strasucStudentIds : [];
+    const coach = await getCoachAccess(req.user._id || req.user.id, req.user);
+    if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(coach, req.query.sport, { defaultToAssigned: true });
+    if (!selectedSport) {
+      return res.status(403).json({ message: 'You are not authorized to view this sport' });
+    }
+    const selectedStudentIds = Array.isArray(coach.strasucStudentIds) ? coach.strasucStudentIds : [];
     const filter = { role: 'student', _id: { $in: selectedStudentIds } };
 
     const athletes = await User.find(filter).select(studentProjection).lean();
@@ -537,28 +601,35 @@ router.get('/coach/athletes', protect, authorize('coach'), async (req, res) => {
 
 router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'), async (req, res) => {
   try {
-    const coach = await User.findOne({
-      _id: req.user._id || req.user.id,
-      role: 'coach',
-      strasucStudentIds: req.params.studentId,
-    }).select('_id').lean();
-    if (!coach) return res.status(403).json({ message: 'You are not authorized to view this student' });
+    const coach = await getCoachAccess(req.user._id || req.user.id, req.user);
+    if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(coach, req.query.sport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to view this sport' });
+    const isInGallery = (coach.strasucStudentIds || []).some((studentId) => (
+      String(studentId) === String(req.params.studentId)
+    ));
+    if (!isInGallery) return res.status(403).json({ message: 'You are not authorized to view this student' });
 
-    const student = await User.findById(req.params.studentId)
-      .select('sport sports assignedSports sportParticipation')
+    const studentRecord = await User.findById(req.params.studentId)
+      .select('sport sports assignedSports sportParticipation role')
       .lean();
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    if (!studentRecord) return res.status(404).json({ message: 'Student not found' });
+    const student = await getCoachStudentForSport(studentRecord, selectedSport);
+    if (!student) return res.status(403).json({ message: 'You are not authorized to view this student for the selected sport' });
 
     const [publishedRequirements, uploads] = await Promise.all([
       Requirement.find({ status: 'published', isActive: { $ne: false } })
       .select('_id title type targetStudents sport file.filename file.path')
       .lean(),
-      getCoachStudentUploads(req.params.studentId),
+      getCoachStudentUploads(req.params.studentId, selectedSport),
     ]);
 
     return res.json({
       publishedRequirements: publishedRequirements
-        .filter((requirement) => isRequirementAssignedToStudent(requirement, student))
+        .filter((requirement) => isRequirementAssignedToStudent(requirement, {
+          sport: selectedSport,
+          sports: [selectedSport],
+        }))
         .map((requirement) => ({
           id: String(requirement._id),
           title: requirement.title,
@@ -584,13 +655,15 @@ router.get('/coach/athletes/:studentId/requirements', protect, authorize('coach'
 router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => {
   try {
     const { studentId } = req.body;
-    const selectedSport = String(req.body?.sport || '').trim();
-    if (!studentId || !selectedSport) {
+    const requestedSport = String(req.body?.sport || '').trim();
+    if (!studentId || !requestedSport) {
       return res.status(400).json({ message: 'An existing student and sport category must be selected' });
     }
 
-    const access = await getCoachAccess(req.user._id || req.user.id);
+    const access = await getCoachAccess(req.user._id || req.user.id, req.user);
     if (!access) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(access, requestedSport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to add students for this sport' });
 
     const userStudent = await User.findOne({
       _id: studentId,
@@ -629,6 +702,11 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
 // Update an assigned student profile
 router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req, res) => {
   try {
+    const coach = await getCoachAccess(req.user?._id || req.user?.id, req.user);
+    if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(coach, req.query.sport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to update students for this sport' });
+
     const {
       fullname,
       email,
@@ -657,14 +735,10 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    const coachId = req.user?._id || req.user?.id;
-    const coachAssignment = await User.findOne({
-      _id: coachId,
-      role: 'coach',
-      strasucStudentIds: student._id,
-    }).select('_id').lean();
-
-    if (!coachAssignment) {
+    const isInGallery = (coach.strasucStudentIds || []).some((studentId) => (
+      String(studentId) === String(student._id)
+    ));
+    if (!isInGallery || !await getCoachStudentForSport(student, selectedSport)) {
       return res.status(403).json({ message: 'You are not authorized to update this student' });
     }
 
@@ -688,7 +762,12 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       updates.branchCampus = requestedCampus;
     }
     if (typeof profilePhoto === 'string' || typeof photo === 'string') updates.profilePhoto = profilePhoto || photo;
-    if (typeof sport === 'string') updates.sport = sport;
+    if (typeof sport === 'string') {
+      if (!resolveCoachSport(coach, sport)) {
+        return res.status(403).json({ message: 'You are not authorized to assign students to this sport' });
+      }
+      updates.sport = sport;
+    }
     if (typeof athleteStatus === 'string' || typeof status === 'string') {
       const requestedStatus = String(athleteStatus || status).trim().toLowerCase();
       const statusAliases = {
@@ -753,11 +832,13 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
 router.get('/coach/student-search', protect, authorize('coach'), async (req, res) => {
   try {
     const query = String(req.query.q || '').trim();
-    const selectedSport = String(req.query.sport || '').trim();
-    if (!selectedSport && !query) return res.json([]);
+    const requestedSport = String(req.query.sport || '').trim();
+    if (!requestedSport) return res.status(400).json({ message: 'A sport category must be selected' });
 
-    const access = await getCoachAccess(req.user._id || req.user.id);
+    const access = await getCoachAccess(req.user._id || req.user.id, req.user);
     if (!access) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(access, requestedSport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to search students for this sport' });
 
     const queryMatcher = query ? { $regex: escapeRegex(query), $options: 'i' } : null;
     const sportMatcher = selectedSport ? { $regex: `^${escapeRegex(selectedSport)}$`, $options: 'i' } : null;
@@ -775,13 +856,13 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
       role: 'student',
     };
 
-    if (selectedSport && !query) {
-      userFilter.$and = [{ $or: sportConditions }];
-      studentAthleteFilter.$or = [
+    userFilter.$and = [{ $or: sportConditions }];
+    studentAthleteFilter.$and = [{
+      $or: [
         { sport: sportMatcher },
         { sports: sportMatcher },
-      ];
-    }
+      ],
+    }];
 
     if (query) {
       const textConditions = [
@@ -789,8 +870,8 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
         { studentNumber: queryMatcher },
         { fullname: queryMatcher },
       ];
-      userFilter.$and = [{ $or: textConditions }];
-      studentAthleteFilter.$and = [{ $or: textConditions }];
+      userFilter.$and.push({ $or: textConditions });
+      studentAthleteFilter.$and.push({ $or: textConditions });
     }
 
     const [userCandidates, studentAthleteCandidates] = await Promise.all([
@@ -836,14 +917,7 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
     );
     const normalizedQuery = query.toLowerCase();
     const matchingStudents = students
-      .filter((student) => {
-        if (!query) {
-          return !selectedSport
-            || getStudentSportForCategory(student, selectedSport)
-            || student.sport === selectedSport;
-        }
-        return true;
-      })
+      .filter((student) => getStudentSportForCategory(student, selectedSport))
       .filter((student) => !normalizedQuery
         || getStudentSearchIdentifiers({
           ...student,
@@ -870,19 +944,26 @@ router.get('/coach/student-search', protect, authorize('coach'), async (req, res
 
 router.get('/coach/student-directory', protect, authorize('coach'), async (req, res) => {
   try {
-    const coach = await User.findOne({ _id: req.user._id || req.user.id, role: 'coach' })
-      .select('strasucStudentIds')
-      .lean();
+    const coach = await getCoachAccess(req.user._id || req.user.id, req.user);
     if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(coach, req.query.sport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to view this sport' });
 
-    const students = await User.find({ role: 'student', _id: { $in: coach.strasucStudentIds || [] } })
+    const studentRecords = await User.find({ role: 'student', _id: { $in: coach.strasucStudentIds || [] } })
       .select(studentProjection)
       .lean();
+    const roleProfiles = await findStudentAthleteRecords(studentRecords);
+    const students = linkStudentAthletesToUsers(studentRecords, roleProfiles)
+      .filter((student) => getStudentSportForCategory(student, selectedSport));
     const profiles = await StudentProfile.find({ studentId: { $in: students.map((student) => student._id) } })
       .select('studentId imageFileId')
       .lean();
     const profilesByStudentId = new Map(profiles.map((profile) => [String(profile.studentId), profile]));
-    return res.json(students.map((student) => toStudentResponse(student, profilesByStudentId.get(String(student._id)))));
+    return res.json(students.map((student) => toStudentResponse(
+      student,
+      profilesByStudentId.get(String(student._id)),
+      selectedSport
+    )));
   } catch (error) {
     console.error('Coach student directory error:', error);
     return res.status(500).json({ message: 'Server error while fetching students' });
@@ -891,6 +972,23 @@ router.get('/coach/student-directory', protect, authorize('coach'), async (req, 
 
 router.delete('/coach/athletes/:studentId', protect, authorize('coach'), async (req, res) => {
   try {
+    const coach = await getCoachAccess(req.user._id || req.user.id, req.user);
+    if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
+    const selectedSport = resolveCoachSport(coach, req.query.sport);
+    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to remove students for this sport' });
+    const isInGallery = (coach.strasucStudentIds || []).some((studentId) => (
+      String(studentId) === String(req.params.studentId)
+    ));
+    if (!isInGallery) return res.status(403).json({ message: 'You are not authorized to remove this student' });
+    const studentRecord = await User.findOne({
+      _id: req.params.studentId,
+      role: 'student',
+    }).select(studentSearchProjection).lean();
+    const student = studentRecord
+      ? await getCoachStudentForSport(studentRecord, selectedSport)
+      : null;
+    if (!student) return res.status(403).json({ message: 'You are not authorized to remove this student for the selected sport' });
+
     const result = await User.updateOne(
       { _id: req.user._id || req.user.id },
       { $pull: { strasucStudentIds: req.params.studentId } }

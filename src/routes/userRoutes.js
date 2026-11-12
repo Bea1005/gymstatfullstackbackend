@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const { hashPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const { getJWTSecret } = require('../config/security');
-const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail, sendScreenerAccountCreatedEmail } = require('../config/email');
+const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail } = require('../config/email');
 const ScreenerAuthorization = require('../models/ScreenerAuthorization');
 const router = express.Router();
 const User = require('../models/User');
@@ -204,18 +204,24 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     }
 
     const hashedPassword = await hashPassword(rawPassword);
-    const otp = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
-    const otpHash = hashRegistrationOtp(otp);
     const now = Date.now();
+    const otp = requestedRole === 'screener'
+      ? null
+      : String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const verificationFields = otp === null
+      ? {}
+      : {
+        registrationOtpHash: hashRegistrationOtp(otp),
+        registrationOtpExpiresAt: new Date(now + REGISTRATION_OTP_TTL_MS),
+        registrationOtpAttempts: 0,
+        registrationOtpLastSentAt: new Date(now),
+        registrationOtpResendCount: 0
+      };
     const userPayload = {
       email: rawEmail,
       emailNormalized: rawEmail,
-      emailVerified: false,
-      registrationOtpHash: otpHash,
-      registrationOtpExpiresAt: new Date(now + REGISTRATION_OTP_TTL_MS),
-      registrationOtpAttempts: 0,
-      registrationOtpLastSentAt: new Date(now),
-      registrationOtpResendCount: 0,
+      emailVerified: requestedRole === 'screener',
+      ...verificationFields,
       password: hashedPassword,
       role: requestedRole,
       ...(requestedRole !== 'screener' && { id: rawId }),
@@ -273,18 +279,10 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       user = await User.create(userPayload);
     }
 
-    try {
-      if (requestedRole === 'screener') {
-        const loginUrl = (process.env.FRONTEND_URL || process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:5173').split(',')[0].trim().replace(/\/$/, '');
-        await sendScreenerAccountCreatedEmail(rawEmail, user.id, loginUrl);
-      } else {
+    if (requestedRole !== 'screener') {
+      try {
         await sendRegistrationVerificationOtp(rawEmail, otp, REGISTRATION_OTP_TTL_MS / 60000);
-      }
-    } catch (error) {
-      if (requestedRole === 'screener') {
-        await User.deleteOne({ _id: user._id });
-        await User.getRoleModel('screener').deleteOne({ userId: user._id });
-      } else {
+      } catch (error) {
         await User.updateOne(
           { _id: user._id },
           {
@@ -297,16 +295,14 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
             }
           }
         );
+        console.error('Admin-provisioned account email delivery failed.', { role: requestedRole, error: error?.message || error });
+        return res.status(503).json({
+          success: false,
+          safeError: 'registration-email-delivery',
+          verificationRequired: true,
+          message: 'The account is pending email verification, but the verification email could not be sent. The user can retry from the Registration Page.'
+        });
       }
-      console.error('Admin-provisioned account email delivery failed.', { role: requestedRole, error: error?.message || error });
-      return res.status(503).json({
-        success: false,
-        safeError: requestedRole === 'screener' ? 'screener-account-email-delivery' : 'registration-email-delivery',
-        verificationRequired: requestedRole !== 'screener',
-        message: requestedRole === 'screener'
-          ? 'The Screener account could not be created because the account notification email could not be sent. Please try again later.'
-          : 'The account is pending email verification, but the verification email could not be sent. The user can retry from the Registration Page.'
-      });
     }
 
     const shouldRequireVerification = requestedRole !== 'screener';

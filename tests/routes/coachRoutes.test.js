@@ -22,9 +22,18 @@ jest.mock('../../src/models/CoachFormHeader');
 jest.mock('../../src/models/CoachEligibilityRequirements');
 jest.mock('../../src/models/CoachSportsDirector');
 jest.mock('../../src/models/StrasucFacultyMember');
+jest.mock('../../src/models/studentRequirementCollections', () => ({
+  getAllStudentRequirementModels: () => [require('../../src/models/StudentRequirement')],
+}));
 jest.mock('../../src/middleware/auth', () => ({
   protect: jest.fn((req, res, next) => {
-    req.user = { _id: req.headers['x-test-coach-id'] || 'coach-id', role: 'coach' };
+    req.user = {
+      _id: req.headers['x-test-coach-id'] || 'coach-id',
+      role: 'coach',
+      sport: 'Basketball Women',
+      assignedSports: ['Basketball Women', 'Volleyball Women'],
+      strasucStudentIds: ['student-id'],
+    };
     next();
   }),
   authorize: jest.fn(() => (req, res, next) => next()),
@@ -132,6 +141,57 @@ describe('Coach athlete routes', () => {
       id: 'STUDENT02',
       sport: 'Basketball Women',
     })]);
+  });
+
+  it('returns the authenticated Coach account sport assignments for the Gallery', async () => {
+    User.findById.mockReturnValue({
+      select: jest.fn().mockResolvedValue({
+        fullname: 'Coach User',
+        email: 'coach@example.com',
+        sport: 'Basketball (Women)',
+        assignedSports: ['Basketball Women', 'Volleyball Women'],
+      }),
+    });
+
+    const response = await request(app).get('/api/v1/coach/profile');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({
+      mainSport: 'Basketball (Women)',
+      assignedSports: ['Basketball Women', 'Volleyball Women'],
+    }));
+  });
+
+  it('rejects unassigned and missing Coach sports before reading gallery records', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: 'coach-id',
+        sport: 'Basketball Women',
+        assignedSports: ['Basketball Women'],
+        strasucStudentIds: ['student-id'],
+      }),
+    });
+
+    const unassignedSportResponse = await request(app)
+      .get('/api/v1/coach/athletes?sport=Volleyball%20Women');
+    expect(unassignedSportResponse.status).toBe(403);
+    expect(User.find).not.toHaveBeenCalled();
+
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: 'coach-id',
+        sport: '',
+        assignedSports: [],
+        sportParticipation: [{ sport: 'Volleyball Women' }],
+        strasucStudentIds: ['student-id'],
+      }),
+    });
+    const noAssignedSportResponse = await request(app)
+      .get('/api/v1/coach/athletes?sport=Basketball%20Women');
+    expect(noAssignedSportResponse.status).toBe(403);
+    expect(User.find).not.toHaveBeenCalled();
   });
 
   it('initializes and returns the singleton Coach Record content defaults', async () => {
@@ -244,9 +304,10 @@ describe('Coach athlete routes', () => {
   });
 
   it('returns active upload-card definitions and file presence by student ID', async () => {
+    const studentId = '507f1f77bcf86cd799439011';
     User.findOne.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id', strasucStudentIds: [studentId] }),
     });
     User.findById.mockReturnValue({
       select: jest.fn().mockReturnThis(),
@@ -255,8 +316,9 @@ describe('Coach athlete routes', () => {
     StudentRequirement.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
       lean: jest.fn().mockResolvedValue([
-        { requirementType: 'medical', fileName: 'medical.pdf', status: 'rejected' },
-        { requirementType: 'other', customRequirementId: 'custom-id', fileName: 'waiver.pdf', status: 'pending' },
+        { requirementType: 'medical', fileName: 'medical.pdf', status: 'rejected', sport: 'Basketball Women' },
+        { requirementType: 'other', customRequirementId: 'custom-id', fileName: 'waiver.pdf', status: 'pending', sport: 'Basketball Women' },
+        { requirementType: 'insurance', fileName: 'soccer.pdf', status: 'pending', sport: 'Soccer' },
       ]),
     });
     Requirement.find.mockReturnValue({
@@ -283,7 +345,7 @@ describe('Coach athlete routes', () => {
     });
 
     const response = await request(app)
-      .get('/api/v1/coach/athletes/student-id/requirements');
+      .get(`/api/v1/coach/athletes/${studentId}/requirements?sport=Basketball%20Women`);
 
     expect(response.status).toBe(200);
     expect(response.body.publishedRequirements).toEqual([
@@ -291,22 +353,34 @@ describe('Coach athlete routes', () => {
       { id: 'custom-id', title: 'Athlete Waiver', type: 'other', hasDocument: false },
     ]);
     expect(response.body.uploads).toEqual([
-      { requirementType: 'medical', customRequirementId: '', hasFile: true },
-      { requirementType: 'other', customRequirementId: 'custom-id', hasFile: true },
+      {
+        requirementType: 'medical',
+        customRequirementId: '',
+        fileName: 'medical.pdf',
+        hasFile: true,
+        status: 'rejected',
+        coachStatus: 'rejected',
+      },
+      {
+        requirementType: 'other',
+        customRequirementId: 'custom-id',
+        fileName: 'waiver.pdf',
+        hasFile: true,
+        status: 'pending',
+        coachStatus: 'pending',
+      },
     ]);
-    expect(User.findOne.mock.calls[0][0]).toEqual({
-      _id: 'coach-id',
-      role: 'coach',
-      strasucStudentIds: 'student-id',
-    });
-    expect(User.findById).toHaveBeenCalledWith('student-id');
+    expect(User.findOne.mock.calls[0][0]).toEqual({ _id: 'coach-id', role: 'coach' });
+    expect(User.findById).toHaveBeenCalledWith(studentId);
     expect(StudentRequirement.find.mock.calls[0][0]).toEqual({
-      studentId: 'student-id',
+      studentId,
       $or: [
-        { participationType: 'Intrams' },
+        { participationType: { $in: ['Intrams', 'STRASUC'] } },
         { participationType: { $exists: false } },
       ],
     });
+    expect(StudentRequirement.find.mock.results[0].value.select)
+      .toHaveBeenCalledWith('requirementType customRequirementId fileName status coachStatus participationType sport');
     expect(Requirement.find.mock.calls[0][0]).toEqual({
       status: 'published',
       isActive: { $ne: false },
@@ -314,13 +388,14 @@ describe('Coach athlete routes', () => {
   });
 
   it('returns no upload records for a student who has not uploaded requirements', async () => {
+    const studentId = '507f1f77bcf86cd799439012';
     User.findOne.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id', strasucStudentIds: [studentId] }),
     });
     User.findById.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockResolvedValue({}),
+      lean: jest.fn().mockResolvedValue({ sport: 'Basketball Women' }),
     });
     StudentRequirement.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
@@ -334,7 +409,7 @@ describe('Coach athlete routes', () => {
     });
 
     const response = await request(app)
-      .get('/api/v1/coach/athletes/student-id/requirements');
+      .get(`/api/v1/coach/athletes/${studentId}/requirements?sport=Basketball%20Women`);
 
     expect(response.status).toBe(200);
     expect(response.body.publishedRequirements).toHaveLength(1);
@@ -399,7 +474,7 @@ describe('Coach athlete routes', () => {
     expect(User.find.mock.calls[0][0]._id).toEqual({ $in: [student._id] });
   });
 
-  it('searches shared students by registered ID and selected sport for coaches without sport assignments', async () => {
+  it('searches shared students by registered ID and selected sport for assigned coaches', async () => {
     const student = {
       _id: 'student-user-id',
       id: '23B1510',
@@ -414,7 +489,7 @@ describe('Coach athlete routes', () => {
     };
     User.findOne.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockResolvedValue({ _id: 'coach-id', sport: '', assignedSports: [] }),
+      lean: jest.fn().mockResolvedValue({ _id: 'coach-id', sport: 'Basketball Women', assignedSports: ['Basketball Women'] }),
     });
     User.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
@@ -456,6 +531,92 @@ describe('Coach athlete routes', () => {
     expect(response.body[0]).not.toHaveProperty('password');
     expect(response.body[0]).not.toHaveProperty('athleteStatus');
     expect(StudentProfile.find).not.toHaveBeenCalled();
+  });
+
+  it('rejects Coach student searches that omit a sport', async () => {
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?q=23B1510');
+
+    expect(response.status).toBe(400);
+    expect(User.find).not.toHaveBeenCalled();
+    expect(StudentAthlete.find).not.toHaveBeenCalled();
+  });
+
+  it('rejects a search for a sport not assigned to the authenticated Coach', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: 'coach-id',
+        sport: 'Basketball Women',
+        assignedSports: ['Basketball Women'],
+      }),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-search?q=23B1510&sport=Volleyball%20Women');
+
+    expect(response.status).toBe(403);
+    expect(User.find).not.toHaveBeenCalled();
+    expect(StudentAthlete.find).not.toHaveBeenCalled();
+  });
+
+  it('rejects adding a student under a sport not assigned to the Coach', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: 'coach-id',
+        sport: 'Basketball Women',
+        assignedSports: ['Basketball Women'],
+      }),
+    });
+
+    const response = await request(app)
+      .post('/api/v1/coach/athletes')
+      .send({ studentId: 'student-id', sport: 'Volleyball Women' });
+
+    expect(response.status).toBe(403);
+    expect(User.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('rejects unassigned sport requests to the Coach student directory', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: 'coach-id',
+        sport: 'Basketball Women',
+        assignedSports: ['Basketball Women'],
+      }),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/student-directory?sport=Volleyball%20Women');
+
+    expect(response.status).toBe(403);
+    expect(User.find).not.toHaveBeenCalled();
+  });
+
+  it('rejects gallery requirement reads when a student is not assigned to the selected sport', async () => {
+    const studentId = '507f1f77bcf86cd799439013';
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: 'coach-id',
+        sport: 'Basketball Women',
+        assignedSports: ['Basketball Women'],
+        strasucStudentIds: [studentId],
+      }),
+    });
+    User.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ sport: 'Volleyball Women' }),
+    });
+
+    const response = await request(app)
+      .get(`/api/v1/coach/athletes/${studentId}/requirements?sport=Basketball%20Women`);
+
+    expect(response.status).toBe(403);
+    expect(StudentRequirement.find).not.toHaveBeenCalled();
+    expect(Requirement.find).not.toHaveBeenCalled();
   });
 
   it('finds a student under every saved sport, not only the legacy primary sport', async () => {
@@ -616,7 +777,7 @@ describe('Coach athlete routes', () => {
       User.findOne
         .mockReturnValueOnce({
           select: jest.fn().mockReturnThis(),
-          lean: jest.fn().mockResolvedValue({ _id: coachId, sport: '', assignedSports: [] }),
+          lean: jest.fn().mockResolvedValue({ _id: coachId, sport: 'Basketball Women', assignedSports: ['Basketball Women'] }),
         })
         .mockReturnValueOnce({
           select: jest.fn().mockReturnThis(),
@@ -657,7 +818,10 @@ describe('Coach athlete routes', () => {
     User.findOne
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
-        lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+        lean: jest.fn().mockResolvedValue({
+          _id: 'coach-id',
+          strasucStudentIds: [student._id],
+        }),
       })
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
@@ -695,14 +859,18 @@ describe('Coach athlete routes', () => {
   it('saves an assigned student profile update for a coach', async () => {
     const student = {
       _id: 'student-id',
+      sport: 'Basketball Women',
       branchCampus: 'Boac Main',
     };
     User.findOne
-      .mockResolvedValueOnce(student)
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
-        lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
-      });
+        lean: jest.fn().mockResolvedValue({
+          _id: 'coach-id',
+          strasucStudentIds: [student._id],
+        }),
+      })
+      .mockResolvedValueOnce(student);
     User.findOneAndUpdate.mockResolvedValue({
       ...student,
       fullname: 'Updated Student',
@@ -711,7 +879,7 @@ describe('Coach athlete routes', () => {
     });
 
     const response = await request(app)
-      .put('/api/v1/coach/athletes/student-id')
+      .put('/api/v1/coach/athletes/student-id?sport=Basketball%20Women')
       .send({ fullname: 'Updated Student', branchCampus: 'Gasan', athleteStatus: 'complete' });
 
     expect(response.status).toBe(200);
@@ -726,17 +894,21 @@ describe('Coach athlete routes', () => {
   it.each(['complete', 'incomplete', 'disqualified', 'no-documents'])(
     'lets an assigned coach set the %s status badge',
     async (athleteStatus) => {
-      const student = { _id: '6abfd0a30650e44ccd090471', branchCampus: 'Boac Main' };
+      const student = {
+        _id: '6abfd0a30650e44ccd090471',
+        sport: 'Basketball Women',
+        branchCampus: 'Boac Main',
+      };
       User.findOne
-        .mockResolvedValueOnce(student)
         .mockReturnValueOnce({
           select: jest.fn().mockReturnThis(),
-          lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
-        });
+          lean: jest.fn().mockResolvedValue({ _id: 'coach-id', strasucStudentIds: [student._id] }),
+        })
+        .mockResolvedValueOnce(student);
       User.findOneAndUpdate.mockResolvedValue({ ...student, athleteStatus });
 
       const response = await request(app)
-        .put(`/api/v1/coach/athletes/${student._id}`)
+        .put(`/api/v1/coach/athletes/${student._id}?sport=Basketball%20Women`)
         .send({ athleteStatus });
 
       expect(response.status).toBe(200);
@@ -759,14 +931,18 @@ describe('Coach athlete routes', () => {
 
   it('rejects unsupported Coach Portal athlete status badge values', async () => {
     User.findOne
-      .mockResolvedValueOnce({ _id: 'student-id', branchCampus: 'Boac Main' })
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
         lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+      })
+      .mockResolvedValueOnce({
+        _id: 'student-id',
+        sport: 'Basketball Women',
+        branchCampus: 'Boac Main',
       });
 
     const response = await request(app)
-      .put('/api/v1/coach/athletes/student-id')
+      .put('/api/v1/coach/athletes/student-id?sport=Basketball%20Women')
       .send({ athleteStatus: 'not-a-status' });
 
     expect(response.status).toBe(400);
@@ -777,11 +953,19 @@ describe('Coach athlete routes', () => {
     User.findOne
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
-        lean: jest.fn().mockResolvedValue({ _id: 'coach-id' }),
+        lean: jest.fn().mockResolvedValue({
+          _id: 'coach-id',
+          sport: 'Basketball Women',
+          assignedSports: ['Basketball Women'],
+          strasucStudentIds: ['student-id'],
+        }),
       })
       .mockReturnValueOnce({
         select: jest.fn().mockReturnThis(),
-        lean: jest.fn().mockResolvedValue({ _id: 'student-id' }),
+        lean: jest.fn().mockResolvedValue({
+          _id: 'student-id',
+          sport: 'Basketball Women',
+        }),
       });
     StudentProfile.findOne.mockReturnValue({
       lean: jest.fn().mockResolvedValue({
@@ -792,14 +976,10 @@ describe('Coach athlete routes', () => {
     streamProfilePhoto.mockImplementation(async (_fileId, response) => response.end());
 
     const response = await request(app)
-      .get('/api/v1/coach/students/student-id/profile-photo');
+      .get('/api/v1/coach/students/student-id/profile-photo?sport=Basketball%20Women');
 
     expect(response.status).toBe(200);
-    expect(User.findOne).toHaveBeenNthCalledWith(1, {
-      _id: 'coach-id',
-      role: 'coach',
-      strasucStudentIds: 'student-id',
-    });
+    expect(User.findOne).toHaveBeenNthCalledWith(1, { _id: 'coach-id', role: 'coach' });
     expect(StudentProfile.findOne).toHaveBeenCalledWith({ studentId: 'student-id' });
     expect(response.headers['content-type']).toBe('image/png');
     expect(response.headers['content-disposition']).toBe('inline');

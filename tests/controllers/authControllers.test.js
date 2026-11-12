@@ -475,7 +475,7 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().message).toContain('7');
   });
 
-  it.each(['23B149', '23B14960', '23A1509', '24B1509', '23B15A9', 'B231496'])(
+  it.each(['23B149', '23B14960', '23A1509', '23B15A9', 'B231496'])(
     'rejects student ID %s that does not match the required format',
     async (id) => {
       const req = httpMocks.createRequest({
@@ -826,6 +826,31 @@ describe('Auth Controllers', () => {
     expect(res.statusCode).toBe(403);
     expect(res._getJSONData().message).toContain('verify your email');
     expect(RefreshSession.create).not.toHaveBeenCalled();
+  });
+
+  it('allows a verified Admin-created Screener account to log in without an email challenge', async () => {
+    const req = httpMocks.createRequest({
+      body: { id: 'S000001', password: 'Password1!' }
+    });
+    const res = httpMocks.createResponse();
+    User.findOne.mockResolvedValue({
+      _id: 'screener-user',
+      id: 'S000001',
+      email: 'screener@example.com',
+      emailVerified: true,
+      password: 'hashed-password',
+      role: 'screener',
+      department: 'Engineering'
+    });
+    bcrypt.compare.mockResolvedValue(true);
+    jwt.sign.mockReturnValue('jwt-token');
+
+    await login(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res._getJSONData().user.role).toBe('screener');
+    expect(res._getJSONData()).not.toHaveProperty('verificationRequired');
+    expect(RefreshSession.create).toHaveBeenCalled();
   });
 
   it('returns the saved role from the database during login', async () => {

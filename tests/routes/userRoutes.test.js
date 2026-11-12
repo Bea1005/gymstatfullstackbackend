@@ -181,19 +181,14 @@ describe('User registration route', () => {
     }
   );
 
-  it('creates a screener account without requesting verification at creation and sends the account notification email', async () => {
+  it('creates a Screener account as login-ready without sending an email', async () => {
     const createdUser = {
       _id: 'user-123',
       id: 'S000001',
       fullname: 'S000001',
       email: 'screener@example.com',
       emailNormalized: 'screener@example.com',
-      emailVerified: false,
-      registrationOtpHash: 'private-hash',
-      registrationOtpExpiresAt: new Date(),
-      registrationOtpAttempts: 0,
-      registrationOtpLastSentAt: new Date(),
-      registrationOtpResendCount: 0,
+      emailVerified: true,
       password: 'hashed-password',
       role: 'screener',
       toObject() {
@@ -217,11 +212,20 @@ describe('User registration route', () => {
       verificationRequired: false
     }));
     expect(response.body.user.id).toBe('S000001');
+    expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
+      email: 'screener@example.com',
+      emailVerified: true,
+      department: 'Engineering',
+      role: 'screener',
+      id: 'S000001',
+      password: 'hashed-password'
+    }));
+    expect(User.create.mock.calls[0][0]).not.toHaveProperty('registrationOtpHash');
     expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
-    expect(sendScreenerAccountCreatedEmail).toHaveBeenCalledWith('screener@example.com', 'S000001', expect.any(String));
+    expect(sendScreenerAccountCreatedEmail).not.toHaveBeenCalled();
   });
 
-  it('cleans up a screener account when the account notification email cannot be delivered', async () => {
+  it('does not block a Screener account when email delivery is unavailable', async () => {
     User.create.mockResolvedValue({ _id: 'user-123', id: 'S000001' });
     sendScreenerAccountCreatedEmail.mockRejectedValueOnce(new Error('Brevo unavailable'));
 
@@ -234,15 +238,14 @@ describe('User registration route', () => {
         role: 'screener'
       });
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(201);
     expect(response.body).toEqual(expect.objectContaining({
-      success: false,
+      success: true,
       verificationRequired: false
     }));
-    expect(User.deleteOne).toHaveBeenCalledWith({ _id: 'user-123' });
-    expect(User.getRoleModel).toHaveBeenCalledWith('screener');
-    expect(User.getRoleModel.mock.results[0].value.deleteOne)
-      .toHaveBeenCalledWith({ userId: 'user-123' });
+    expect(User.deleteOne).not.toHaveBeenCalled();
+    expect(User.getRoleModel).not.toHaveBeenCalled();
+    expect(sendScreenerAccountCreatedEmail).not.toHaveBeenCalled();
   });
 
   it('generates the next sequential Screener ID and ignores any client-supplied ID', async () => {
