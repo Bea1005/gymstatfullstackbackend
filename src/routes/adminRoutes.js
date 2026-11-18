@@ -8,6 +8,7 @@ const Borrowing = require('../models/Borrowing');
 const ScheduleRequest = require('../models/ScheduleRequest');
 const Schedule = require('../models/Schedule');
 const { protect, authorize } = require('../middleware/auth');
+const { getAuditLogs, exportAuditLogs } = require('../controllers/auditLogController');
 
 const normalizePhilippineContactExpression = (field) => ({
   $let: {
@@ -326,6 +327,9 @@ const buildEquipmentLineStages = (bucketFormat) => [
   },
   { $match: { quantity: { $gt: 0 } } }
 ];
+
+router.get('/admin/audit-logs/export', protect, authorize('admin'), exportAuditLogs);
+router.get('/admin/audit-logs', protect, authorize('admin'), getAuditLogs);
 
 // @desc    Get admin dashboard stats
 // @route   GET /api/v1/admin/dashboard

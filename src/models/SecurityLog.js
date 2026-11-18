@@ -21,9 +21,38 @@ const securityLogSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  actorName: {
+    type: String,
+    default: '',
+    maxlength: 120
+  },
   role: {
     type: String,
     default: ''
+  },
+  module: {
+    type: String,
+    default: '',
+    maxlength: 80,
+    index: true
+  },
+  description: {
+    type: String,
+    default: '',
+    maxlength: 240
+  },
+  affectedRecord: {
+    type: String,
+    default: '',
+    maxlength: 160
+  },
+  changedFields: {
+    type: [String],
+    default: []
+  },
+  httpStatus: {
+    type: Number,
+    default: null
   },
   identifier: {
     type: String,
@@ -55,5 +84,9 @@ const securityLogSchema = new mongoose.Schema({
 });
 
 securityLogSchema.index({ timestamp: -1 });
+securityLogSchema.index({ role: 1, timestamp: -1 });
+securityLogSchema.index({ action: 1, timestamp: -1 });
+securityLogSchema.index({ module: 1, timestamp: -1 });
+securityLogSchema.index({ result: 1, timestamp: -1 });
 
 module.exports = mongoose.model('SecurityLog', securityLogSchema);
