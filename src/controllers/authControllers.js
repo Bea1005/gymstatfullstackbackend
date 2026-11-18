@@ -285,9 +285,17 @@ exports.requestPasswordReset = async (req, res) => {
     }
 
     const user = await User.findOne({
-      email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' }
+      $or: [
+        { emailNormalized: normalizedEmail },
+        { email: { $regex: `^${escapeRegex(normalizedEmail)}$`, $options: 'i' } }
+      ]
     }).select('+passwordResetLastSentAt');
-    if (!user) return res.status(202).json({ success: true, message: GENERIC_RESET_MESSAGE });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'No registered account was found with this email address. Please enter your registered email.'
+      });
+    }
 
     const now = Date.now();
     if (user.passwordResetLastSentAt && now - user.passwordResetLastSentAt.getTime() < RESET_OTP_COOLDOWN_MS) {
@@ -307,12 +315,18 @@ exports.requestPasswordReset = async (req, res) => {
     try {
       await sendPasswordResetOtp(normalizedEmail, otp, RESET_OTP_TTL_MS / 60000);
     } catch (error) {
+      const deliveryFailure = getRegistrationEmailFailure(error);
       clearPasswordResetState(user);
       await user.save();
-      console.error('Password reset email delivery failed:', error.message);
+      console.error('Password reset email delivery failed:', {
+        code: error?.code || error?.name || 'unknown',
+        deliveryIssue: deliveryFailure.code
+      });
       return res.status(503).json({
         success: false,
-        message: 'The verification email could not be sent. Please try again later.'
+        safeError: 'password-reset-email-delivery',
+        deliveryIssue: deliveryFailure.code,
+        message: deliveryFailure.message
       });
     }
 

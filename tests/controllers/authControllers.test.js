@@ -49,6 +49,7 @@ jest.mock('../../src/config/email', () => ({
 }));
 const {
   getRegistrationEmailFailure,
+  sendPasswordResetOtp,
   sendRegistrationVerificationOtp
 } = require('../../src/config/email');
 const sms = require('../../src/config/sms');
@@ -985,10 +986,41 @@ describe('Auth Controllers', () => {
     expect(res._getJSONData().user.role).toBe('student');
   });
 
-  it('creates a reset challenge without exposing whether an email exists', async () => {
+  it('rejects an unregistered email without creating or sending a reset OTP', async () => {
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(null) });
     const req = httpMocks.createRequest({
       body: {
-        email: 'coach@example.com',
+        email: '  NOT-REGISTERED@EXAMPLE.COM  ',
+      }
+    });
+    const res = httpMocks.createResponse();
+    const randomIntSpy = jest.spyOn(crypto, 'randomInt');
+
+    try {
+      await requestPasswordReset(req, res);
+
+      expect(User.findOne).toHaveBeenCalledWith({
+        $or: [
+          { emailNormalized: 'not-registered@example.com' },
+          { email: { $regex: '^not-registered@example\\.com$', $options: 'i' } }
+        ]
+      });
+      expect(randomIntSpy).not.toHaveBeenCalled();
+      expect(sendPasswordResetOtp).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(404);
+      expect(res._getJSONData()).toEqual({
+        success: false,
+        message: 'No registered account was found with this email address. Please enter your registered email.'
+      });
+    } finally {
+      randomIntSpy.mockRestore();
+    }
+  });
+
+  it('creates a reset challenge for a registered, case-insensitive email', async () => {
+    const req = httpMocks.createRequest({
+      body: {
+        email: '  COACH@EXAMPLE.COM  ',
       }
     });
     const res = httpMocks.createResponse();
@@ -1012,9 +1044,115 @@ describe('Auth Controllers', () => {
     expect(user.passwordResetTokenHash).toBeNull();
     expect(user.passwordResetTokenExpiresAt).toBeNull();
     expect(user.passwordResetTokenConsumedAt).toBeNull();
+    expect(sendPasswordResetOtp).toHaveBeenCalledWith(
+      'coach@example.com',
+      expect.stringMatching(/^\d{6}$/),
+      10
+    );
     expect(res.statusCode).toBe(202);
     expect(res._getJSONData().success).toBe(true);
     expect(res._getJSONData().message).toContain('If an account is associated');
+  });
+
+  it('clears the reset challenge and returns a safe reason when email delivery fails', async () => {
+    const user = {
+      email: 'coach@example.com',
+      passwordResetLastSentAt: null,
+      passwordResetOtpHash: null,
+      passwordResetOtpExpiresAt: null,
+      passwordResetOtpAttempts: 0,
+      passwordResetTokenHash: 'previous-token',
+      passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+      passwordResetTokenConsumedAt: null,
+      save: jest.fn().mockResolvedValue(true)
+    };
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    sendPasswordResetOtp.mockRejectedValueOnce(Object.assign(
+      new Error('Brevo sender is not configured.'),
+      { code: 'BREVO_SENDER_NOT_CONFIGURED' }
+    ));
+    const req = httpMocks.createRequest({ body: { email: user.email } });
+    const res = httpMocks.createResponse();
+
+    await requestPasswordReset(req, res);
+
+    expect(user.save).toHaveBeenCalledTimes(2);
+    expect(user.passwordResetOtpHash).toBeNull();
+    expect(user.passwordResetOtpExpiresAt).toBeNull();
+    expect(user.passwordResetOtpAttempts).toBe(0);
+    expect(user.passwordResetLastSentAt).toBeNull();
+    expect(user.passwordResetTokenHash).toBeNull();
+    expect(user.passwordResetTokenExpiresAt).toBeNull();
+    expect(user.passwordResetTokenConsumedAt).toBeNull();
+    expect(res.statusCode).toBe(503);
+    expect(res._getJSONData()).toEqual(expect.objectContaining({
+      success: false,
+      safeError: 'password-reset-email-delivery',
+      deliveryIssue: 'BREVO_SENDER_NOT_CONFIGURED',
+      message: 'Check email provider configuration.'
+    }));
+  });
+
+  it('does not send another reset OTP during the resend cooldown', async () => {
+    const user = {
+      passwordResetLastSentAt: new Date(),
+      save: jest.fn().mockResolvedValue(true)
+    };
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    const req = httpMocks.createRequest({ body: { email: 'coach@example.com' } });
+    const res = httpMocks.createResponse();
+
+    await requestPasswordReset(req, res);
+
+    expect(user.save).not.toHaveBeenCalled();
+    expect(sendPasswordResetOtp).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(202);
+    expect(res._getJSONData().message).toContain('If an account is associated');
+  });
+
+  it('rejects an expired password-reset OTP', async () => {
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockResolvedValue({
+        passwordResetOtpHash: hashResetValue('123456'),
+        passwordResetOtpExpiresAt: new Date(Date.now() - 1),
+        passwordResetOtpAttempts: 0,
+        save: jest.fn()
+      })
+    });
+    const req = httpMocks.createRequest({
+      body: { email: 'coach@example.com', otp: '123456' }
+    });
+    const res = httpMocks.createResponse();
+
+    await verifyPasswordResetOtp(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Invalid or expired verification code.');
+  });
+
+  it('clears a password-reset OTP after the attempt limit is reached', async () => {
+    const user = {
+      passwordResetOtpHash: hashResetValue('123456'),
+      passwordResetOtpExpiresAt: new Date(Date.now() + 60_000),
+      passwordResetOtpAttempts: 5,
+      passwordResetLastSentAt: new Date(),
+      passwordResetTokenHash: null,
+      passwordResetTokenExpiresAt: null,
+      passwordResetTokenConsumedAt: null,
+      save: jest.fn().mockResolvedValue(true)
+    };
+    User.findOne.mockReturnValue({ select: jest.fn().mockResolvedValue(user) });
+    const req = httpMocks.createRequest({
+      body: { email: 'coach@example.com', otp: '123456' }
+    });
+    const res = httpMocks.createResponse();
+
+    await verifyPasswordResetOtp(req, res);
+
+    expect(user.save).toHaveBeenCalled();
+    expect(user.passwordResetOtpHash).toBeNull();
+    expect(user.passwordResetOtpExpiresAt).toBeNull();
+    expect(res.statusCode).toBe(429);
   });
 
   it('returns a safe, actionable error when password-reset SMS delivery fails', async () => {

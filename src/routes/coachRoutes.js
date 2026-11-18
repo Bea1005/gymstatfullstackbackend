@@ -237,14 +237,50 @@ const toStudentResponse = (student, profile, selectedSport) => ({
   directorName: student.directorName || '',
   directorTitle: student.directorTitle || '',
   profilePhotoUrl: profile?.imageFileId
-    ? `/coach/students/${student._id}/profile-photo?sport=${encodeURIComponent(selectedSport || '')}`
+    ? `/coach/students/${student._id}/profile-photo?sport=${encodeURIComponent(selectedSport || '')}&v=${encodeURIComponent(String(profile.imageFileId))}`
     : '',
 });
 
+const COACH_PHOTO_MAX_SIZE_BYTES = 5 * 1024 * 1024;
+const COACH_PHOTO_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+const decodeStudentPhotoDataUrl = (value) => {
+  if (typeof value !== 'string' || !value.startsWith('data:')) return null;
+
+  const match = value.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match) {
+    const error = new Error('Profile photo must be a valid JPG, PNG, GIF, or WebP image.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const [, contentType, encodedImage] = match;
+  const buffer = Buffer.from(encodedImage, 'base64');
+  if (!buffer.length
+    || buffer.length > COACH_PHOTO_MAX_SIZE_BYTES
+    || buffer.toString('base64') !== encodedImage) {
+    const error = new Error('Profile photo must be 5MB or smaller and contain valid image data.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const extension = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+  }[contentType];
+  return {
+    buffer,
+    contentType,
+    filename: `student-profile.${extension}`,
+  };
+};
+
 const facultyPhotoUpload = multer({
   storage: multer.memoryStorage(),
-  fileFilter: (req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.mimetype)),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, callback) => callback(null, COACH_PHOTO_MIME_TYPES.has(file.mimetype)),
+  limits: { fileSize: COACH_PHOTO_MAX_SIZE_BYTES },
 });
 
 const getFacultyResponse = (member) => ({
@@ -700,12 +736,17 @@ router.post('/coach/athletes', protect, authorize('coach'), async (req, res) => 
 });
 
 // Update an assigned student profile
-router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req, res) => {
+router.put('/coach/athletes/:studentId', protect, authorize('coach'), facultyPhotoUpload.single('profilePhoto'), async (req, res) => {
+  let uploadedPhotoId = null;
+  let previousProfile = null;
   try {
     const coach = await getCoachAccess(req.user?._id || req.user?.id, req.user);
     if (!coach) return res.status(403).json({ message: 'Coach access could not be verified' });
-    const selectedSport = resolveCoachSport(coach, req.query.sport);
-    if (!selectedSport) return res.status(403).json({ message: 'You are not authorized to update students for this sport' });
+    const requestedSport = String(req.query.sport || '').trim();
+    let selectedSport = requestedSport ? resolveCoachSport(coach, requestedSport) : '';
+    if (requestedSport && !selectedSport) {
+      return res.status(403).json({ message: 'You are not authorized to update students for this sport' });
+    }
 
     const {
       fullname,
@@ -738,8 +779,23 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
     const isInGallery = (coach.strasucStudentIds || []).some((studentId) => (
       String(studentId) === String(student._id)
     ));
-    if (!isInGallery || !await getCoachStudentForSport(student, selectedSport)) {
+    if (!isInGallery) {
       return res.status(403).json({ message: 'You are not authorized to update this student' });
+    }
+
+    let studentMatchesSport = false;
+    if (!selectedSport) {
+      for (const assignedSport of getCoachAssignedSports(coach)) {
+        if (await getCoachStudentForSport(student, assignedSport)) {
+          selectedSport = assignedSport;
+          studentMatchesSport = true;
+          break;
+        }
+      }
+    }
+    if (!selectedSport
+      || (!studentMatchesSport && !await getCoachStudentForSport(student, selectedSport))) {
+      return res.status(403).json({ message: 'You are not authorized to update students for this sport' });
     }
 
     const updates = {};
@@ -761,7 +817,6 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       }
       updates.branchCampus = requestedCampus;
     }
-    if (typeof profilePhoto === 'string' || typeof photo === 'string') updates.profilePhoto = profilePhoto || photo;
     if (typeof sport === 'string') {
       if (!resolveCoachSport(coach, sport)) {
         return res.status(403).json({ message: 'You are not authorized to assign students to this sport' });
@@ -800,13 +855,59 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
     if (typeof resolvedDirectorName === 'string') updates.directorName = resolvedDirectorName;
     if (typeof resolvedDirectorTitle === 'string') updates.directorTitle = resolvedDirectorTitle;
 
+    const legacyPhotoValue = [profilePhoto, photo]
+      .find((value) => typeof value === 'string' && value.startsWith('data:'));
+    const photoUpload = req.file
+      ? {
+          buffer: req.file.buffer,
+          filename: req.file.originalname,
+          contentType: req.file.mimetype,
+        }
+      : decodeStudentPhotoDataUrl(legacyPhotoValue);
+
+    if (photoUpload) {
+      previousProfile = await StudentProfile.findOne({ studentId: student._id }).lean();
+      uploadedPhotoId = await uploadProfilePhoto({
+        buffer: photoUpload.buffer,
+        filename: photoUpload.filename,
+        contentType: photoUpload.contentType,
+        studentId: student._id,
+      });
+      updates.profilePhoto = '/profile/photo';
+    }
+
     const updatedStudent = await User.findOneAndUpdate(
       { _id: student._id, role: 'student' },
       { $set: updates },
       { new: true, runValidators: true }
     );
     if (!updatedStudent) {
+      if (uploadedPhotoId) {
+        await deleteProfilePhoto(uploadedPhotoId).catch(() => {});
+        uploadedPhotoId = null;
+      }
       return res.status(404).json({ message: 'Student not found' });
+    }
+
+    if (uploadedPhotoId) {
+      await StudentProfile.findOneAndUpdate(
+        { studentId: student._id },
+        {
+          studentId: student._id,
+          imageFileId: uploadedPhotoId,
+          filename: photoUpload.filename,
+          mimeType: photoUpload.contentType,
+          storageReference: `gridfs://${uploadedPhotoId.toString()}`,
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      const savedPhotoId = uploadedPhotoId;
+      uploadedPhotoId = null;
+      if (previousProfile?.imageFileId && String(previousProfile.imageFileId) !== String(savedPhotoId)) {
+        await deleteProfilePhoto(previousProfile.imageFileId).catch((cleanupError) => {
+          console.error('Unable to delete replaced student profile photo:', cleanupError);
+        });
+      }
     }
 
     return res.json({
@@ -820,7 +921,15 @@ router.put('/coach/athletes/:studentId', protect, authorize('coach'), async (req
       directorTitle: updatedStudent.directorTitle ?? updates.directorTitle ?? '',
     });
   } catch (error) {
+    if (uploadedPhotoId) {
+      await deleteProfilePhoto(uploadedPhotoId).catch((cleanupError) => {
+        console.error('Unable to clean up uploaded student profile photo:', cleanupError);
+      });
+    }
     console.error('Coach athlete update error:', error);
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     if (error.name === 'ValidationError') {
       return res.status(400).json({ message: 'Some student profile fields are invalid. Please review them and try again.' });
     }

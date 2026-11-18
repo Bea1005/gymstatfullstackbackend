@@ -11,7 +11,11 @@ const CoachSportsDirector = require('../../src/models/CoachSportsDirector');
 const StrasucFacultyMember = require('../../src/models/StrasucFacultyMember');
 const coachRoutes = require('../../src/routes/coachRoutes');
 const coachRecordDefaults = require('../../src/config/coachRecordDefaults');
-const { streamProfilePhoto } = require('../../src/config/profilePhotoStorage');
+const {
+  streamProfilePhoto,
+  uploadProfilePhoto,
+  deleteProfilePhoto,
+} = require('../../src/config/profilePhotoStorage');
 
 jest.mock('../../src/models/User');
 jest.mock('../../src/models/StudentAthlete');
@@ -110,6 +114,38 @@ describe('Coach athlete routes', () => {
     }));
     expect(response.body[0]).not.toHaveProperty('email');
     expect(response.body[0].athleteStatus).toBe('completed');
+  });
+
+  it('returns a versioned gallery photo URL from the shared student profile photo record', async () => {
+    const athlete = {
+      _id: 'student-id',
+      id: 'STUDENT01',
+      fullname: 'Student Name',
+      sport: 'Basketball Women',
+    };
+    User.findOne.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ strasucStudentIds: [athlete._id] }),
+    });
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([athlete]),
+    });
+    StudentProfile.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([{
+        studentId: athlete._id,
+        imageFileId: 'student-photo-version-2',
+      }]),
+    });
+
+    const response = await request(app)
+      .get('/api/v1/coach/athletes?sport=Basketball%20Women');
+
+    expect(response.status).toBe(200);
+    expect(response.body[0].profilePhotoUrl).toBe(
+      '/coach/students/student-id/profile-photo?sport=Basketball%20Women&v=student-photo-version-2'
+    );
   });
 
   it('shows students registered with the equivalent parenthesized sport under the Gallery category', async () => {
@@ -891,6 +927,118 @@ describe('Coach athlete routes', () => {
     );
   });
 
+  it('stores a Coach-uploaded student photo in the shared StudentProfile photo store', async () => {
+    const student = {
+      _id: 'student-id',
+      sport: 'Basketball Women',
+      branchCampus: 'Boac Main',
+    };
+    const oldImageFileId = 'old-image-id';
+    const newImageFileId = 'new-image-id';
+    const imageBuffer = Buffer.from('student profile image');
+    User.findOne
+      .mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue({
+          _id: 'coach-id',
+          strasucStudentIds: [student._id],
+        }),
+      })
+      .mockResolvedValueOnce(student);
+    StudentProfile.findOne.mockReturnValueOnce({
+      lean: jest.fn().mockResolvedValue({ imageFileId: oldImageFileId }),
+    });
+    uploadProfilePhoto.mockResolvedValue(newImageFileId);
+    deleteProfilePhoto.mockResolvedValue(undefined);
+    User.findOneAndUpdate.mockResolvedValue({
+      ...student,
+      fullname: 'Updated Student',
+      profilePhoto: '/profile/photo',
+    });
+    StudentProfile.findOneAndUpdate.mockResolvedValue({});
+
+    const response = await request(app)
+      .put('/api/v1/coach/athletes/student-id?sport=Basketball%20Women')
+      .field('fullname', 'Updated Student')
+      .attach('profilePhoto', imageBuffer, {
+        filename: 'student.png',
+        contentType: 'image/png',
+      });
+
+    expect(response.status).toBe(200);
+    expect(uploadProfilePhoto).toHaveBeenCalledWith(expect.objectContaining({
+      buffer: expect.any(Buffer),
+      filename: 'student.png',
+      contentType: 'image/png',
+      studentId: student._id,
+    }));
+    expect(User.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: student._id, role: 'student' },
+      { $set: { fullname: 'Updated Student', profilePhoto: '/profile/photo' } },
+      { new: true, runValidators: true }
+    );
+    expect(StudentProfile.findOneAndUpdate).toHaveBeenCalledWith(
+      { studentId: student._id },
+      {
+        studentId: student._id,
+        imageFileId: newImageFileId,
+        filename: 'student.png',
+        mimeType: 'image/png',
+        storageReference: `gridfs://${newImageFileId}`,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    expect(deleteProfilePhoto).toHaveBeenCalledWith(oldImageFileId);
+  });
+
+  it('accepts a legacy photo update without a sport query and stores it in StudentProfile', async () => {
+    const student = {
+      _id: 'student-id',
+      sport: 'Basketball Women',
+      branchCampus: 'Boac Main',
+    };
+    const imageBuffer = Buffer.from('legacy student profile image');
+    const imageFileId = 'legacy-client-image-id';
+    User.findOne
+      .mockReturnValueOnce({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockResolvedValue({
+          _id: 'coach-id',
+          strasucStudentIds: [student._id],
+        }),
+      })
+      .mockResolvedValueOnce(student);
+    StudentProfile.findOne.mockReturnValueOnce({
+      lean: jest.fn().mockResolvedValue(null),
+    });
+    uploadProfilePhoto.mockResolvedValue(imageFileId);
+    User.findOneAndUpdate.mockResolvedValue({
+      ...student,
+      profilePhoto: '/profile/photo',
+    });
+    StudentProfile.findOneAndUpdate.mockResolvedValue({});
+
+    const response = await request(app)
+      .put('/api/v1/coach/athletes/student-id')
+      .send({ photo: `data:image/png;base64,${imageBuffer.toString('base64')}` });
+
+    expect(response.status).toBe(200);
+    expect(uploadProfilePhoto).toHaveBeenCalledWith(expect.objectContaining({
+      buffer: imageBuffer,
+      filename: 'student-profile.png',
+      contentType: 'image/png',
+      studentId: student._id,
+    }));
+    expect(StudentProfile.findOneAndUpdate).toHaveBeenCalledWith(
+      { studentId: student._id },
+      expect.objectContaining({
+        imageFileId,
+        mimeType: 'image/png',
+      }),
+      expect.objectContaining({ upsert: true })
+    );
+  });
+
   it.each(['complete', 'incomplete', 'disqualified', 'no-documents'])(
     'lets an assigned coach set the %s status badge',
     async (athleteStatus) => {
@@ -908,7 +1056,7 @@ describe('Coach athlete routes', () => {
       User.findOneAndUpdate.mockResolvedValue({ ...student, athleteStatus });
 
       const response = await request(app)
-        .put(`/api/v1/coach/athletes/${student._id}?sport=Basketball%20Women`)
+        .put(`/api/v1/coach/athletes/${student._id}`)
         .send({ athleteStatus });
 
       expect(response.status).toBe(200);

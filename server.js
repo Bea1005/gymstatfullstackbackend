@@ -213,6 +213,18 @@ app.use((req, res, next) => {
         });
       }
 
+      if (body?.safeError === 'password-reset-email-delivery') {
+        return originalJson({
+          success: false,
+          deliveryIssue: typeof body.deliveryIssue === 'string'
+            && /^[a-z0-9_-]{1,60}$/i.test(body.deliveryIssue)
+            ? body.deliveryIssue
+            : 'delivery-failed',
+          message: String(body.message || 'The verification email could not be sent. Please try again later.')
+            .slice(0, 240)
+        });
+      }
+
       return originalJson({
         success: false,
         message: 'An unexpected server error occurred. Please try again.'
