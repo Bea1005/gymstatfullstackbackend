@@ -69,6 +69,7 @@ describe('audit log controller', () => {
     expect(query.skip).toHaveBeenCalledWith(20);
     expect(query.limit).toHaveBeenCalledWith(20);
     expect(query.select).toHaveBeenCalledWith(expect.stringContaining('actorName'));
+    expect(query.select).toHaveBeenCalledWith(expect.stringContaining('identifier'));
     expect(SecurityLog.countDocuments).toHaveBeenCalledWith(filter);
     expect(res._getJSONData()).toEqual({
       success: true,

@@ -16,6 +16,7 @@ const CSV_COLUMNS = [
   ['timestamp', 'Date and Time'],
   ['actorName', 'User'],
   ['userId', 'User ID'],
+  ['identifier', 'Identifier'],
   ['role', 'Role'],
   ['action', 'Action'],
   ['module', 'Module'],
@@ -25,7 +26,7 @@ const CSV_COLUMNS = [
   ['httpStatus', 'HTTP Status'],
   ['changedFields', 'Changed Fields']
 ];
-const SAFE_AUDIT_FIELDS = 'timestamp level action userId actorName role module description affectedRecord changedFields httpStatus result';
+const SAFE_AUDIT_FIELDS = 'timestamp level action userId actorName identifier role module description affectedRecord changedFields httpStatus result';
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

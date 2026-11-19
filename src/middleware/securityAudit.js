@@ -82,7 +82,7 @@ const getAction = (method, path, result) => {
   return method.slice(0, 20) || 'ACTIVITY';
 };
 
-const isLoginPath = (path) => /\/login(?:\/|$)/i.test(path);
+const isLoginPath = (path) => /\/login(?:\/verify)?(?:\/|$)/i.test(path);
 const isRegistrationPath = (path) => /\/register(?:\/|$)/i.test(path);
 const isLogoutPath = (path) => /\/logout(?:\/|$)/i.test(path);
 const isAuditPath = (path) => /\/admin\/audit-logs(?:\/|$)/i.test(path);
@@ -237,9 +237,13 @@ const auditSecurityEvents = (req, res, next) => {
   if (req[AUDIT_ATTACHED]) return next();
   req[AUDIT_ATTACHED] = true;
   let responseActor = null;
+  let responseSucceeded;
+  let responseRequiresLoginVerification = false;
   const originalJson = res.json.bind(res);
   res.json = (body) => {
     responseActor = getResponseActor(body) || responseActor;
+    if (typeof body?.success === 'boolean') responseSucceeded = body.success;
+    responseRequiresLoginVerification = body?.verificationRequired === true;
     return originalJson(body);
   };
 
@@ -253,7 +257,9 @@ const auditSecurityEvents = (req, res, next) => {
     if (isAuditPath(path)) return;
 
     const statusCode = res.statusCode;
-    const result = statusCode >= 200 && statusCode < 400 ? 'SUCCESS' : 'FAILURE';
+    const result = statusCode >= 200 && statusCode < 400 && responseSucceeded !== false
+      ? 'SUCCESS'
+      : 'FAILURE';
     const login = isLoginPath(path);
     const registration = isRegistrationPath(path);
     const logout = isLogoutPath(path);
@@ -261,6 +267,7 @@ const auditSecurityEvents = (req, res, next) => {
     const importantView = (method === 'GET' || method === 'HEAD') && isImportantView(path);
 
     if (!isMutation && !importantView) return;
+    if (login && responseRequiresLoginVerification && result === 'SUCCESS') return;
     if (registration && result === 'FAILURE') return;
     if (!login && !registration && !logout && !req.user && !req.auditActor) return;
 

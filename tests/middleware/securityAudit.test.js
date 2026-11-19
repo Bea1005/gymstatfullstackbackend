@@ -116,6 +116,54 @@ describe('security audit middleware', () => {
     expect(JSON.stringify(SecurityLog.create.mock.calls[0][0])).not.toContain('do-not-log');
   });
 
+  it('does not log a pending Screener OTP challenge as a completed login', () => {
+    runAudit({
+      method: 'POST',
+      url: '/api/v1/login',
+      responseBody: {
+        success: true,
+        verificationRequired: true,
+        user: { _id: 'screener-id', fullname: 'Screener User', role: 'screener' }
+      }
+    });
+
+    expect(SecurityLog.create).not.toHaveBeenCalled();
+  });
+
+  it('records a verified Screener OTP login with the correct role', () => {
+    runAudit({
+      method: 'POST',
+      url: '/api/v1/login/verify',
+      responseBody: {
+        success: true,
+        user: { _id: 'screener-id', fullname: 'Screener User', role: 'screener' }
+      }
+    });
+
+    expect(SecurityLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'LOGIN',
+      userId: 'screener-id',
+      actorName: 'Screener User',
+      role: 'screener',
+      result: 'SUCCESS'
+    }));
+  });
+
+  it('marks a mutation as failed when its JSON response explicitly reports failure', () => {
+    runAudit({
+      method: 'POST',
+      url: '/api/v1/coach/requirements',
+      user: { _id: 'coach-id', fullname: 'Coach User', role: 'coach' },
+      responseBody: { success: false, message: 'The operation failed.' }
+    });
+
+    expect(SecurityLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'coach',
+      result: 'FAILURE',
+      httpStatus: 200
+    }));
+  });
+
   it('records curated authenticated views and skips Audit Log requests', () => {
     const user = { _id: 'coach-db-id', fullname: 'Coach User', role: 'coach' };
     runAudit({
