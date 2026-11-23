@@ -255,7 +255,13 @@ exports.getPublishedRequirements = async (req, res) => {
     console.log('📋 STUDENT: Fetching published requirements from MongoDB');
     
     const { type } = req.query;
-    const filter = { status: 'published', isActive: true };
+    const userRole = String(req.user?.role || '').trim().toLowerCase();
+    const filter = {
+      status: 'published',
+      isActive: userRole === 'coach' || userRole === 'screener'
+        ? { $ne: false }
+        : true
+    };
 
     if (type) filter.type = type;
     
@@ -263,9 +269,8 @@ exports.getPublishedRequirements = async (req, res) => {
       .select('-__v')
       .sort({ publishedAt: -1 })
       .lean();
-    const userRole = String(req.user?.role || '').toLowerCase();
     const activePublishedRequirements = matchedRequirements.filter(
-      (requirement) => requirement.status === 'published' && requirement.isActive
+      (requirement) => requirement.status === 'published' && requirement.isActive !== false
     );
     const requirements = userRole === 'screener'
       ? activePublishedRequirements
@@ -364,10 +369,62 @@ exports.updateRequirement = async (req, res) => {
     const { id } = req.params;
     
     console.log(`✏️ ADMIN: Updating requirement ${id}`);
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Requirement not found'
+      });
+    }
+
+    const allowedFields = [
+      'title',
+      'description',
+      'instructions',
+      'type',
+      'sport',
+      'targetStudents',
+      'dueDate',
+      'priority',
+      'status',
+      'isActive'
+    ];
+    const updateData = allowedFields.reduce((data, field) => {
+      if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+        data[field] = req.body[field];
+      }
+      return data;
+    }, {});
+
+    if (Object.prototype.hasOwnProperty.call(updateData, 'title')) {
+      updateData.title = String(updateData.title || '').trim();
+      if (!updateData.title) {
+        return res.status(400).json({
+          success: false,
+          message: 'Requirement name is required'
+        });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(updateData, 'description')) {
+      updateData.description = String(updateData.description || '').trim();
+    }
+    if (Object.prototype.hasOwnProperty.call(updateData, 'instructions')) {
+      updateData.instructions = String(updateData.instructions || '').trim();
+    }
+    if (Object.prototype.hasOwnProperty.call(updateData, 'dueDate') && updateData.dueDate) {
+      const dueDate = new Date(updateData.dueDate);
+      if (Number.isNaN(dueDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'A valid due date is required'
+        });
+      }
+      updateData.dueDate = dueDate;
+    }
     
     const updatedRequirement = await Requirement.findByIdAndUpdate(
       id,
-      { ...req.body, updatedAt: new Date() },
+      { ...updateData, updatedAt: new Date() },
       { new: true, runValidators: true }
     );
     
@@ -398,17 +455,21 @@ exports.updateRequirement = async (req, res) => {
         `Target: ${targetScope}`,
       ].filter(Boolean).join('\n\n');
 
-      await Announcement.findOneAndUpdate(
-        { relatedRequirementId: updatedRequirement._id },
-        {
-          title: `Updated Requirement: ${updatedRequirement.title}`,
-          description: announcementDescription,
-          type: 'requirement',
-          sport: updatedRequirement.sport,
-          date: new Date(),
-          isActive: true,
-        }
-      );
+      try {
+        await Announcement.findOneAndUpdate(
+          { relatedRequirementId: updatedRequirement._id },
+          {
+            title: `Updated Requirement: ${updatedRequirement.title}`,
+            description: announcementDescription,
+            type: 'requirement',
+            sport: updatedRequirement.sport,
+            date: new Date(),
+            isActive: true,
+          }
+        );
+      } catch (announcementError) {
+        console.error('⚠️ Failed to update requirement announcement:', announcementError);
+      }
     }
 
     res.status(200).json({

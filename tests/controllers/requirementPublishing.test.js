@@ -260,11 +260,26 @@ describe('publishRequirement', () => {
         sport: 'Basketball'
       },
       {
+        _id: 'legacy-active-id',
+        title: 'Legacy Active Requirement',
+        type: 'other',
+        status: 'published',
+        targetStudents: 'all'
+      },
+      {
         _id: 'inactive-id',
         title: 'Inactive Requirement',
         type: 'other',
-        status: 'archived',
+        status: 'published',
         isActive: false,
+        targetStudents: 'all'
+      },
+      {
+        _id: 'draft-id',
+        title: 'Unpublished Requirement',
+        type: 'other',
+        status: 'draft',
+        isActive: true,
         targetStudents: 'all'
       }
     ];
@@ -286,7 +301,14 @@ describe('publishRequirement', () => {
     await getPublishedRequirements(req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(res._getJSONData().data.map(({ title }) => title)).toEqual(['Updated Waiver Label']);
+    expect(Requirement.find).toHaveBeenCalledWith({
+      status: 'published',
+      isActive: { $ne: false }
+    });
+    expect(res._getJSONData().data.map(({ title }) => title)).toEqual([
+      'Updated Waiver Label',
+      'Legacy Active Requirement'
+    ]);
     expect(RequirementSubmission.find).not.toHaveBeenCalled();
   });
 });

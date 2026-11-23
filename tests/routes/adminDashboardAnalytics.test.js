@@ -110,6 +110,15 @@ describe('admin dashboard analytics', () => {
     await handler(req, res);
 
     expect(res.statusCode).toBe(200);
+    expect(res.body.totalUsers).toBe(12);
+    expect(User.countDocuments).toHaveBeenNthCalledWith(1, {
+      $expr: {
+        $ne: [
+          { $toLower: { $trim: { input: { $ifNull: ['$role', ''] } } } },
+          'admin',
+        ],
+      },
+    });
     expect(res.body.analytics).toMatchObject({
       studentAthletesByDepartment: [{ department: 'CICS', count: 4 }],
       borrowingsByDepartment: [{ department: 'CICS', count: 3 }],

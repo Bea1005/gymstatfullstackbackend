@@ -25,6 +25,10 @@ jest.mock('../../src/config/uploadedFileStorage', () => ({
   removeLegacyPathFromResponse: jest.fn((value) => value),
 }));
 
+jest.mock('../../src/models/Announcement', () => ({
+  findOneAndUpdate: jest.fn().mockResolvedValue(null),
+}));
+
 describe('admin custom requirement definitions', () => {
   beforeEach(() => {
     jest.clearAllMocks();

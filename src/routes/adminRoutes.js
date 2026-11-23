@@ -345,7 +345,14 @@ router.get('/admin/dashboard', protect, authorize('admin'), async (req, res) => 
     }
 
     // Users
-    const totalUsers = await User.countDocuments();
+    const totalUsers = await User.countDocuments({
+      $expr: {
+        $ne: [
+          { $toLower: { $trim: { input: { $ifNull: ['$role', ''] } } } },
+          'admin'
+        ]
+      }
+    });
     const totalAthletes = await User.countDocuments({ role: 'student' });
     const totalCoaches = await User.countDocuments({ role: 'coach' });
     // Equipments
