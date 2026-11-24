@@ -5,7 +5,7 @@ const { hashPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../c
 const { getJWTSecret } = require('../config/security');
 const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail } = require('../config/email');
 const ScreenerAuthorization = require('../models/ScreenerAuthorization');
-const collegeDepartmentOptions = require('../../../shared/collegeDepartmentOptions.json');
+const collegeDepartmentOptions = require('../config/collegeDepartmentOptions.json');
 const {
   allocateNextScreenerId,
   getNextScreenerId,

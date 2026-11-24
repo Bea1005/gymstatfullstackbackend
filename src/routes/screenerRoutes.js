@@ -13,7 +13,7 @@ const {
 } = require('../models/studentRequirementCollections');
 const { getStudentSports, splitRequirementSports } = require('../utils/requirementSports');
 const Requirement = require('../models/Requirement');
-const collegeDepartmentOptions = require('../../../shared/collegeDepartmentOptions.json');
+const collegeDepartmentOptions = require('../config/collegeDepartmentOptions.json');
 
 const backendRoot = path.resolve(__dirname, '../..');
 const uploadRoot = path.join(backendRoot, 'uploads');
