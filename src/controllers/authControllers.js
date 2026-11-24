@@ -13,7 +13,7 @@ const sms = require('../config/sms');
 const { normalizePhoneNumber } = sms;
 const RefreshSession = require('../models/RefreshSession');
 const PendingRegistration = require('../models/PendingRegistration');
-const collegeDepartmentOptions = require('../../../shared/collegeDepartmentOptions.json');
+const collegeDepartmentOptions = require('../config/collegeDepartmentOptions.json');
 const {
   createAccessToken,
   createRefreshSession,

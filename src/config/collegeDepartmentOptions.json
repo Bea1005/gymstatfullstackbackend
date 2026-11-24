@@ -1,0 +1,42 @@
+{
+  "College of Allied Health Sciences": [
+    "Bachelor of Science in Nursing",
+    "Bachelor of Science in Midwifery"
+  ],
+  "College of Arts and Social Sciences": [
+    "Bachelor of Arts in Communication",
+    "Bachelor of Arts in Political Science"
+  ],
+  "College of Business and Accountancy": [
+    "Bachelor of Science in Business Administration",
+    "Bachelor of Science in Business Accountancy",
+    "Bachelor of Science in Entrepreneurship"
+  ],
+  "College of Education": [
+    "Bachelor of Elementary Education",
+    "Bachelor of Secondary Education",
+    "Bachelor of Technology and Livelihood Education",
+    "Bachelor of Culture and Arts Education"
+  ],
+  "College of Engineering": [
+    "Bachelor of Science in Civil Engineering",
+    "Bachelor of Science in Electrical Engineering",
+    "Bachelor of Science in Electronics Engineering",
+    "Bachelor of Science in Computer Engineering",
+    "Bachelor of Science in Mechanical Engineering"
+  ],
+  "College of Environmental Studies": [
+    "Bachelor of Science in Environmental Science"
+  ],
+  "College of Governance": [
+    "Bachelor of Science in Public Administration",
+    "Bachelor of Science in Criminology"
+  ],
+  "College of Industrial Technology": [
+    "Bachelor of Science in Industrial Technology"
+  ],
+  "College of Information and Computing Sciences": [
+    "Bachelor of Science in Information Technology",
+    "Bachelor of Science in Information Systems"
+  ]
+}
