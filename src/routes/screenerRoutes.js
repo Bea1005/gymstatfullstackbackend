@@ -114,6 +114,9 @@ const serveScreenerRequirementFile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
     }
     const selectedFile = storedFiles[requestedFileIndex];
+    if (!isUploadedRequirementFile(selectedFile)) {
+      return res.status(404).json({ success: false, message: 'Uploaded file is no longer available' });
+    }
     const fileBuffer = toFileBuffer(selectedFile.fileData);
     if (fileBuffer?.length) {
       const extension = path.extname(selectedFile.fileName || '').toLowerCase();
@@ -183,15 +186,33 @@ const isActiveRequirement = (submission) => (
   String(submission?.requirementStatus || '').toLowerCase() === 'active'
 );
 
-const hasUploadedRequirementFile = (submission) => {
+const isUploadedRequirementFile = (file) => {
+  const fileName = String(file?.fileName || '')
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (/^no documents?(?: attached)?(?:\.[a-z0-9]+)?$/.test(fileName)) return false;
+
+  return (
+    Number(file?.fileSize) > 0
+    || Boolean(toFileBuffer(file?.fileData)?.length)
+    || Boolean(resolveStoredFilePath(file?.filePath))
+  );
+};
+
+const getUploadedRequirementFiles = (submission) => {
   const files = Array.isArray(submission?.files) && submission.files.length
     ? submission.files
     : [submission || {}];
 
-  return files.some((file) => (
-    Number(file?.fileSize) > 0 || Boolean(resolveStoredFilePath(file?.filePath))
-  ));
+  return files.reduce((uploadedFiles, file, fileIndex) => {
+    if (isUploadedRequirementFile(file)) uploadedFiles.push({ file, fileIndex });
+    return uploadedFiles;
+  }, []);
 };
+
+const hasUploadedRequirementFile = (submission) => getUploadedRequirementFiles(submission).length > 0;
 
 const getSavedSports = (sports) => Array.from(new Set(
   (Array.isArray(sports) ? sports : [])
@@ -549,15 +570,24 @@ const findCoachAccount = async (coachId) => {
   };
 };
 
-const getCoachGalleryRoster = async (coach) => {
+const getCoachStudentCandidates = async (coach) => {
   const assignedStudentIds = Array.isArray(coach?.strasucStudentIds)
     ? [...new Set(coach.strasucStudentIds.map(String))]
     : [];
-  if (!assignedStudentIds.length) return [];
+  if (!isValidCollege(coach?.college) || !normalizeDepartmentValue(coach?.department)) return [];
+
+  const studentClauses = [
+    { college: coach.college },
+    { college: { $in: ['', null] } },
+  ];
+  if (assignedStudentIds.length) {
+    studentClauses.push({ _id: { $in: assignedStudentIds } });
+  }
 
   const students = await User.find({
     role: 'student',
-    _id: { $in: assignedStudentIds },
+    accountStatus: { $ne: 'archived' },
+    $or: studentClauses,
   })
     .select('fullname username id studentNumber college department yearLevel sport sports assignedSports sportParticipation')
     .lean();
@@ -632,11 +662,11 @@ const getCoachRequirementContext = async (req, submission, participationType) =>
   const studentId = submission.studentId?._id || submission.studentId;
   const student = await findStudentForCoachRequirement(studentId);
   if (!student) return null;
-  const galleryStudent = (await getCoachGalleryRoster(coach))
+  const coachStudent = (await getCoachStudentCandidates(coach))
     .find(({ student: assignedStudent }) => String(assignedStudent._id) === String(student._id));
-  if (!galleryStudent) return null;
+  if (!coachStudent) return null;
 
-  const athleteProfile = galleryStudent.profile;
+  const athleteProfile = coachStudent.profile;
   if (!matchesCoachStudentAssignments(coach, student, athleteProfile)) return null;
   const studentSports = new Set([
     ...getStudentSports(student),
@@ -673,8 +703,8 @@ const getCoachForwardingContext = async (coach, selectedSport) => {
     return { ready: false, submissions: [] };
   }
 
-  const galleryRoster = await getCoachGalleryRoster(coach);
-  const roster = galleryRoster.map(({ student, profile }) => {
+  const studentCandidates = await getCoachStudentCandidates(coach);
+  const roster = studentCandidates.map(({ student, profile }) => {
     const matchedSports = [...new Set([
       ...getStudentSports(student),
       ...getStudentSports(profile),
@@ -1132,20 +1162,13 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
 
       // Add the requirement to the student's requirements
       const studentEntry = studentsById.get(studentId);
-      const attachmentFiles = Array.isArray(submission.files) && submission.files.length > 0
-        ? submission.files
-        : [{
-            fileName: submission.fileName,
-            fileType: submission.fileType,
-            fileSize: submission.fileSize,
-            filePath: submission.filePath
-          }];
-      const hasUpload = attachmentFiles.some((file) => (
-        Number(file.fileSize) > 0
-        || Boolean(resolveStoredFilePath(file.filePath))
-      ));
+      const attachmentFiles = getUploadedRequirementFiles(submission);
+      const hasUpload = attachmentFiles.length > 0;
+      if (!hasUpload) continue;
       const sportQuery = requestedSportKey ? `&sport=${encodeURIComponent(String(req.query.sport).trim())}` : '';
       const fileUrl = `/screener/requirements/${submission._id}/preview?participationType=${encodeURIComponent(submission.participationType || 'Intrams')}${sportQuery}`;
+      const firstAttachment = attachmentFiles[0];
+      const displayFile = isUploadedRequirementFile(submission) ? submission : firstAttachment.file;
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
@@ -1155,17 +1178,17 @@ router.get('/screener/requirements', protect, authorize('admin', 'screener'), as
         coachStatus: getCoachReviewStatus(submission),
         resubmitted: submission.resubmitted || false,
         label: submission.customRequirementLabel || requirementKeyLabels[submission.requirementType] || submission.requirementType,
-        fileName: submission.fileName || 'Uploaded file',
-        fileType: submission.fileType || '',
-        fileUrl,
-        files: attachmentFiles.map((file, index) => ({
+        fileName: displayFile.fileName || 'Uploaded file',
+        fileType: displayFile.fileType || '',
+        fileUrl: `${fileUrl}&fileIndex=${firstAttachment.fileIndex}`,
+        files: attachmentFiles.map(({ file, fileIndex }) => ({
           fileName: file.fileName || 'Uploaded file',
           fileType: file.fileType || '',
-          fileUrl: `${fileUrl}&fileIndex=${index}`
+          fileUrl: `${fileUrl}&fileIndex=${fileIndex}`
         })),
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.remarks || '',
-        hasUpload,
+        hasUpload: true,
         screenerForwardedAt: submission.screenerForwardedAt || null,
         screenerForwardedBy: submission.screenerForwardedBy || null,
         participationType: submission.participationType || 'Intrams',
@@ -1268,12 +1291,12 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
       });
     }
 
-    const galleryRoster = await getCoachGalleryRoster(coach);
+    const studentCandidates = await getCoachStudentCandidates(coach);
 
     const studentsById = new Map();
     const assignedStudentIds = [];
     const eventScope = collectCoachEvents(coach);
-    galleryRoster.forEach(({ student, profile }) => {
+    studentCandidates.forEach(({ student, profile }) => {
       if (!matchesCoachStudentAssignments(coach, student, profile)) return;
 
       const studentId = String(student._id);
@@ -1398,19 +1421,11 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
       const participationType = submission.participationType || 'Intrams';
       const studentId = String(submission.studentId?._id || submission.studentId || '');
       const matchedStudent = studentsById.get(studentId);
-      const fileList = Array.isArray(submission.files) && submission.files.length
-        ? submission.files
-        : [{
-            fileName: submission.fileName,
-            fileType: submission.fileType,
-            fileSize: submission.fileSize,
-            filePath: submission.filePath,
-          }];
-      const hasUpload = fileList.some((file) => (
-        Number(file.fileSize) > 0 || Boolean(resolveStoredFilePath(file.filePath))
-      ));
-      if (!hasUpload) continue;
+      const fileList = getUploadedRequirementFiles(submission);
+      if (!fileList.length) continue;
       const fileUrl = `/coach/requirements/${submission._id}/preview?participationType=${encodeURIComponent(participationType)}`;
+      const firstAttachment = fileList[0];
+      const displayFile = isUploadedRequirementFile(submission) ? submission : firstAttachment.file;
       const document = {
         submissionId: submission._id,
         requirementType: submission.requirementType,
@@ -1422,17 +1437,17 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
         label: submission.customRequirementLabel
           || requirementKeyLabels[submission.requirementType]
           || submission.requirementType,
-        fileName: submission.fileName || 'Uploaded file',
-        fileType: submission.fileType || '',
-        fileUrl,
-        files: fileList.map((file, index) => ({
+        fileName: displayFile.fileName || 'Uploaded file',
+        fileType: displayFile.fileType || '',
+        fileUrl: `${fileUrl}&fileIndex=${firstAttachment.fileIndex}`,
+        files: fileList.map(({ file, fileIndex }) => ({
           fileName: file.fileName || 'Uploaded file',
           fileType: file.fileType || '',
-          fileUrl: `${fileUrl}&fileIndex=${index}`,
+          fileUrl: `${fileUrl}&fileIndex=${fileIndex}`,
         })),
         uploadedAt: submission.uploadDate || submission.createdAt,
         remarks: submission.coachRemarks || submission.remarks || '',
-        hasUpload,
+        hasUpload: true,
         screenerForwardedAt: submission.screenerForwardedAt || null,
         participationType,
         sport: submission.sport || matchedStudent.entry.sport,

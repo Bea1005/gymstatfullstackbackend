@@ -172,11 +172,12 @@ describe('Screener routes', () => {
         requirementType: 'cor',
         participationType: 'Intrams',
         sport: 'Basketball Women',
-        fileName: 'registration.pdf',
-        fileType: 'application/pdf',
-        fileSize: 64,
+        fileName: 'No Documents',
+        fileType: '',
+        fileSize: 0,
         requirementStatus: 'active',
         files: [
+          { fileName: 'No Documents', fileType: '', fileSize: 0 },
           { fileName: 'front.jpg', fileType: 'image/jpeg', fileSize: 30 },
           { fileName: 'back.jpg', fileType: 'image/jpeg', fileSize: 34 }
         ],
@@ -223,6 +224,8 @@ describe('Screener routes', () => {
     expect(response.body.data[0].requirements.documents).toHaveLength(1);
     expect(response.body.data[0].requirements.documents[0].files).toHaveLength(2);
     expect(response.body.data[0].requirements.documents[0].fileUrl).toContain('/coach/requirements/');
+    expect(response.body.data[0].requirements.documents[0].fileName).toBe('front.jpg');
+    expect(response.body.data[0].requirements.documents[0].files[0].fileUrl).toContain('fileIndex=1');
     expect(response.body.forwardingStatus.canForward).toBe(false);
     expect(StudentRequirement.find).toHaveBeenCalledTimes(1);
     expect(StudentRequirement.find).toHaveBeenCalledWith(expect.objectContaining({
@@ -231,10 +234,104 @@ describe('Screener routes', () => {
         { studentId: { $in: ['student-matched'] } }
       ])
     }));
-    expect(User.find).toHaveBeenCalledWith({
+    expect(User.find).toHaveBeenCalledWith(expect.objectContaining({
       role: 'student',
-      _id: { $in: ['student-matched'] }
+      accountStatus: { $ne: 'archived' },
+      $or: expect.arrayContaining([
+        { college: 'College of Information and Computing Sciences' },
+        { college: { $in: ['', null] } },
+        { _id: { $in: ['student-matched'] } },
+      ]),
+    }));
+  });
+
+  it('lists registered students in an assigned sport without requiring a Coach gallery entry', async () => {
+    const makeQuery = (result) => ({
+      select: jest.fn().mockReturnThis(),
+      sort: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue(withDefaultCollege(result))
     });
+    User.findById.mockReturnValue(makeQuery({
+      role: 'coach',
+      college: 'College of Information and Computing Sciences',
+      department: 'CICS',
+      sport: 'Basketball Women',
+      assignedSports: ['Basketball Women'],
+      assignedEvents: ['Intrams'],
+      strasucStudentIds: []
+    }));
+    User.find.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue([
+        {
+          _id: 'student-registered',
+          fullname: 'Registered Basketball Student',
+          college: '',
+          department: '',
+          sports: []
+        },
+        {
+          _id: 'student-other-sport',
+          fullname: 'Registered Volleyball Student',
+          college: 'College of Information and Computing Sciences',
+          department: 'CICS',
+          sports: ['Volleyball']
+        },
+        {
+          _id: 'student-other-department',
+          fullname: 'Other Department Student',
+          college: 'College of Information and Computing Sciences',
+          department: 'Engineering',
+          sports: ['Basketball Women']
+        }
+      ])
+    });
+    StudentAthlete.find.mockReturnValue(makeQuery([
+      {
+        userId: 'student-registered',
+        college: 'College of Information and Computing Sciences',
+        department: 'CICS',
+        sports: ['Basketball Women']
+      }
+    ]));
+    StudentRequirement.find.mockReturnValue(makeQuery([
+      {
+        _id: 'registered-student-requirement',
+        studentId: 'student-registered',
+        requirementType: 'medical',
+        participationType: 'Intrams',
+        sport: 'Basketball Women',
+        fileName: 'medical.pdf',
+        fileType: 'application/pdf',
+        fileSize: 64,
+        requirementStatus: 'active',
+        status: 'pending'
+      },
+      {
+        _id: 'other-sport-requirement',
+        studentId: 'student-other-sport',
+        requirementType: 'medical',
+        participationType: 'Intrams',
+        sport: 'Volleyball',
+        fileName: 'volleyball.pdf',
+        fileType: 'application/pdf',
+        fileSize: 64,
+        requirementStatus: 'active',
+        status: 'pending'
+      }
+    ]));
+
+    const response = await request(app)
+      .get('/api/v1/coach/requirements?sport=Basketball%20Women')
+      .set('x-test-role', 'coach');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.map((student) => student.id)).toEqual(['student-registered']);
+    expect(StudentRequirement.find).toHaveBeenCalledWith(expect.objectContaining({
+      $and: expect.arrayContaining([
+        { studentId: { $in: ['student-registered'] } }
+      ])
+    }));
   });
 
   it('filters coach roster and readiness to the selected sport', async () => {
@@ -543,7 +640,13 @@ describe('Screener routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.selectedSport).toBe('Volleyball');
-    expect(User.find).not.toHaveBeenCalled();
+    expect(User.find).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'student',
+      $or: expect.arrayContaining([
+        { college: 'College of Information and Computing Sciences' },
+        { college: { $in: ['', null] } },
+      ]),
+    }));
   });
 
   it('reports an approved group as already forwarded once every latest active document was sent', async () => {
@@ -1603,7 +1706,11 @@ describe('Screener routes', () => {
         screenerForwardedBy: 'coach-1',
         ...(index === 0
           ? {
+              fileName: 'No Documents',
+              fileType: '',
+              fileSize: 0,
               files: [
+                { fileName: 'No Documents', fileType: '', fileSize: 0 },
                 { fileName: 'medical-front.jpg', fileType: 'image/jpeg', fileSize: 20, filePath: 'front.jpg' },
                 { fileName: 'medical-back.jpg', fileType: 'image/jpeg', fileSize: 22, filePath: 'back.jpg' }
               ]
@@ -1640,8 +1747,8 @@ describe('Screener routes', () => {
     const medicalDocument = response.body.data[0].requirements.documents
       .find((document) => document.requirementType === 'medical');
     expect(medicalDocument.files).toHaveLength(2);
-    expect(medicalDocument.files[1].fileUrl)
-      .toContain('fileIndex=1');
+    expect(medicalDocument.fileName).toBe('medical-front.jpg');
+    expect(medicalDocument.files[0].fileUrl).toContain('fileIndex=1');
     expect(StudentRequirement.find).toHaveBeenCalledWith(expect.objectContaining({
       $and: expect.arrayContaining([
         { requirementStatus: 'active' },
@@ -2260,6 +2367,32 @@ describe('Screener routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toBe('image/jpeg');
     expect(Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body)).toEqual(secondPhoto);
+  });
+
+  it('does not serve a placeholder attachment by direct file index', async () => {
+    const submissionId = '507f1f77bcf86cd799439011';
+    StudentRequirement.findById.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({
+        _id: submissionId,
+        files: [
+          { fileName: 'No Documents', fileType: '', fileSize: 0 },
+          {
+            fileName: 'uploaded.pdf',
+            fileType: 'application/pdf',
+            fileSize: 4,
+            fileData: Buffer.from('file')
+          }
+        ]
+      })
+    });
+
+    const response = await request(app)
+      .get(`/api/v1/screener/requirements/${submissionId}/preview?fileIndex=0`)
+      .set('x-test-role', 'admin');
+
+    expect(response.status).toBe(404);
+    expect(response.body.message).toBe('Uploaded file is no longer available');
   });
 
   it('denies Screener preview of a different-department requirement', async () => {
