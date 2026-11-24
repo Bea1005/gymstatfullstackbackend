@@ -120,6 +120,10 @@ const baseUserSchema = new mongoose.Schema({
     enum: ['student', 'coach', 'admin', 'screener', 'calendar'],
     default: 'student'
   },
+  college: {
+    type: String,
+    default: ''
+  },
   department: {
     type: String,
     default: ''
@@ -353,6 +357,7 @@ const buildRoleDocument = (user) => {
   if (normalizedRole === 'admin') {
     roleDocPayload.password = source.password || '';
   } else {
+    roleDocPayload.college = source.college || '';
     roleDocPayload.department = source.department || '';
     roleDocPayload.dateOfBirth = source.dateOfBirth || source.dob || '';
     roleDocPayload.yearLevel = source.yearLevel || '';

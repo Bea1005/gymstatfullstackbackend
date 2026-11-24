@@ -69,7 +69,8 @@ const validRegistration = (overrides = {}) => ({
   email: 'jane@example.com',
   contactNumber: '09171234567',
   password: 'Password1!',
-  department: 'CICS',
+  college: 'College of Information and Computing Sciences',
+  department: 'Bachelor of Science in Information Technology',
   sport: 'Basketball',
   sports: ['Basketball'],
   id: '23B1509',
@@ -109,6 +110,8 @@ describe('registration identity verification', () => {
     expect(PendingRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
       contactNumber: '+639171234567',
       verificationMethod: 'email',
+      college: 'College of Information and Computing Sciences',
+      department: 'Bachelor of Science in Information Technology',
       registrationOtpHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       contactOtpHash: null,
       role: 'student',
@@ -241,7 +244,26 @@ describe('registration identity verification', () => {
     expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
       email,
       emailVerified: true,
+      college: 'College of Information and Computing Sciences',
+      department: 'Bachelor of Science in Information Technology',
     }));
+  });
+
+  it.each([
+    [{ college: '' }, 'Please select a valid college.'],
+    [{ department: '' }, 'Please select a department.'],
+    [{ college: 'College of Engineering' }, 'Please select a department assigned to the selected college.'],
+  ])('rejects invalid college/department selections', async (overrides, message) => {
+    const res = httpMocks.createResponse();
+
+    await register(httpMocks.createRequest({
+      body: validRegistration(overrides),
+    }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe(message);
+    expect(PendingRegistration.create).not.toHaveBeenCalled();
+    expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
   });
 
   it('requires a valid contact number before creating a pending registration', async () => {
@@ -328,6 +350,8 @@ describe('registration identity verification', () => {
       emailVerified: true,
       role: 'student',
       id: '23B1509',
+      college: 'College of Information and Computing Sciences',
+      department: 'Bachelor of Science in Information Technology',
       password: 'hashed-registration-password',
       save: jest.fn().mockResolvedValue(undefined),
     };
@@ -347,6 +371,8 @@ describe('registration identity verification', () => {
       lastName: 'Dela Cruz',
       suffix: 'Jr.',
       contactNumber: '+639171234567',
+      college: 'College of Information and Computing Sciences',
+      department: 'Bachelor of Science in Information Technology',
     }));
   });
 

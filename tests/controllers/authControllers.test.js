@@ -841,6 +841,7 @@ describe('Auth Controllers', () => {
       emailVerified: true,
       password: 'hashed-password',
       role: 'screener',
+      college: 'College of Engineering',
       department: 'Engineering'
     });
     bcrypt.compare.mockResolvedValue(true);
@@ -850,6 +851,7 @@ describe('Auth Controllers', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res._getJSONData().user.role).toBe('screener');
+    expect(res._getJSONData().user.college).toBe('College of Engineering');
     expect(res._getJSONData()).not.toHaveProperty('verificationRequired');
     expect(RefreshSession.create).toHaveBeenCalled();
   });

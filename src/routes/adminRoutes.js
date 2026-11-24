@@ -344,16 +344,20 @@ router.get('/admin/dashboard', protect, authorize('admin'), async (req, res) => 
       return res.status(400).json({ message: 'Choose a valid daily, weekly, monthly, or yearly reporting period.' });
     }
 
-    // Users
-    const totalUsers = await User.countDocuments({
-      $expr: {
-        $ne: [
-          { $toLower: { $trim: { input: { $ifNull: ['$role', ''] } } } },
-          'admin'
-        ]
-      }
+    // Match the active, registered account roles displayed in User Records.
+    const registeredUserFilter = {
+      role: { $in: ['student', 'coach', 'screener'] },
+      accountStatus: 'active',
+      $or: [
+        { emailVerified: { $ne: false } },
+        { contactNumberVerified: true }
+      ]
+    };
+    const totalUsers = await User.countDocuments(registeredUserFilter);
+    const totalAthletes = await User.countDocuments({
+      ...registeredUserFilter,
+      role: 'student'
     });
-    const totalAthletes = await User.countDocuments({ role: 'student' });
     const totalCoaches = await User.countDocuments({ role: 'coach' });
     // Equipments
     const totalEquipments = await Equipment.countDocuments();
@@ -776,7 +780,6 @@ router.get('/admin/dashboard', protect, authorize('admin'), async (req, res) => 
     const [
       studentAthleteRegistrationTrend,
       previousStudentAthletesRegistered,
-      totalRegisteredStudentAthletes,
       borrowerTypeActivity,
       borrowingTrend,
       equipmentBorrowingTrend,
@@ -795,7 +798,6 @@ router.get('/admin/dashboard', protect, authorize('admin'), async (req, res) => 
         { $project: { _id: 0, period: '$_id', count: 1 } }
       ]),
       StudentAthlete.countDocuments(getStudentAthleteDateMatch(analyticsPeriod.previous)),
-      StudentAthlete.countDocuments(),
       Borrowing.aggregate([
         { $match: getBorrowingDateMatch(analyticsPeriod.current) },
         { $match: { borrowerType: { $in: BORROWER_TYPES } } },
@@ -854,6 +856,7 @@ router.get('/admin/dashboard', protect, authorize('admin'), async (req, res) => 
       Borrowing.countDocuments(getBorrowingDateMatch(analyticsPeriod.current)),
       Borrowing.countDocuments(getBorrowingDateMatch(analyticsPeriod.previous))
     ]);
+    const totalRegisteredStudentAthletes = totalAthletes;
 
     // Upcoming schedules: get active upcoming schedules from MongoDB
     const today = new Date().toISOString().split('T')[0];

@@ -13,6 +13,7 @@ const sms = require('../config/sms');
 const { normalizePhoneNumber } = sms;
 const RefreshSession = require('../models/RefreshSession');
 const PendingRegistration = require('../models/PendingRegistration');
+const collegeDepartmentOptions = require('../../../shared/collegeDepartmentOptions.json');
 const {
   createAccessToken,
   createRefreshSession,
@@ -264,6 +265,7 @@ const buildUserResponse = (user, roleOverride) => {
     role: resolvedRole,
     id: user.id,
     dateOfBirth: user.dateOfBirth || user.dob || '',
+    college: user.college || '',
     department: user.department || '',
     yearLevel: user.yearLevel || '',
     sport: user.sport || '',
@@ -717,6 +719,7 @@ exports.verifyRegistrationOtp = async (req, res) => {
       contactNumber: pendingRegistration.contactNumber,
       password: pendingRegistration.password,
       role: pendingRegistration.role || 'student',
+      college: pendingRegistration.college || '',
       department: pendingRegistration.department || '',
       yearLevel: pendingRegistration.yearLevel || '',
       sport: pendingRegistration.sport || '',
@@ -871,6 +874,7 @@ exports.register = async (req, res) => {
       suffix,
       email,
       password,
+      college,
       department,
       yearLevel,
       sport,
@@ -885,6 +889,8 @@ exports.register = async (req, res) => {
     const normalizedMiddleInitial = normalizeNamePart(middleInitial);
     const normalizedLastName = normalizeNamePart(lastName);
     const normalizedSuffix = normalizeNamePart(suffix);
+    const normalizedCollege = typeof college === 'string' ? college.trim() : '';
+    const normalizedDepartment = typeof department === 'string' ? department.trim() : '';
 
     if (!normalizedFirstName || !normalizedLastName || !password || !id || !normalizedEmail) {
       return res.status(400).json({
@@ -909,6 +915,27 @@ exports.register = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Please enter valid name fields using letters, spaces, hyphens, apostrophes, or periods.'
+      });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(collegeDepartmentOptions, normalizedCollege)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a valid college.'
+      });
+    }
+
+    if (!normalizedDepartment) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a department.'
+      });
+    }
+
+    if (!collegeDepartmentOptions[normalizedCollege].includes(normalizedDepartment)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a department assigned to the selected college.'
       });
     }
     const trimmedFullName = [
@@ -1005,7 +1032,8 @@ exports.register = async (req, res) => {
       password: hashedPassword,
       role: /^\d{4}-\d{4}$/.test(trimmedId) ? 'coach' : 'student',
       id: trimmedId,
-      department: department || '',
+      college: normalizedCollege,
+      department: normalizedDepartment,
       expiresAt: new Date(now + REGISTRATION_OTP_TTL_MS)
     };
 

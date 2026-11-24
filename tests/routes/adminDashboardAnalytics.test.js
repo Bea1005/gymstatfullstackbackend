@@ -111,14 +111,23 @@ describe('admin dashboard analytics', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.totalUsers).toBe(12);
-    expect(User.countDocuments).toHaveBeenNthCalledWith(1, {
-      $expr: {
-        $ne: [
-          { $toLower: { $trim: { input: { $ifNull: ['$role', ''] } } } },
-          'admin',
-        ],
-      },
-    });
+    expect(res.body.totalAthletes).toBe(8);
+    expect(User.countDocuments).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      role: { $in: ['student', 'coach', 'screener'] },
+      accountStatus: 'active',
+      $or: [
+        { emailVerified: { $ne: false } },
+        { contactNumberVerified: true },
+      ],
+    }));
+    expect(User.countDocuments).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      role: 'student',
+      accountStatus: 'active',
+      $or: [
+        { emailVerified: { $ne: false } },
+        { contactNumberVerified: true },
+      ],
+    }));
     expect(res.body.analytics).toMatchObject({
       studentAthletesByDepartment: [{ department: 'CICS', count: 4 }],
       borrowingsByDepartment: [{ department: 'CICS', count: 3 }],
@@ -128,7 +137,7 @@ describe('admin dashboard analytics', () => {
       borrowingTrend: [{ period: '2026-11', count: 2 }],
       equipmentBorrowingTrend: [{ period: '2026-11', count: 5 }],
       totalBorrowingTransactions: 2,
-      totalRegisteredStudentAthletes: 12,
+      totalRegisteredStudentAthletes: 8,
       studentAthletesRegisteredInPeriod: 4,
       previousStudentAthletesRegistered: 4,
       previousBorrowingTransactions: 2,

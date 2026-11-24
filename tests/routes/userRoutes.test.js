@@ -1,6 +1,7 @@
 const express = require('express');
 const request = require('supertest');
 const User = require('../../src/models/User');
+const ScreenerIdSequence = require('../../src/models/ScreenerIdSequence');
 const userRoutes = require('../../src/routes/userRoutes');
 
 jest.mock('../../src/models/User', () => ({
@@ -12,6 +13,11 @@ jest.mock('../../src/models/User', () => ({
   getRoleModel: jest.fn(),
   updateOne: jest.fn(),
   create: jest.fn()
+}));
+jest.mock('../../src/models/ScreenerIdSequence', () => ({
+  findById: jest.fn(),
+  updateOne: jest.fn(),
+  findOneAndUpdate: jest.fn()
 }));
 jest.mock('../../src/middleware/auth', () => ({
   protect: (req, res, next) => next(),
@@ -34,6 +40,7 @@ const { sendRegistrationVerificationOtp, sendScreenerAccountCreatedEmail } = req
 
 describe('User registration route', () => {
   let app;
+  const year = String(new Date().getFullYear());
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -46,6 +53,11 @@ describe('User registration route', () => {
     });
     User.deleteOne.mockResolvedValue({ deletedCount: 1 });
     User.getRoleModel.mockReturnValue({ deleteOne: jest.fn().mockResolvedValue({ deletedCount: 1 }) });
+    ScreenerIdSequence.findById.mockReturnValue({
+      lean: jest.fn().mockResolvedValue(null)
+    });
+    ScreenerIdSequence.updateOne.mockResolvedValue({});
+    ScreenerIdSequence.findOneAndUpdate.mockResolvedValue({ value: 1 });
     sendRegistrationVerificationOtp.mockResolvedValue(true);
     app = express();
     app.use(express.json());
@@ -58,18 +70,21 @@ describe('User registration route', () => {
   });
 
   it('returns the next Screener ID for the Admin registration form', async () => {
+    ScreenerIdSequence.findById.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ value: 2 })
+    });
     User.find.mockReturnValue({
       select: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockResolvedValue([{ id: 'S000002' }, { id: 'S000001' }])
+      lean: jest.fn().mockResolvedValue([{ id: `S${year}-0002` }, { id: `S${year}-0001` }])
     });
 
     const response = await request(app).get('/api/v1/users/screeners/next-id');
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({ success: true, id: 'S000003' });
+    expect(response.body).toEqual({ success: true, id: `S${year}-0003` });
     expect(User.find).toHaveBeenCalledWith({
       role: 'screener',
-      id: { $regex: /^S\d{6,}$/ }
+      id: { $regex: new RegExp(`^S${year}-[0-9A-F]{4}$`, 'i') }
     });
   });
 
@@ -181,16 +196,38 @@ describe('User registration route', () => {
     }
   );
 
+  it.each([undefined, 'Not a valid college'])(
+    'rejects a Screener account with an empty or invalid college (%s)',
+    async (college) => {
+      const requestBody = {
+        email: 'screener@example.com',
+        password: 'Password1!',
+        role: 'screener'
+      };
+      if (college !== undefined) requestBody.college = college;
+
+      const response = await request(app)
+        .post('/api/v1/users')
+        .send(requestBody);
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe('Please select a valid college.');
+      expect(User.create).not.toHaveBeenCalled();
+      expect(ScreenerIdSequence.findOneAndUpdate).not.toHaveBeenCalled();
+    }
+  );
+
   it('creates a Screener account as login-ready without sending an email', async () => {
     const createdUser = {
       _id: 'user-123',
-      id: 'S000001',
-      fullname: 'S000001',
+      id: `S${year}-0001`,
+      fullname: `S${year}-0001`,
       email: 'screener@example.com',
       emailNormalized: 'screener@example.com',
       emailVerified: true,
       password: 'hashed-password',
       role: 'screener',
+      college: 'College of Engineering',
       toObject() {
         return { ...this };
       }
@@ -203,6 +240,7 @@ describe('User registration route', () => {
         email: 'screener@example.com',
         password: 'Password1!',
         department: 'Engineering',
+        college: 'College of Engineering',
         role: 'screener'
       });
 
@@ -211,22 +249,24 @@ describe('User registration route', () => {
       success: true,
       verificationRequired: false
     }));
-    expect(response.body.user.id).toBe('S000001');
+    expect(response.body.user.id).toBe(`S${year}-0001`);
     expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
       email: 'screener@example.com',
       emailVerified: true,
       department: 'Engineering',
+      college: 'College of Engineering',
       role: 'screener',
-      id: 'S000001',
+      id: `S${year}-0001`,
       password: 'hashed-password'
     }));
     expect(User.create.mock.calls[0][0]).not.toHaveProperty('registrationOtpHash');
+    expect(response.body.user.college).toBe('College of Engineering');
     expect(sendRegistrationVerificationOtp).not.toHaveBeenCalled();
     expect(sendScreenerAccountCreatedEmail).not.toHaveBeenCalled();
   });
 
   it('does not block a Screener account when email delivery is unavailable', async () => {
-    User.create.mockResolvedValue({ _id: 'user-123', id: 'S000001' });
+    User.create.mockResolvedValue({ _id: 'user-123', id: `S${year}-0001` });
     sendScreenerAccountCreatedEmail.mockRejectedValueOnce(new Error('Brevo unavailable'));
 
     const response = await request(app)
@@ -235,6 +275,7 @@ describe('User registration route', () => {
         fullname: 'New Screener',
         email: 'screener@example.com',
         password: 'Password1!',
+        college: 'College of Engineering',
         role: 'screener'
       });
 
@@ -249,14 +290,14 @@ describe('User registration route', () => {
   });
 
   it('generates the next sequential Screener ID and ignores any client-supplied ID', async () => {
-    User.find.mockReturnValue({
-      select: jest.fn().mockReturnThis(),
-      lean: jest.fn().mockResolvedValue([{ id: 'S000008' }, { id: 'S000002' }])
+    ScreenerIdSequence.findById.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ value: 8 })
     });
+    ScreenerIdSequence.findOneAndUpdate.mockResolvedValue({ value: 9 });
     User.create.mockResolvedValue({
       _id: 'user-123',
-      id: 'S000009',
-      fullname: 'S000009',
+      id: `S${year}-0009`,
+      fullname: `S${year}-0009`,
       email: 'screener@example.com',
       role: 'screener',
       toObject() {
@@ -271,39 +312,38 @@ describe('User registration route', () => {
         email: 'screener@example.com',
         password: 'Password1!',
         department: 'Engineering',
+        college: 'College of Engineering',
         role: 'screener'
       });
 
     expect(response.status).toBe(201);
     expect(User.create).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'S000009',
-      fullname: 'S000009',
+      id: `S${year}-0009`,
+      fullname: `S${year}-0009`,
       role: 'screener',
-      department: 'Engineering'
+      department: 'Engineering',
+      college: 'College of Engineering'
     }));
-    expect(response.body.user.id).toBe('S000009');
+    expect(response.body.user.id).toBe(`S${year}-0009`);
   });
 
   it('retries with a new sequential ID after a concurrent duplicate ID insert', async () => {
-    User.find
-      .mockReturnValueOnce({
-        select: jest.fn().mockReturnThis(),
-        lean: jest.fn().mockResolvedValue([])
-      })
-      .mockReturnValueOnce({
-        select: jest.fn().mockReturnThis(),
-        lean: jest.fn().mockResolvedValue([{ id: 'S000001' }])
-      });
+    ScreenerIdSequence.findById.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ value: 0 })
+    });
+    ScreenerIdSequence.findOneAndUpdate
+      .mockResolvedValueOnce({ value: 1 })
+      .mockResolvedValueOnce({ value: 2 });
     User.create
       .mockRejectedValueOnce({
         code: 11000,
         keyPattern: { id: 1 },
-        keyValue: { id: 'S000001' }
+        keyValue: { id: `S${year}-0001` }
       })
       .mockResolvedValueOnce({
         _id: 'user-123',
-        id: 'S000002',
-        fullname: 'S000002',
+        id: `S${year}-0002`,
+        fullname: `S${year}-0002`,
         email: 'screener@example.com',
         role: 'screener',
         toObject() {
@@ -316,13 +356,14 @@ describe('User registration route', () => {
       .send({
         email: 'screener@example.com',
         password: 'Password1!',
+        college: 'College of Engineering',
         role: 'screener'
       });
 
     expect(response.status).toBe(201);
-    expect(User.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'S000001' }));
-    expect(User.create).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'S000002' }));
-    expect(response.body.user.id).toBe('S000002');
+    expect(User.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: `S${year}-0001` }));
+    expect(User.create).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: `S${year}-0002` }));
+    expect(response.body.user.id).toBe(`S${year}-0002`);
   });
 
   it('rejects an email already registered in any role collection', async () => {

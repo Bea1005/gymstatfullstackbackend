@@ -2,6 +2,43 @@ const httpMocks = require('node-mocks-http');
 const { validateRequestBody } = require('../../src/middleware/requestValidation');
 
 describe('validateRequestBody requirement upload fields', () => {
+  it('accepts the Assigned College field on Admin user creation', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/users',
+      body: {
+        email: 'screener@example.com',
+        password: 'Password1!',
+        department: 'CICS',
+        college: 'College of Information and Computing Sciences',
+        role: 'screener',
+      },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body.college).toBe('College of Information and Computing Sciences');
+  });
+
+  it('does not allow the Admin user creation College field on unrelated endpoints', () => {
+    const req = httpMocks.createRequest({
+      method: 'POST',
+      path: '/api/v1/other',
+      body: { college: 'College of Information and Computing Sciences' },
+    });
+    const res = httpMocks.createResponse();
+    const next = jest.fn();
+
+    validateRequestBody(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res._getJSONData().message).toBe('Request body contains an unexpected field.');
+  });
+
   it('accepts Public Calendar registration fields only on the calendar registration endpoint', () => {
     const req = httpMocks.createRequest({
       method: 'POST',
@@ -89,7 +126,8 @@ describe('validateRequestBody requirement upload fields', () => {
         suffix: 'Jr.',
         email: 'jane@gmail.com',
         password: 'Password1!',
-        department: 'CICS',
+        college: 'College of Information and Computing Sciences',
+        department: 'Bachelor of Science in Information Technology',
         sport: 'Basketball',
         sports: ['Basketball'],
         id: '23B1509',
@@ -110,6 +148,7 @@ describe('validateRequestBody requirement upload fields', () => {
       lastName: 'Doe',
       suffix: 'Jr.',
       contactNumber: '09171234567',
+      college: 'College of Information and Computing Sciences',
       verificationMethod: 'sms',
       role: 'student',
       sports: ['Basketball'],

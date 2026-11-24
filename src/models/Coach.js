@@ -35,6 +35,10 @@ const CoachSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  college: {
+    type: String,
+    default: ''
+  },
   department: {
     type: String,
     default: ''

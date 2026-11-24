@@ -5,6 +5,12 @@ const { hashPassword, isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../c
 const { getJWTSecret } = require('../config/security');
 const { sendRegistrationVerificationOtp, sendScreenerAuthorizationEmail } = require('../config/email');
 const ScreenerAuthorization = require('../models/ScreenerAuthorization');
+const collegeDepartmentOptions = require('../../../shared/collegeDepartmentOptions.json');
+const {
+  allocateNextScreenerId,
+  getNextScreenerId,
+  ScreenerIdSequenceExhaustedError
+} = require('../utils/screenerId');
 const router = express.Router();
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
@@ -13,27 +19,12 @@ const VALID_ROLES = ['student', 'coach', 'admin', 'screener'];
 const DUPLICATE_ID_MESSAGE = 'This ID is already registered. Please use a different ID.';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REGISTRATION_OTP_TTL_MS = 10 * 60 * 1000;
-const SCREENER_ID_PATTERN = /^S(\d{6,})$/;
 const SCREENER_ID_CREATION_ATTEMPTS = 25;
 
 const hashRegistrationOtp = (otp) => crypto
   .createHmac('sha256', getJWTSecret())
   .update(String(otp))
   .digest('hex');
-
-const getNextScreenerId = async (minimumNumber = 1) => {
-  const screeners = await User.find({
-    role: 'screener',
-    id: { $regex: /^S\d{6,}$/ }
-  }).select('id').lean();
-  const highestNumber = (Array.isArray(screeners) ? screeners : []).reduce((highest, screener) => {
-    const match = SCREENER_ID_PATTERN.exec(String(screener?.id || ''));
-    const number = match ? Number(match[1]) : 0;
-    return Number.isSafeInteger(number) ? Math.max(highest, number) : highest;
-  }, 0);
-
-  return `S${String(Math.max(highestNumber + 1, minimumNumber)).padStart(6, '0')}`;
-};
 
 const isDuplicateIdError = (error) => error?.code === 11000
   && (error.keyPattern?.id || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'id'));
@@ -149,8 +140,17 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const rawPassword = typeof req.body?.password === 'string' ? req.body.password : '';
     const rawDepartment = typeof req.body?.department === 'string' ? req.body.department.trim() : '';
+    const rawCollege = typeof req.body?.college === 'string' ? req.body.college.trim() : '';
     const rawSport = typeof req.body?.sport === 'string' ? req.body.sport.trim() : '';
     const requestedRole = normalizeRole(req.body?.role || getRequestedRole(req) || 'student');
+
+    if (requestedRole === 'screener'
+      && !Object.prototype.hasOwnProperty.call(collegeDepartmentOptions, rawCollege)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please select a valid college.'
+      });
+    }
 
     // Validate required fields
     if (requestedRole !== 'screener' && !rawId) {
@@ -238,34 +238,23 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
       userPayload.department = rawDepartment || '';
       userPayload.sport = rawSport || '';
     }
+    if (requestedRole === 'screener') {
+      userPayload.college = rawCollege;
+    }
 
     let user;
     if (requestedRole === 'screener') {
-      let minimumNumber = 1;
-      const preferredId = await getNextScreenerId();
-      const screenerPayload = {
-        ...userPayload,
-        id: preferredId,
-        fullname: rawFullname || preferredId
-      };
-
-      try {
-        user = await User.create(screenerPayload);
-      } catch (error) {
-        if (!isDuplicateIdError(error)) throw error;
-        for (let attempt = 0; attempt < SCREENER_ID_CREATION_ATTEMPTS; attempt += 1) {
-          const generatedId = await getNextScreenerId(minimumNumber);
-          try {
-            user = await User.create({
-              ...userPayload,
-              id: generatedId,
-              fullname: rawFullname || generatedId
-            });
-            break;
-          } catch (duplicateError) {
-            if (!isDuplicateIdError(duplicateError)) throw duplicateError;
-            minimumNumber = Number(generatedId.slice(1)) + 1;
-          }
+      for (let attempt = 0; attempt < SCREENER_ID_CREATION_ATTEMPTS; attempt += 1) {
+        const generatedId = await allocateNextScreenerId();
+        try {
+          user = await User.create({
+            ...userPayload,
+            id: generatedId,
+            fullname: rawFullname || generatedId
+          });
+          break;
+        } catch (error) {
+          if (!isDuplicateIdError(error)) throw error;
         }
       }
 
@@ -316,6 +305,13 @@ router.post('/', protect, authorize('admin'), async (req, res) => {
     });
   } catch (error) {
     console.error('Create user error:', error);
+
+    if (error instanceof ScreenerIdSequenceExhaustedError) {
+      return res.status(409).json({
+        success: false,
+        message: 'The Screener ID sequence for the current year is exhausted.'
+      });
+    }
     
     if (error.code === 11000) {
       if (error.keyPattern?.id || Object.prototype.hasOwnProperty.call(error.keyValue || {}, 'id')) {
@@ -434,9 +430,11 @@ router.get('/screeners/next-id', protect, authorize('admin'), async (_req, res) 
     return res.json({ success: true, id });
   } catch (error) {
     console.error('Get next Screener ID error:', error);
-    return res.status(500).json({
+    return res.status(error instanceof ScreenerIdSequenceExhaustedError ? 409 : 500).json({
       success: false,
-      message: 'Unable to load the next Screener ID. Please try again.'
+      message: error instanceof ScreenerIdSequenceExhaustedError
+        ? 'The Screener ID sequence for the current year is exhausted.'
+        : 'Unable to load the next Screener ID. Please try again.'
     });
   }
 });

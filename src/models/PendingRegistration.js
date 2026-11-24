@@ -58,6 +58,10 @@ const pendingRegistrationSchema = new mongoose.Schema({
     enum: ['student', 'coach', 'admin', 'screener', 'calendar'],
     default: 'student'
   },
+  college: {
+    type: String,
+    default: ''
+  },
   department: {
     type: String,
     default: ''

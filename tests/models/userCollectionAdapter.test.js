@@ -22,15 +22,16 @@ describe('User collection adapter', () => {
   });
 
   it('stores the individual registration name fields on canonical and role records', () => {
-    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber'].forEach((field) => {
+    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber', 'college', 'department'].forEach((field) => {
       expect(User.schema.path(field)).toBeDefined();
     });
-    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber'].forEach((field) => {
+    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber', 'college', 'department'].forEach((field) => {
       expect(StudentAthlete.schema.path(field)).toBeDefined();
     });
-    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber'].forEach((field) => {
+    ['firstName', 'middleInitial', 'lastName', 'suffix', 'contactNumber', 'college', 'department'].forEach((field) => {
       expect(Coach.schema.path(field)).toBeDefined();
     });
+    expect(User.getRoleModel('screener').schema.path('college')).toBeDefined();
   });
 
   it('checks canonical users for email uniqueness and ignores stale role-only records', async () => {
@@ -150,6 +151,8 @@ describe('User collection adapter', () => {
         id: '23B1510',
         fullname: 'Student Athlete',
         role: 'student',
+        college: 'College of Information and Computing Sciences',
+        department: 'Bachelor of Science in Information Technology',
         sport: 'Basketball Women',
         sports: ['Basketball Women', 'Volleyball Women'],
       });
@@ -158,6 +161,8 @@ describe('User collection adapter', () => {
         { userId: 'student-user-id' },
         expect.objectContaining({
           $set: expect.objectContaining({
+            college: 'College of Information and Computing Sciences',
+            department: 'Bachelor of Science in Information Technology',
             sport: 'Basketball Women',
             sports: ['Basketball Women', 'Volleyball Women'],
           }),

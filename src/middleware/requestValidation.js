@@ -28,6 +28,7 @@ const REGISTRATION_FIELDS = new Set([
   'suffix',
   'email',
   'password',
+  'college',
   'department',
   'yearLevel',
   'sport',
@@ -47,6 +48,9 @@ const CALENDAR_REGISTRATION_FIELDS = new Set([
 ]);
 const GOOGLE_AUTH_FIELDS = new Set(['credential']);
 const SCREENER_FORWARD_APPROVAL_FIELDS = new Set(['documents']);
+const ADMIN_USER_CREATE_FIELDS = new Set(['college']);
+const configuredBaseUri = (process.env.BASE_URI || '/api/v1').replace(/\/+$/, '') || '/api/v1';
+const ADMIN_USER_CREATE_PATH = `${configuredBaseUri}/users`;
 const { isPasswordValid, PASSWORD_POLICY_MESSAGE } = require('../config/passwords');
 const KNOWN_FIELDS = new Set([
   'fullname', 'email', 'password', 'currentPassword', 'newPassword', 'otp', 'department', 'yearLevel', 'sport', 'id', 'role',
@@ -191,6 +195,8 @@ const validateRequestBody = (req, res, next) => {
       && /(?:^|\/)calendar-auth\/register\/?$/.test(req.path);
     const isCalendarGoogleAuth = req.method === 'POST'
       && /(?:^|\/)calendar-auth\/google\/?$/.test(req.path);
+    const isAdminUserCreate = req.method === 'POST'
+      && req.path === ADMIN_USER_CREATE_PATH;
     req.body = normalizeKeyValue(
       'body',
       req.body,
@@ -213,7 +219,9 @@ const validateRequestBody = (req, res, next) => {
                 ? REGISTRATION_FIELDS
                 : isCalendarGoogleAuth
                   ? GOOGLE_AUTH_FIELDS
-                  : undefined
+                  : isAdminUserCreate
+                    ? ADMIN_USER_CREATE_FIELDS
+                    : undefined
     );
     const passwordValue = isRegistration || isCalendarRegistration
           ? req.body.password
