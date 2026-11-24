@@ -574,21 +574,34 @@ const getCoachStudentCandidates = async (coach) => {
   const assignedStudentIds = Array.isArray(coach?.strasucStudentIds)
     ? [...new Set(coach.strasucStudentIds.map(String))]
     : [];
-  if (!isValidCollege(coach?.college) || !normalizeDepartmentValue(coach?.department)) return [];
 
-  const studentClauses = [
-    { college: coach.college },
-    { college: { $in: ['', null] } },
-  ];
-  if (assignedStudentIds.length) {
-    studentClauses.push({ _id: { $in: assignedStudentIds } });
+  const hasCollegeAndDept = isValidCollege(coach?.college) && Boolean(normalizeDepartmentValue(coach?.department));
+
+  let userQuery;
+  if (!hasCollegeAndDept) {
+    // No college/dept configured — fall back to explicitly-assigned students only
+    if (!assignedStudentIds.length) return [];
+    userQuery = {
+      role: 'student',
+      accountStatus: { $ne: 'archived' },
+      _id: { $in: assignedStudentIds },
+    };
+  } else {
+    const studentClauses = [
+      { college: coach.college },
+      { college: { $in: ['', null] } },
+    ];
+    if (assignedStudentIds.length) {
+      studentClauses.push({ _id: { $in: assignedStudentIds } });
+    }
+    userQuery = {
+      role: 'student',
+      accountStatus: { $ne: 'archived' },
+      $or: studentClauses,
+    };
   }
 
-  const students = await User.find({
-    role: 'student',
-    accountStatus: { $ne: 'archived' },
-    $or: studentClauses,
-  })
+  const students = await User.find(userQuery)
     .select('fullname username id studentNumber college department yearLevel sport sports assignedSports sportParticipation')
     .lean();
   if (!students.length) return [];
@@ -1296,8 +1309,12 @@ router.get('/coach/requirements', protect, authorize('coach'), async (req, res) 
     const studentsById = new Map();
     const assignedStudentIds = [];
     const eventScope = collectCoachEvents(coach);
+    const explicitlyAssignedIds = new Set(
+      (Array.isArray(coach?.strasucStudentIds) ? coach.strasucStudentIds : []).map(String)
+    );
     studentCandidates.forEach(({ student, profile }) => {
-      if (!matchesCoachStudentAssignments(coach, student, profile)) return;
+      const isExplicitlyAssigned = explicitlyAssignedIds.has(String(student._id));
+      if (!isExplicitlyAssigned && !matchesCoachStudentAssignments(coach, student, profile)) return;
 
       const studentId = String(student._id);
       const studentSports = new Map([
